@@ -30,6 +30,7 @@ dotenv.config();
 const useSupabaseState = process.env.AURA_STATE_BACKEND === 'supabase';
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
@@ -373,6 +374,7 @@ app.post('/auth/request-link', rateLimit, async (req, res) => {
   const loginId = crypto.randomBytes(32).toString('hex');
   pendingAuthLinks.set(loginId, { createdAt: Date.now(), session: null });
   const publicUrl = process.env.AURA_PUBLIC_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
     `${req.protocol}://${req.get('host')}${req.baseUrl || ''}/`;
   const { error } = await authSupabase.auth.signInWithOtp({
     email,
@@ -1033,10 +1035,14 @@ io.on('connection', (socket) => {
 // --- Proactive Agency: Cron Jobs --- //
 // These run unattended and push spoken alerts to any connected frontend via
 // the 'proactive-alert' socket event, without the user having to ask first.
+const schedulerEnabled = process.env.AURA_SCHEDULER_ENABLED !== 'false';
+const schedulerOptions = {
+  timezone: process.env.AURA_TIMEZONE || 'America/Phoenix'
+};
 
 // Business health check, twice daily: newly-overdue clients + meaningful
 // swings in outstanding balance / MRR since the last check.
-cron.schedule('0 8,16 * * *', async () => {
+if (schedulerEnabled) cron.schedule('0 8,16 * * *', async () => {
   console.log('[Cron] Running business health check...');
   try {
     const overdue = await ccc.getOverdueClients(3);
@@ -1081,12 +1087,12 @@ cron.schedule('0 8,16 * * *', async () => {
   } catch (error) {
     console.error('Error in scheduled business check:', error);
   }
-});
+}, schedulerOptions);
 
 // Blackboard deadline check, once daily in the morning. The calendar is
 // reevaluated every day so an unchanged assignment still triggers when it
 // crosses into the three-day warning window.
-cron.schedule('0 7 * * *', async () => {
+if (schedulerEnabled) cron.schedule('0 7 * * *', async () => {
   console.log('[Cron] Running scheduled Blackboard check...');
   try {
     const scraped = await scraper.checkBlackboardAssignments();
@@ -1168,11 +1174,11 @@ cron.schedule('0 7 * * *', async () => {
   } catch (error) {
     console.error('Error in scheduled Blackboard check:', error);
   }
-});
+}, schedulerOptions);
 
 // Stale goals nudge, once a week: anything still open after 14 days gets
 // surfaced so it doesn't just quietly rot in the tracker.
-cron.schedule('0 9 * * 1', async () => {
+if (schedulerEnabled) cron.schedule('0 9 * * 1', async () => {
   console.log('[Cron] Running stale goals check...');
   try {
     const staleGoals = cloudState
@@ -1192,10 +1198,11 @@ cron.schedule('0 9 * * 1', async () => {
   } catch (error) {
     console.error('Error in stale goals check:', error);
   }
-});
+}, schedulerOptions);
 
 const PORT = process.env.PORT || 3000;
-const BIND_HOST = process.env.AURA_BIND_HOST || '127.0.0.1';
+const BIND_HOST = process.env.AURA_BIND_HOST ||
+  (process.env.AURA_RUNTIME === 'cloud' ? '0.0.0.0' : '127.0.0.1');
 server.listen(PORT, BIND_HOST, () => {
   console.log(`AURA server running on http://${BIND_HOST}:${PORT}`);
 });

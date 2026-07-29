@@ -3,8 +3,9 @@ services:
     name: aura-brain
     runtime: docker
     plan: starter
+    branch: codex/aura-cloud-brain
     healthCheckPath: /healthz
-    autoDeploy: true
+    autoDeployTrigger: commit
     envVars:
       - key: AURA_RUNTIME
         value: cloud
@@ -26,15 +27,13 @@ services:
         value: supabase
       - key: AURA_AUTH_MODE
         value: supabase
-      - key: AURA_PUBLIC_URL
-        sync: false
+      - key: AURA_BIND_HOST
+        value: 0.0.0.0
+      - key: AURA_TIMEZONE
+        value: America/Phoenix
+      - key: AURA_SCHEDULER_ENABLED
+        value: "true"
+      - key: AURA_COMPANION_DEVICE
+        value: chriss-macbook-pro
       - key: BLACKBOARD_ICAL_URL
-        sync: false
-      - key: EMAIL_PROVIDER
-        sync: false
-      - key: GMAIL_CLIENT_ID
-        sync: false
-      - key: GMAIL_CLIENT_SECRET
-        sync: false
-      - key: GMAIL_REFRESH_TOKEN
         sync: false
