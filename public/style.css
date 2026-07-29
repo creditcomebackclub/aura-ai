@@ -30,6 +30,83 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Ambient aurora backdrop: three large, heavily blurred colour blobs drifting
+   slowly behind everything. Deliberately vague and slow so it reads as sky,
+   not shapes. Recoloured per state with explicit gradients per blob (like the
+   wordmark below) rather than a hue-rotate filter - a single rotation doesn't
+   land on the right hue consistently across three different base colours, so
+   "speaking" ended up reading cool green instead of warm amber. */
+#aurora {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.aurora-blob {
+  position: absolute;
+  width: 70vmax;
+  height: 70vmax;
+  border-radius: 50%;
+  filter: blur(70px);
+  mix-blend-mode: screen;
+  opacity: 0.4;
+  will-change: transform;
+}
+
+.aurora-blob--a {
+  top: -24vmax;
+  left: -20vmax;
+  background: radial-gradient(circle, rgba(0, 140, 255, 0.65) 0%, rgba(0, 140, 255, 0) 70%);
+  animation: aurora-drift-a 26s ease-in-out infinite;
+}
+
+.aurora-blob--b {
+  bottom: -28vmax;
+  right: -22vmax;
+  background: radial-gradient(circle, rgba(130, 60, 255, 0.55) 0%, rgba(130, 60, 255, 0) 70%);
+  animation: aurora-drift-b 32s ease-in-out infinite;
+}
+
+.aurora-blob--c {
+  top: 28vmax;
+  left: 50%;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgba(0, 220, 210, 0.4) 0%, rgba(0, 220, 210, 0) 70%);
+  animation: aurora-drift-c 38s ease-in-out infinite;
+}
+
+body[data-aura-state="listening"] .aurora-blob--a {
+  background: radial-gradient(circle, rgba(0, 235, 140, 0.6) 0%, rgba(0, 235, 140, 0) 70%);
+}
+body[data-aura-state="listening"] .aurora-blob--b {
+  background: radial-gradient(circle, rgba(20, 160, 110, 0.55) 0%, rgba(20, 160, 110, 0) 70%);
+}
+body[data-aura-state="listening"] .aurora-blob--c {
+  background: radial-gradient(circle, rgba(140, 255, 190, 0.4) 0%, rgba(140, 255, 190, 0) 70%);
+}
+
+body[data-aura-state="speaking"] .aurora-blob--a {
+  background: radial-gradient(circle, rgba(255, 140, 40, 0.6) 0%, rgba(255, 140, 40, 0) 70%);
+}
+body[data-aura-state="speaking"] .aurora-blob--b {
+  background: radial-gradient(circle, rgba(200, 70, 20, 0.55) 0%, rgba(200, 70, 20, 0) 70%);
+}
+body[data-aura-state="speaking"] .aurora-blob--c {
+  background: radial-gradient(circle, rgba(255, 196, 130, 0.42) 0%, rgba(255, 196, 130, 0) 70%);
+}
+
+body[data-aura-state="error"] .aurora-blob--a {
+  background: radial-gradient(circle, rgba(255, 60, 60, 0.6) 0%, rgba(255, 60, 60, 0) 70%);
+}
+body[data-aura-state="error"] .aurora-blob--b {
+  background: radial-gradient(circle, rgba(160, 20, 30, 0.55) 0%, rgba(160, 20, 30, 0) 70%);
+}
+body[data-aura-state="error"] .aurora-blob--c {
+  background: radial-gradient(circle, rgba(255, 150, 150, 0.4) 0%, rgba(255, 150, 150, 0) 70%);
+}
+
 /* Neon wordmark. Thin letterforms and wide tracking do the "premium" work;
    the glow is layered from a tight white core out to a wide coloured bloom so
    it reads as lit rather than blurred. Colour tracks the orb's state. */
@@ -55,6 +132,44 @@ body {
   pointer-events: none;
   transition: color 420ms ease, text-shadow 420ms ease;
   animation: aura-title-hum 5.5s ease-in-out infinite;
+}
+
+/* Soft bloom behind the letters, so the wordmark casts light rather than
+   just being outlined in it - same idea as the orb's halo. Painted before
+   the text (default ::before stacking), so it never covers the letters. */
+#aura-title::before {
+  content: '';
+  position: absolute;
+  inset: -0.65em -0.35em;
+  background: radial-gradient(ellipse at center,
+    rgba(130, 224, 255, 0.55) 0%,
+    rgba(0, 170, 255, 0.22) 45%,
+    transparent 72%);
+  filter: blur(20px);
+  opacity: 0.9;
+  animation: aura-halo-pulse 5.5s ease-in-out infinite;
+  transition: background 420ms ease;
+}
+
+body[data-aura-state="listening"] #aura-title::before {
+  background: radial-gradient(ellipse at center,
+    rgba(140, 255, 190, 0.55) 0%,
+    rgba(0, 235, 140, 0.22) 45%,
+    transparent 72%);
+}
+
+body[data-aura-state="speaking"] #aura-title::before {
+  background: radial-gradient(ellipse at center,
+    rgba(255, 196, 130, 0.6) 0%,
+    rgba(255, 140, 40, 0.24) 45%,
+    transparent 72%);
+}
+
+body[data-aura-state="error"] #aura-title::before {
+  background: radial-gradient(ellipse at center,
+    rgba(255, 150, 150, 0.55) 0%,
+    rgba(255, 60, 60, 0.22) 45%,
+    transparent 72%);
 }
 
 /* Thin light-line under the wordmark, fading out at both ends. */
@@ -356,10 +471,32 @@ body[data-aura-state="error"] #aura-title {
   50% { opacity: 1; }
 }
 
+@keyframes aura-halo-pulse {
+  0%, 100% { opacity: 0.78; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
+
+@keyframes aurora-drift-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(6vmax, 4vmax) scale(1.08); }
+}
+
+@keyframes aurora-drift-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-5vmax, -6vmax) scale(1.1); }
+}
+
+@keyframes aurora-drift-c {
+  0%, 100% { transform: translate(-50%, 0) scale(1); }
+  50% { transform: translate(calc(-50% + 4vmax), 3vmax) scale(0.95); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   #orb,
   #orb-container::before,
   #aura-title,
+  #aura-title::before,
+  .aurora-blob,
   #voice-wave {
     animation: none !important;
     transition: none !important;
