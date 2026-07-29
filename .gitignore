@@ -7,3 +7,8 @@ node_modules/
 .ccc_browser_data/
 aura.db
 uploads/
+
+# Scraper/memory output - contains client PII and personal data, must never be committed
+scraped_ccc.txt
+scraped_blackboard.txt
+semantic_memory.json
