@@ -248,6 +248,8 @@ let playbackCancelled = false;
 function setOrbState(state, text) {
   orb.className = state;
   statusText.textContent = text;
+  // Lets the wordmark's neon track the orb without duplicating state.
+  document.body.dataset.auraState = state;
 }
 
 function resizeVoiceWave() {
