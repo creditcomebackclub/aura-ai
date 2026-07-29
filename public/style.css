@@ -117,16 +117,6 @@ body {
   border-color: rgba(230, 200, 255, 0.6);
 }
 
-/* Muted State - always-listening paused by the user */
-#orb.muted {
-  box-shadow: 0 0 30px 8px rgba(150, 150, 150, 0.25), inset 0 0 20px rgba(150, 150, 150, 0.25);
-  animation: none;
-  transform: scale(0.92);
-  opacity: 0.55;
-  background: radial-gradient(circle at 35% 35%, #cfcfcf 0%, rgba(200, 200, 200, 0.5) 30%, rgba(120, 120, 120, 0.3) 80%);
-  border-color: rgba(180, 180, 180, 0.3);
-}
-
 /* Error State */
 #orb.error {
   box-shadow: 0 0 70px 15px var(--orb-glow-error), inset 0 0 30px rgba(255, 50, 50, 0.6);
