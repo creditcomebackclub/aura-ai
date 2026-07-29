@@ -37,7 +37,14 @@ const io = new Server(server, { cors: { origin: '*' } });
 app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    const fileName = path.basename(filePath);
+    if (fileName === 'index.html' || fileName === 'app.js') {
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+    }
+  }
+}));
 app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
@@ -316,6 +323,27 @@ app.post('/auth/request-link', rateLimit, async (req, res) => {
   // Do not reveal whether an email account exists.
   if (error) console.error('[Auth] Magic-link request failed:', error.message);
   res.json({ sent: true });
+});
+
+app.post('/auth/refresh', rateLimit, async (req, res) => {
+  if (!['supabase', 'hybrid'].includes(authMode) || !authSupabase) {
+    return res.status(404).json({ error: 'Email authentication is not enabled.' });
+  }
+  const refreshToken = String(req.body?.refresh_token || '');
+  if (!refreshToken || refreshToken.length > 4096) {
+    return res.status(400).json({ error: 'A valid refresh token is required.' });
+  }
+  const { data, error } = await authSupabase.auth.refreshSession({
+    refresh_token: refreshToken
+  });
+  if (error || !data.session || data.user?.id !== process.env.AURA_OWNER_ID) {
+    return res.status(401).json({ error: 'Session refresh failed.' });
+  }
+  res.json({
+    access_token: data.session.access_token,
+    refresh_token: data.session.refresh_token,
+    expires_at: data.session.expires_at
+  });
 });
 
 app.use('/api', authenticate, rateLimit);

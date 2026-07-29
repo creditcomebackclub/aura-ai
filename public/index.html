@@ -3,6 +3,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <script>
+    // Capture Supabase's session before cached application code or a WebSocket
+    // can try the retired shared token.
+    (() => {
+      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const accessToken = hash.get('access_token');
+      const refreshToken = hash.get('refresh_token');
+      if (accessToken) {
+        localStorage.setItem('aura_session_token', accessToken);
+        if (refreshToken) localStorage.setItem('aura_refresh_token', refreshToken);
+        localStorage.removeItem('aura_access_token');
+        history.replaceState({}, document.title, window.location.pathname);
+      }
+    })();
+  </script>
   <title>AURA</title>
 
   <!-- Add to Home Screen support, so this behaves like a standalone app on iPhone -->
@@ -28,6 +43,6 @@
   <div id="status-text">Tap to talk to AURA</div>
   
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=20260729-auth2"></script>
 </body>
 </html>

@@ -6,12 +6,18 @@ if (tokenFromUrl) {
 const authHash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
 if (authHash.get('access_token')) {
   localStorage.setItem('aura_session_token', authHash.get('access_token'));
+  if (authHash.get('refresh_token')) {
+    localStorage.setItem('aura_refresh_token', authHash.get('refresh_token'));
+  }
+  localStorage.removeItem('aura_access_token');
   history.replaceState({}, document.title, window.location.pathname);
 }
 let auraAccessToken = localStorage.getItem('aura_access_token') || '';
 let auraSessionToken = localStorage.getItem('aura_session_token') || '';
+let auraRefreshToken = localStorage.getItem('aura_refresh_token') || '';
 let authPromptOpen = false;
 let authMode = null;
+let refreshPromise = null;
 
 async function getAuthMode() {
   if (authMode) return authMode;
@@ -53,8 +59,44 @@ async function requestAccessToken() {
   }
 }
 
+async function refreshSupabaseSession() {
+  if (!auraRefreshToken) return false;
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch('/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: auraRefreshToken })
+      });
+      if (!response.ok) return false;
+      const session = await response.json();
+      if (!session.access_token || !session.refresh_token) return false;
+      auraSessionToken = session.access_token;
+      auraRefreshToken = session.refresh_token;
+      localStorage.setItem('aura_session_token', auraSessionToken);
+      localStorage.setItem('aura_refresh_token', auraRefreshToken);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+  return refreshPromise;
+}
+
+function clearAuthentication() {
+  localStorage.removeItem('aura_access_token');
+  localStorage.removeItem('aura_session_token');
+  localStorage.removeItem('aura_refresh_token');
+  auraAccessToken = '';
+  auraSessionToken = '';
+  auraRefreshToken = '';
+}
+
 const authenticatedFetch = async (url, options = {}) => {
-  const response = await fetch(url, {
+  const send = () => fetch(url, {
     ...options,
     headers: {
       ...(options.headers || {}),
@@ -65,12 +107,13 @@ const authenticatedFetch = async (url, options = {}) => {
           : {})
     }
   });
+  let response = await send();
+  if (response.status === 401 && auraRefreshToken && await refreshSupabaseSession()) {
+    response = await send();
+  }
   if (response.status === 401 && window.location.hostname !== 'localhost' &&
       window.location.hostname !== '127.0.0.1') {
-    localStorage.removeItem('aura_access_token');
-    localStorage.removeItem('aura_session_token');
-    auraAccessToken = '';
-    auraSessionToken = '';
+    clearAuthentication();
     requestAccessToken();
   }
   return response;
@@ -160,14 +203,16 @@ socket.on('disconnect', (reason) => {
   setOrbState('error', 'Connection lost. Reconnecting...');
 });
 
-socket.on('connect_error', (err) => {
+socket.on('connect_error', async (err) => {
   console.log('Connection error:', err.message);
   if (/auth|token|disabled/i.test(err.message)) {
+    if (await refreshSupabaseSession()) {
+      socket.auth.token = auraSessionToken;
+      socket.connect();
+      return;
+    }
     setOrbState('error', 'Authentication required');
-    localStorage.removeItem('aura_access_token');
-    localStorage.removeItem('aura_session_token');
-    auraAccessToken = '';
-    auraSessionToken = '';
+    clearAuthentication();
     requestAccessToken();
   } else {
     setOrbState('error', 'Connection error...');
