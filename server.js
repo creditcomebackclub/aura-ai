@@ -10,6 +10,8 @@ const cron = require('node-cron');
 const fs = require('fs');
 const compression = require('compression');
 const multer = require('multer');
+const crypto = require('crypto');
+const os = require('os');
 const scraper = require('./scraper');
 const mac = require('./mac_integration');
 const ccc = require('./ccc_database');
@@ -39,7 +41,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS goals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     description TEXT NOT NULL,
-    status TEXT DEFAULT 'pending'
+    status TEXT DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS finances (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +51,16 @@ db.exec(`
     description TEXT,
     date DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS alert_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
+// Migration for databases created before goals.created_at existed
+// SQLite disallows a non-constant (CURRENT_TIMESTAMP) default in ALTER TABLE ADD COLUMN,
+// so the column is added bare here and backfilled separately.
+try { db.exec("ALTER TABLE goals ADD COLUMN created_at DATETIME"); } catch (e) { /* column already exists */ }
+db.exec("UPDATE goals SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL");
 
 // AI Setup
 const aiProvider = process.env.AI_PROVIDER || 'openai';
@@ -119,6 +131,25 @@ async function querySemanticMemory(query, topK = 3) {
   
   scoredMemories.sort((a, b) => b.score - a.score);
   return scoredMemories.slice(0, topK).map(m => m.content);
+}
+
+// --- Proactive Agency: state tracking + alert dispatch --- //
+
+function getAlertState(key) {
+  const row = db.prepare('SELECT value FROM alert_state WHERE key = ?').get(key);
+  return row ? JSON.parse(row.value) : null;
+}
+
+function setAlertState(key, value) {
+  db.prepare(`
+    INSERT INTO alert_state (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, JSON.stringify(value));
+}
+
+function sendProactiveAlert(text) {
+  console.log('[Proactive Alert]', text);
+  io.emit('proactive-alert', { text });
 }
 
 // Define Tools for DeepSeek
@@ -300,7 +331,7 @@ async function handleToolCall(toolCall) {
   const args = JSON.parse(toolCall.function.arguments);
   switch (toolCall.function.name) {
     case 'add_goal':
-      db.prepare('INSERT INTO goals (description) VALUES (?)').run(args.description);
+      db.prepare("INSERT INTO goals (description, created_at) VALUES (?, CURRENT_TIMESTAMP)").run(args.description);
       return `Goal added: ${args.description}`;
     case 'update_goal_status':
       db.prepare('UPDATE goals SET status = ? WHERE id = ?').run(args.status, args.id);
@@ -473,24 +504,123 @@ io.on('connection', (socket) => {
   console.log('Frontend connected for proactive alerts.');
 });
 
-// Proactive Blackboard Check (Temporarily disabled since data is now raw text)
-/*
-cron.schedule('0 * * * *', async () => {
-  console.log('Running scheduled Blackboard check...');
-  
+// --- Proactive Agency: Cron Jobs --- //
+// These run unattended and push spoken alerts to any connected frontend via
+// the 'proactive-alert' socket event, without the user having to ask first.
+
+// Business health check, twice daily: newly-overdue clients + meaningful
+// swings in outstanding balance / MRR since the last check.
+cron.schedule('0 8,16 * * *', async () => {
+  console.log('[Cron] Running business health check...');
   try {
-    const assignments = await scraper.checkBlackboardAssignments();
-    
-    if (assignments && typeof assignments === 'string' && assignments.length > 50) {
-      // Logic for LLM to parse assignments would go here
+    const overdue = await ccc.getOverdueClients(3);
+    if (Array.isArray(overdue)) {
+      const previousNames = new Set(getAlertState('overdue_clients') || []);
+      const currentNames = overdue.map(o => o.client);
+      const newlyOverdue = overdue.filter(o => !previousNames.has(o.client));
+
+      if (newlyOverdue.length > 0) {
+        const list = newlyOverdue.map(o => `${o.client} ($${o.amount}, ${o.daysOverdue} days overdue)`).join(', ');
+        sendProactiveAlert(
+          newlyOverdue.length === 1
+            ? `Heads up — ${list} just crossed into overdue status.`
+            : `Heads up — ${newlyOverdue.length} clients just crossed into overdue status: ${list}.`
+        );
+      }
+      setAlertState('overdue_clients', currentNames);
+    }
+
+    const metricsJson = await ccc.calculateFinancialMetrics();
+    if (typeof metricsJson === 'string' && !metricsJson.startsWith('Error')) {
+      const parsed = JSON.parse(metricsJson);
+      const previous = getAlertState('financial_metrics');
+
+      if (previous) {
+        const toNumber = (v) => parseFloat(String(v).replace(/[^0-9.-]/g, '')) || 0;
+        const prevOutstanding = toNumber(previous.outstanding);
+        const currOutstanding = toNumber(parsed.outstanding);
+        const prevMRR = toNumber(previous.est_mrr);
+        const currMRR = toNumber(parsed.est_mrr);
+
+        if (Math.abs(currOutstanding - prevOutstanding) >= 100) {
+          const direction = currOutstanding > prevOutstanding ? 'risen' : 'fallen';
+          sendProactiveAlert(`Outstanding balance has ${direction} to ${parsed.outstanding}, from ${previous.outstanding} last check.`);
+        }
+        if (currMRR < prevMRR) {
+          sendProactiveAlert(`Heads up — estimated MRR dropped from ${previous.est_mrr} to ${parsed.est_mrr}.`);
+        }
+      }
+      setAlertState('financial_metrics', parsed);
     }
   } catch (error) {
-    console.error('Error in proactive blackboard check:', error);
+    console.error('Error in scheduled business check:', error);
   }
 });
-*/
+
+// Blackboard deadline check, once daily in the morning. Only speaks up if
+// the page actually changed since last time and something is due soon.
+cron.schedule('0 7 * * *', async () => {
+  console.log('[Cron] Running scheduled Blackboard check...');
+  try {
+    const scraped = await scraper.checkBlackboardAssignments();
+    if (!scraped || typeof scraped !== 'string' || scraped.length < 50) return;
+
+    const currentHash = crypto.createHash('sha1').update(scraped).digest('hex');
+    if (currentHash === getAlertState('blackboard_hash')) return;
+    setAlertState('blackboard_hash', currentHash);
+
+    const summary = await openai.chat.completions.create({
+      model: chatModel,
+      messages: [
+        {
+          role: 'system',
+          content: 'You monitor a students Blackboard/university portal page for upcoming assignment deadlines. Given the raw scraped page text, respond with ONE short spoken sentence naming only deadlines due within the next 3 days. Do not use markdown. If nothing is due within 3 days, respond with exactly: NONE'
+        },
+        { role: 'user', content: scraped }
+      ]
+    });
+
+    const text = summary.choices[0].message.content.trim();
+    if (text && text.toUpperCase() !== 'NONE') {
+      sendProactiveAlert(text);
+    }
+  } catch (error) {
+    console.error('Error in scheduled Blackboard check:', error);
+  }
+});
+
+// Stale goals nudge, once a week: anything still open after 14 days gets
+// surfaced so it doesn't just quietly rot in the tracker.
+cron.schedule('0 9 * * 1', () => {
+  console.log('[Cron] Running stale goals check...');
+  try {
+    const staleGoals = db.prepare(`
+      SELECT * FROM goals
+      WHERE status != 'completed'
+      AND created_at <= datetime('now', '-14 days')
+    `).all();
+
+    if (staleGoals.length > 0) {
+      const list = staleGoals.map(g => g.description).join('; ');
+      sendProactiveAlert(`You have ${staleGoals.length} goal${staleGoals.length > 1 ? 's' : ''} that have been open for over two weeks: ${list}. Want to update or drop any of them?`);
+    }
+  } catch (error) {
+    console.error('Error in stale goals check:', error);
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`AURA server running on http://localhost:${PORT}`);
+
+  // Print the LAN address too, so it's easy to open from a phone on the
+  // same Wi-Fi without hunting for the machine's IP separately.
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) {
+        console.log(`On your local network:  http://${net.address}:${PORT}`);
+      }
+    }
+  }
 });

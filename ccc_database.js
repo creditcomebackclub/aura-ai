@@ -135,4 +135,44 @@ async function calculateFinancialMetrics() {
   }
 }
 
-module.exports = { listTables, getTableSchema, queryTable, calculateFinancialMetrics };
+async function getOverdueClients(daysThreshold = 3) {
+  const db = initSupabase();
+  if (!db) return [];
+
+  try {
+    const { data: clients, error } = await db.from('clients')
+      .select('id, name, billing_status, ledger');
+    if (error) throw error;
+
+    const now = new Date();
+    const overdue = [];
+
+    for (const client of clients || []) {
+      if (!client.ledger || !Array.isArray(client.ledger)) continue;
+
+      for (const entry of client.ledger) {
+        if (entry.status !== 'Unpaid' && entry.status !== 'Pending') continue;
+        if (!(entry.amount > 0)) continue;
+
+        const dueDate = new Date(entry.due_date || entry.date || entry.created_at);
+        if (isNaN(dueDate.getTime())) continue;
+
+        const daysOverdue = Math.floor((now - dueDate) / 86400000);
+        if (daysOverdue >= daysThreshold) {
+          overdue.push({
+            client: client.name || `Client #${client.id}`,
+            amount: entry.amount,
+            daysOverdue
+          });
+        }
+      }
+    }
+
+    return overdue;
+  } catch (error) {
+    console.error('Error fetching overdue clients:', error.message);
+    return [];
+  }
+}
+
+module.exports = { listTables, getTableSchema, queryTable, calculateFinancialMetrics, getOverdueClients };
