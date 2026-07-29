@@ -213,6 +213,9 @@ const statusText = document.getElementById('status-text');
 const sourcePanel = document.getElementById('source-panel');
 const webAnswer = document.getElementById('web-answer');
 const sourceLinks = document.getElementById('source-links');
+const voiceWave = document.getElementById('voice-wave');
+const voiceWaveContext = voiceWave.getContext('2d');
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 // Global audio player for iOS Safari unlocking
 const audioPlayer = new Audio();
@@ -220,6 +223,11 @@ const audioPlayer = new Audio();
 let isListening = false;
 let isSpeaking = false;
 let audioUnlocked = false;
+let audioContext = null;
+let audioAnalyser = null;
+let audioSource = null;
+let waveformSamples = null;
+let waveformFrame = null;
 
 let mediaRecorder = null;
 let audioChunks = [];
@@ -235,6 +243,110 @@ function setOrbState(state, text) {
   orb.className = state;
   statusText.textContent = text;
 }
+
+function resizeVoiceWave() {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.round(voiceWave.clientWidth * pixelRatio));
+  const height = Math.max(1, Math.round(voiceWave.clientHeight * pixelRatio));
+  if (voiceWave.width !== width || voiceWave.height !== height) {
+    voiceWave.width = width;
+    voiceWave.height = height;
+  }
+}
+
+function drawVoiceWave(samples = null) {
+  resizeVoiceWave();
+  const width = voiceWave.width;
+  const height = voiceWave.height;
+  const centerY = height / 2;
+  const amplitude = height * 0.36;
+  voiceWaveContext.clearRect(0, 0, width, height);
+
+  const gradient = voiceWaveContext.createLinearGradient(0, 0, width, 0);
+  gradient.addColorStop(0, 'rgba(57, 137, 255, 0.08)');
+  gradient.addColorStop(0.5, isSpeaking
+    ? 'rgba(255, 174, 91, 0.95)'
+    : 'rgba(100, 185, 255, 0.48)');
+  gradient.addColorStop(1, 'rgba(57, 137, 255, 0.08)');
+
+  voiceWaveContext.beginPath();
+  voiceWaveContext.lineWidth = Math.max(2, width / 320);
+  voiceWaveContext.strokeStyle = gradient;
+  voiceWaveContext.lineCap = 'round';
+  voiceWaveContext.lineJoin = 'round';
+  voiceWaveContext.shadowBlur = isSpeaking ? 18 : 8;
+  voiceWaveContext.shadowColor = isSpeaking
+    ? 'rgba(255, 137, 45, 0.7)'
+    : 'rgba(72, 168, 255, 0.34)';
+
+  const pointCount = samples?.length || 72;
+  for (let index = 0; index < pointCount; index += 1) {
+    const progress = index / Math.max(1, pointCount - 1);
+    const edgeFade = Math.sin(Math.PI * progress);
+    const normalized = samples
+      ? (samples[index] - 128) / 128
+      : reducedMotion.matches
+        ? 0
+        : Math.sin(progress * Math.PI * 4) * 0.035;
+    const x = progress * width;
+    const y = centerY + normalized * amplitude * edgeFade;
+    if (index === 0) voiceWaveContext.moveTo(x, y);
+    else voiceWaveContext.lineTo(x, y);
+  }
+  voiceWaveContext.stroke();
+}
+
+function stopVoiceWave() {
+  if (waveformFrame) cancelAnimationFrame(waveformFrame);
+  waveformFrame = null;
+  voiceWave.classList.remove('speaking');
+  drawVoiceWave();
+}
+
+function animateVoiceWave() {
+  if (!isSpeaking) {
+    stopVoiceWave();
+    return;
+  }
+  if (audioAnalyser && waveformSamples) {
+    audioAnalyser.getByteTimeDomainData(waveformSamples);
+    drawVoiceWave(waveformSamples);
+  } else {
+    drawVoiceWave();
+  }
+  waveformFrame = requestAnimationFrame(animateVoiceWave);
+}
+
+async function ensureAudioGraph() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return false;
+  if (!audioContext) {
+    audioContext = new AudioContextClass();
+    audioAnalyser = audioContext.createAnalyser();
+    audioAnalyser.fftSize = 256;
+    audioAnalyser.smoothingTimeConstant = 0.82;
+    waveformSamples = new Uint8Array(audioAnalyser.fftSize);
+    audioSource = audioContext.createMediaElementSource(audioPlayer);
+    audioSource.connect(audioAnalyser);
+    audioAnalyser.connect(audioContext.destination);
+  }
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+  return true;
+}
+
+function startVoiceWave() {
+  if (waveformFrame) cancelAnimationFrame(waveformFrame);
+  voiceWave.classList.add('speaking');
+  waveformFrame = requestAnimationFrame(animateVoiceWave);
+}
+
+drawVoiceWave();
+window.addEventListener('resize', () => drawVoiceWave(
+  isSpeaking && waveformSamples ? waveformSamples : null
+));
+reducedMotion.addEventListener?.('change', () => drawVoiceWave());
 
 function safeWebUrl(value) {
   try {
@@ -313,6 +425,7 @@ function stopSpeaking() {
   audioPlayer.currentTime = 0;
   releaseAudioUrl();
   isSpeaking = false;
+  stopVoiceWave();
   setOrbState('idle', 'Tap to talk to AURA');
 }
 
@@ -334,13 +447,30 @@ function playAudioBlob(blob) {
   setOrbState('speaking', 'Speaking... Tap to stop');
   isSpeaking = true;
 
+  audioPlayer.onplay = startVoiceWave;
   audioPlayer.onended = () => {
     isSpeaking = false;
+    stopVoiceWave();
     releaseAudioUrl();
     setOrbState('idle', 'Tap to talk to AURA');
   };
+  audioPlayer.onerror = () => {
+    isSpeaking = false;
+    stopVoiceWave();
+    releaseAudioUrl();
+    setOrbState('error', 'Voice playback failed');
+  };
 
-  audioPlayer.play();
+  ensureAudioGraph()
+    .catch(() => false)
+    .finally(() => {
+      audioPlayer.play().catch(error => {
+        console.error('Audio playback error:', error);
+        isSpeaking = false;
+        stopVoiceWave();
+        setOrbState('error', 'Tap to enable voice');
+      });
+    });
 }
 
 // WebSocket Reconnection Handling
@@ -394,6 +524,7 @@ socket.on('proactive-alert', async (data) => {
 // Interaction & Microphone Permission Handling
 document.getElementById('orb-container').addEventListener('click', async () => {
   if (!audioUnlocked) {
+    await ensureAudioGraph().catch(() => false);
     audioPlayer.play().catch(() => {});
     audioUnlocked = true;
   }
@@ -411,6 +542,12 @@ document.getElementById('orb-container').addEventListener('click', async () => {
     // Tap to START listening
     await startListening();
   }
+});
+
+document.getElementById('orb-container').addEventListener('keydown', event => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  event.currentTarget.click();
 });
 
 async function startListening() {

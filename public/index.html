@@ -33,17 +33,20 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20260729-wave1">
 </head>
 <body>
-  <h1 id="aura-title">AURA</h1>
-  <div id="orb-container">
+  <div
+    id="orb-container"
+    role="button"
+    tabindex="0"
+    aria-label="Talk to AURA"
+    aria-describedby="status-text"
+  >
     <div id="orb" class="idle"></div>
   </div>
-  <div id="status-text">Tap to talk to AURA</div>
+  <canvas id="voice-wave" width="640" height="120" aria-hidden="true"></canvas>
+  <div id="status-text" role="status" aria-live="polite">Tap to talk to AURA</div>
   <section id="source-panel" hidden aria-label="Sources used for AURA's last answer">
     <div id="source-label">Live web result</div>
     <div id="web-answer"></div>
@@ -51,6 +54,6 @@
   </section>
   
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=20260729-web2"></script>
+  <script src="app.js?v=20260729-wave1"></script>
 </body>
 </html>

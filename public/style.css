@@ -19,6 +19,7 @@ body {
   color: white;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -27,22 +28,6 @@ body {
   user-select: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-#aura-title {
-  position: absolute;
-  top: 15%;
-  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 3.2rem;
-  font-weight: 200;
-  letter-spacing: 14px;
-  text-transform: uppercase;
-  margin-left: 14px; /* offset for letter-spacing to visually center */
-  background: linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.2) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  opacity: 0.9;
-  z-index: 10;
 }
 
 #orb-container {
@@ -54,6 +39,16 @@ body {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   position: relative;
+}
+
+#orb-container:focus {
+  outline: none;
+}
+
+#orb-container:focus-visible {
+  outline: 1px solid rgba(142, 203, 255, 0.72);
+  outline-offset: -42px;
+  border-radius: 50%;
 }
 
 /* Glassmorphism halo effect behind orb */
@@ -125,20 +120,34 @@ body {
   border-color: rgba(255, 100, 100, 0.6);
 }
 
+#voice-wave {
+  display: block;
+  width: min(82vw, 560px);
+  height: 86px;
+  margin-top: -44px;
+  opacity: 0.52;
+  pointer-events: none;
+  filter: drop-shadow(0 0 10px rgba(73, 168, 255, 0.22));
+  transition: opacity 320ms ease, filter 320ms ease;
+}
+
+#voice-wave.speaking {
+  opacity: 1;
+  filter: drop-shadow(0 0 14px rgba(255, 142, 55, 0.52));
+}
+
 #status-text {
-  display: none;
-  margin-top: 50px;
-  font-size: 1.15rem;
-  font-weight: 300;
-  letter-spacing: 2.5px;
-  opacity: 0.85;
-  color: rgba(255, 255, 255, 0.9);
-  text-transform: uppercase;
-  transition: opacity 0.4s ease, transform 0.4s ease;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 #source-panel {
+  display: none;
   position: absolute;
   left: 50%;
   bottom: max(28px, env(safe-area-inset-bottom));
@@ -220,10 +229,24 @@ body {
   background: rgba(255, 255, 255, 0.14);
 }
 
+@media (min-width: 900px) and (pointer: fine) {
+  #source-panel:not([hidden]) {
+    display: block;
+  }
+}
+
+@media (display-mode: standalone) and (max-width: 899px) {
+  #source-panel {
+    display: none !important;
+  }
+}
+
 /* Hover effects for premium feel */
-#orb-container:hover #orb.idle {
-  transform: scale(1.05);
-  box-shadow: 0 0 80px 20px var(--orb-glow-idle), inset 0 0 35px rgba(0, 150, 255, 0.6);
+@media (hover: hover) {
+  #orb-container:hover #orb.idle {
+    transform: scale(1.05);
+    box-shadow: 0 0 80px 20px var(--orb-glow-idle), inset 0 0 35px rgba(0, 150, 255, 0.6);
+  }
 }
 
 #orb-container:active #orb {
@@ -258,4 +281,18 @@ body {
   20%, 80% { transform: translate3d(2px, 0, 0); }
   30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
   40%, 60% { transform: translate3d(4px, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #orb,
+  #orb-container::before,
+  #voice-wave {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  #voice-wave,
+  #voice-wave.speaking {
+    filter: none;
+  }
 }

@@ -1,9 +1,45 @@
 const { createClient } = require('@supabase/supabase-js');
 
+const MEMORY_EXTRACTION_JOB_PREFIX = 'memory_extraction_job_v1:';
+const ACTIVE_MEMORY_JOB_STATUSES = ['queued', 'retry_wait', 'processing'];
+
+function memoryExtractionJobFromRow(row) {
+  if (!row?.key?.startsWith(MEMORY_EXTRACTION_JOB_PREFIX) ||
+      !row.value || typeof row.value !== 'object') {
+    return null;
+  }
+  return {
+    ...row.value,
+    id: row.key.slice(MEMORY_EXTRACTION_JOB_PREFIX.length),
+    key: row.key,
+    _row_updated_at: row.updated_at
+  };
+}
+
+function isMemoryExtractionJobDue(job, nowMs = Date.now()) {
+  if (!job) return false;
+  if (job.status === 'queued') return true;
+  if (job.status === 'retry_wait') {
+    return !job.available_at || Date.parse(job.available_at) <= nowMs;
+  }
+  if (job.status === 'processing') {
+    return !job.lease_expires_at || Date.parse(job.lease_expires_at) <= nowMs;
+  }
+  return false;
+}
+
+function nextRowTimestamp(previousTimestamp, nowMs = Date.now()) {
+  const previousMs = Date.parse(previousTimestamp);
+  return new Date(Math.max(
+    nowMs,
+    Number.isFinite(previousMs) ? previousMs + 1 : nowMs
+  )).toISOString();
+}
+
 class SupabaseStateStore {
-  constructor({ url, serviceKey, ownerId, embeddingProvider = null }) {
+  constructor({ url, serviceKey, ownerId, embeddingProvider = null, client = null }) {
     if (!ownerId) throw new Error('AURA_OWNER_ID is required for Supabase state.');
-    this.client = createClient(url, serviceKey);
+    this.client = client || createClient(url, serviceKey);
     this.ownerId = ownerId;
     this.embeddingProvider = embeddingProvider;
     this.conversationId = null;
@@ -36,17 +72,18 @@ class SupabaseStateStore {
 
   async addMessage(role, content, metadata = {}) {
     const conversationId = await this.ensureConversation();
-    const { error } = await this.client.from('aura_messages').insert({
+    const { data, error } = await this.client.from('aura_messages').insert({
       conversation_id: conversationId,
       owner_id: this.ownerId,
       role,
       content,
       metadata
-    });
+    }).select('id, role, created_at').single();
     if (error) throw error;
     await this.client.from('aura_conversations')
       .update({ updated_at: new Date().toISOString() })
       .eq('id', conversationId);
+    return data;
   }
 
   async recentMessages(limit = 15) {
@@ -187,6 +224,17 @@ class SupabaseStateStore {
       embedding,
       expires_at: options.expiresAt || null
     }).select('id').single();
+    if (error?.code === '23505') {
+      const { data: duplicate, error: duplicateError } = await this.client
+        .from('aura_memories')
+        .select('id')
+        .eq('owner_id', this.ownerId)
+        .eq('content', normalized)
+        .is('superseded_by', null)
+        .single();
+      if (duplicateError) throw duplicateError;
+      return { id: duplicate.id, deduplicated: true };
+    }
     if (error) throw error;
     return { id: data.id, deduplicated: false };
   }
@@ -354,6 +402,175 @@ class SupabaseStateStore {
     return data;
   }
 
+  async enqueueMemoryExtraction(messageId, { maxAttempts = 5 } = {}) {
+    const normalizedMessageId = String(messageId || '');
+    if (!/^\d+$/.test(normalizedMessageId)) {
+      throw new Error('A persisted user message id is required.');
+    }
+    const key = `${MEMORY_EXTRACTION_JOB_PREFIX}${normalizedMessageId}`;
+    const now = new Date().toISOString();
+    const value = {
+      version: 1,
+      type: 'memory_extraction',
+      message_id: normalizedMessageId,
+      idempotency_key: `message:${normalizedMessageId}`,
+      status: 'queued',
+      attempts: 0,
+      max_attempts: Math.max(1, Math.min(20, Number(maxAttempts) || 5)),
+      available_at: now,
+      lease_token: null,
+      lease_expires_at: null,
+      created_at: now,
+      completed_at: null,
+      learned_count: null,
+      skipped: null,
+      last_error: null
+    };
+    const { data, error } = await this.client.from('aura_state').insert({
+      owner_id: this.ownerId,
+      key,
+      value,
+      updated_at: now
+    }).select('key, value, updated_at').single();
+    if (!error) return { ...memoryExtractionJobFromRow(data), deduplicated: false };
+    if (error.code !== '23505') throw error;
+
+    const existing = await this.getMemoryExtractionJob(normalizedMessageId);
+    if (!existing) throw error;
+    return { ...existing, deduplicated: true };
+  }
+
+  async getMemoryExtractionJob(messageId) {
+    const key = `${MEMORY_EXTRACTION_JOB_PREFIX}${String(messageId || '')}`;
+    const { data, error } = await this.client.from('aura_state')
+      .select('key, value, updated_at')
+      .eq('owner_id', this.ownerId)
+      .eq('key', key)
+      .maybeSingle();
+    if (error) throw error;
+    return memoryExtractionJobFromRow(data);
+  }
+
+  async getMessageForMemoryExtraction(messageId) {
+    const { data, error } = await this.client.from('aura_messages')
+      .select('id, role, content, created_at')
+      .eq('owner_id', this.ownerId)
+      .eq('id', messageId)
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async transitionMemoryExtractionJob(job, value) {
+    if (!job?.key || !job._row_updated_at) return null;
+    const updatedAt = nextRowTimestamp(job._row_updated_at);
+    const { data, error } = await this.client.from('aura_state')
+      .update({ value, updated_at: updatedAt })
+      .eq('owner_id', this.ownerId)
+      .eq('key', job.key)
+      .eq('updated_at', job._row_updated_at)
+      .select('key, value, updated_at')
+      .maybeSingle();
+    if (error) throw error;
+    return memoryExtractionJobFromRow(data);
+  }
+
+  async claimNextMemoryExtraction({ leaseMs = 5 * 60 * 1000, scanLimit = 250 } = {}) {
+    const { data, error } = await this.client.from('aura_state')
+      .select('key, value, updated_at')
+      .eq('owner_id', this.ownerId)
+      .like('key', `${MEMORY_EXTRACTION_JOB_PREFIX}%`)
+      .in('value->>status', ACTIVE_MEMORY_JOB_STATUSES)
+      .order('updated_at', { ascending: true })
+      .limit(Math.max(1, Math.min(1000, Number(scanLimit) || 250)));
+    if (error) throw error;
+
+    const nowMs = Date.now();
+    const candidates = (data || [])
+      .map(memoryExtractionJobFromRow)
+      .filter(job => isMemoryExtractionJobDue(job, nowMs))
+      .sort((a, b) => {
+        const aDue = Date.parse(a.available_at || a.lease_expires_at || a.created_at) || 0;
+        const bDue = Date.parse(b.available_at || b.lease_expires_at || b.created_at) || 0;
+        return aDue - bDue;
+      });
+
+    for (const job of candidates) {
+      const leaseToken = require('crypto').randomUUID();
+      const claimedAt = new Date().toISOString();
+      const claimed = await this.transitionMemoryExtractionJob(job, {
+        ...job,
+        id: undefined,
+        key: undefined,
+        _row_updated_at: undefined,
+        status: 'processing',
+        attempts: (Number(job.attempts) || 0) + 1,
+        lease_token: leaseToken,
+        lease_expires_at: new Date(nowMs + Math.max(1000, Number(leaseMs) || 300000))
+          .toISOString(),
+        claimed_at: claimedAt
+      });
+      if (claimed) return claimed;
+    }
+    return null;
+  }
+
+  async completeMemoryExtraction(job, { learnedCount = 0, skipped = null } = {}) {
+    const completedAt = new Date().toISOString();
+    return this.transitionMemoryExtractionJob(job, {
+      version: job.version || 1,
+      type: 'memory_extraction',
+      message_id: job.message_id,
+      idempotency_key: job.idempotency_key,
+      status: 'succeeded',
+      attempts: job.attempts,
+      max_attempts: job.max_attempts,
+      available_at: null,
+      lease_token: null,
+      lease_expires_at: null,
+      created_at: job.created_at,
+      completed_at: completedAt,
+      learned_count: Math.max(0, Number(learnedCount) || 0),
+      skipped,
+      last_error: null
+    });
+  }
+
+  async retryMemoryExtraction(
+    job,
+    error,
+    { delayMs = 15000, maxAttempts = 5 } = {}
+  ) {
+    const attemptLimit = Math.max(
+      1,
+      Math.min(20, Number(job.max_attempts || maxAttempts) || 5)
+    );
+    const exhausted = Number(job.attempts) >= attemptLimit;
+    return this.transitionMemoryExtractionJob(job, {
+      version: job.version || 1,
+      type: 'memory_extraction',
+      message_id: job.message_id,
+      idempotency_key: job.idempotency_key,
+      status: exhausted ? 'failed' : 'retry_wait',
+      attempts: job.attempts,
+      max_attempts: attemptLimit,
+      available_at: exhausted
+        ? null
+        : new Date(Date.now() + Math.max(1000, Number(delayMs) || 15000)).toISOString(),
+      lease_token: null,
+      lease_expires_at: null,
+      created_at: job.created_at,
+      completed_at: exhausted ? new Date().toISOString() : null,
+      learned_count: null,
+      skipped: null,
+      last_error: {
+        code: String(error?.code || 'MEMORY_EXTRACTION_FAILED').slice(0, 80),
+        message: String(error?.message || 'Memory extraction failed.').slice(0, 500),
+        at: new Date().toISOString()
+      }
+    });
+  }
+
   async getOwnerProfile() {
     const value = await this.getState('owner_profile_v1');
     return value && typeof value === 'object'
@@ -416,4 +633,10 @@ class SupabaseStateStore {
   }
 }
 
-module.exports = { SupabaseStateStore };
+module.exports = {
+  MEMORY_EXTRACTION_JOB_PREFIX,
+  SupabaseStateStore,
+  isMemoryExtractionJobDue,
+  memoryExtractionJobFromRow,
+  nextRowTimestamp
+};

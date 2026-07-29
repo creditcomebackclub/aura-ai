@@ -386,7 +386,14 @@ class MemoryV2 {
       .filter(Boolean);
   }
 
-  async learnFromUserMessage(text, { source = 'conversation', explicit = false } = {}) {
+  async learnFromUserMessage(
+    text,
+    {
+      source = 'conversation',
+      explicit = false,
+      throwOnExtractionError = false
+    } = {}
+  ) {
     const normalized = String(text || '').trim();
     if (!normalized || containsSecret(normalized)) {
       return { learned: [], skipped: containsSecret(normalized) ? 'contains_secret' : 'empty' };
@@ -395,9 +402,11 @@ class MemoryV2 {
     const currentProfile = await this.profileStore.getOwnerProfile();
     const deterministic = deterministicEntries(normalized, source);
     let extracted = [];
+    let extractionError = null;
     try {
       extracted = await this.extractWithModel(normalized, source, currentProfile);
     } catch (error) {
+      extractionError = error;
       console.warn('[Memory v2] Durable-fact extraction failed:', error.message);
     }
 
@@ -420,7 +429,10 @@ class MemoryV2 {
       if (fallback) merged.set(fallback.key, fallback);
     }
 
-    if (!merged.size) return { learned: [] };
+    if (!merged.size) {
+      if (extractionError && throwOnExtractionError) throw extractionError;
+      return { learned: [] };
+    }
     const learned = [];
     const replacedKeys = new Set();
     for (const entry of merged.values()) {
@@ -450,6 +462,12 @@ class MemoryV2 {
       await this.profileStore.removeOwnerProfileEntries([...replacedKeys]);
     }
     await this.profileStore.upsertOwnerProfileEntries(learned);
+    // Deterministic entries are still persisted during a provider outage, but
+    // the durable worker retries so Luna can recover any additional facts.
+    if (extractionError && throwOnExtractionError) {
+      extractionError.learned = learned;
+      throw extractionError;
+    }
     return { learned };
   }
 

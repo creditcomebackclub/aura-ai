@@ -83,6 +83,12 @@ memory. Inspect the structured profile at `GET /api/profile`, remove one entry
 with `DELETE /api/profile/:key`, and inspect semantic memories at
 `GET /api/memories`.
 
+Ordinary conversation extraction is queued durably in Supabase and runs after
+the chat response is returned. Jobs are keyed to persisted user messages,
+leased idempotently, retried with bounded backoff, and resumed whenever the
+service wakes. Explicit remember, correct, and forget commands remain
+synchronous.
+
 After enabling Memory v2, existing conversations can be scanned once for a
 small set of deterministic relationship, communication, and pronunciation
 facts without sending the historical transcript to a model:
@@ -97,6 +103,13 @@ Normal conversation and tool decisions use `AURA_CHAT_MODEL` (currently
 `gpt-5.6-sol`) with `AURA_REASONING_EFFORT=medium`. Automatic durable-fact
 extraction and rolling summaries use the lower-cost `AURA_MEMORY_MODEL`
 (`gpt-5.6-luna`). Both choices are environment-configurable.
+
+## Voice interface
+
+The phone and home-screen interface is text-free. A canvas waveform reacts to
+AURA's actual speech through the Web Audio API, with a reduced-motion fallback.
+Sourced live-web results remain readable and clickable on desktop screens with
+a fine pointer, while staying hidden on the mobile voice surface.
 
 ## Notifications
 
@@ -197,6 +210,7 @@ owner approves or rejects them.
 - `agent_policy.js` — tool authorization and argument validation
 - `memory_store.js` — structured long-term memory
 - `memory_v2.js` — pinned profile, extraction, corrections, retrieval, summaries
+- `memory_extraction_queue.js` — durable asynchronous Luna extraction and retries
 - `model_router.js` — Sol/Luna model configuration
 - `supabase_state_store.js` — cloud conversations, memory, tasks, and approvals
 - `companion_worker.js` — outbound Mac capability worker
