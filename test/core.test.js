@@ -3,6 +3,15 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { MemoryStore } = require('../memory_store');
 const {
+  ConversationSummaryService,
+  MemoryV2,
+  buildProfileContext,
+  deterministicEntries,
+  findProfileMatches,
+  parseMemoryCommand
+} = require('../memory_v2');
+const { brainRequestOptions, resolveModelConfig } = require('../model_router');
+const {
   getToolPolicy,
   parseAndAuthorizeToolCall,
   validatePublicSearchInput
@@ -117,6 +126,320 @@ test('memory degrades gracefully when embeddings fail', async () => {
   assert.deepEqual(await store.search('preference'), []);
   assert.equal(store.list().length, 1);
   db.close();
+});
+
+function createProfileStore(initialEntries = {}) {
+  let profile = { version: 1, entries: { ...initialEntries }, updated_at: null };
+  return {
+    async getOwnerProfile() {
+      return structuredClone(profile);
+    },
+    async upsertOwnerProfileEntries(entries) {
+      for (const entry of entries) profile.entries[entry.key] = structuredClone(entry);
+      return structuredClone(profile);
+    },
+    async removeOwnerProfileEntries(keys) {
+      for (const key of keys) delete profile.entries[key];
+      return structuredClone(profile);
+    }
+  };
+}
+
+function createSemanticMemory() {
+  let nextId = 1;
+  const rows = new Map();
+  const superseded = [];
+  return {
+    rows,
+    superseded,
+    async save(content, options = {}) {
+      const existing = [...rows.values()].find(row =>
+        row.content.toLowerCase() === content.toLowerCase() && !row.superseded_by
+      );
+      if (existing) return { id: existing.id, deduplicated: true };
+      const row = { id: nextId++, content, ...options };
+      rows.set(row.id, row);
+      return { id: row.id, deduplicated: false };
+    },
+    async search() {
+      return [...rows.values()].filter(row => !row.superseded_by);
+    },
+    async list() {
+      return [...rows.values()].filter(row => !row.superseded_by);
+    },
+    async forget(id) {
+      return rows.delete(id);
+    },
+    async supersede(id, replacementId) {
+      const row = rows.get(id);
+      if (!row) return false;
+      row.superseded_by = replacementId;
+      superseded.push({ id, replacementId });
+      return true;
+    }
+  };
+}
+
+function extractionClient(entries) {
+  const queue = Array.isArray(entries[0]) ? [...entries] : [entries];
+  return {
+    chat: {
+      completions: {
+        async create() {
+          return {
+            choices: [{
+              message: {
+                content: JSON.stringify({ entries: queue.shift() || [] })
+              }
+            }]
+          };
+        }
+      }
+    }
+  };
+}
+
+test('explicit remember, forget, and correction commands are deterministic', () => {
+  assert.deepEqual(
+    parseMemoryCommand('Remember that my preferred meeting time is 10 AM'),
+    { type: 'remember', content: 'my preferred meeting time is 10 AM' }
+  );
+  assert.deepEqual(
+    parseMemoryCommand('Forget about my preferred meeting time'),
+    { type: 'forget', query: 'my preferred meeting time' }
+  );
+  assert.deepEqual(
+    parseMemoryCommand('Correction: my preferred meeting time is 11 AM'),
+    { type: 'correct', content: 'my preferred meeting time is 11 AM' }
+  );
+});
+
+test('family relationships and permanent communication rules are extracted without a model', () => {
+  const entries = deterministicEntries(
+    "My daughters' names are Ava and Mia. Don't end every reply by saying if there is anything else."
+  );
+  assert.deepEqual(
+    entries.filter(entry => entry.kind === 'relationship').map(entry => entry.value),
+    ['Ava', 'Mia']
+  );
+  const communication = entries.find(entry => entry.key === 'communication.generic_signoff');
+  assert.equal(communication.pinned, true);
+  assert.match(communication.instruction, /Do not end responses/);
+});
+
+test('family relationships are recovered from a longer owner introduction', () => {
+  const entries = deterministicEntries(
+    'I have two daughters. They love art. Their names are Ava and Mia.'
+  );
+  assert.deepEqual(
+    entries.filter(entry => entry.kind === 'relationship').map(entry => entry.value),
+    ['Ava', 'Mia']
+  );
+});
+
+test('pinned owner facts and communication preferences load on every turn', () => {
+  const context = buildProfileContext({
+    entries: {
+      'people.ava': {
+        key: 'people.ava',
+        kind: 'relationship',
+        value: 'Ava',
+        subject: 'Ava',
+        relationship: 'daughter',
+        pinned: true
+      },
+      'communication.generic_signoff': {
+        key: 'communication.generic_signoff',
+        kind: 'communication',
+        value: 'disabled',
+        instruction: 'Do not use generic sign-offs.',
+        pinned: true
+      }
+    }
+  });
+  assert.match(context, /Ava: relationship=daughter/);
+  assert.match(context, /Do not use generic sign-offs/);
+});
+
+test('structured relationship lookup handles plural family language', () => {
+  const matches = findProfileMatches({
+    entries: {
+      'people.ava': {
+        key: 'people.ava',
+        kind: 'relationship',
+        value: 'Ava',
+        subject: 'Ava',
+        relationship: 'daughter',
+        pinned: true
+      }
+    }
+  }, "What is my daughter's name?");
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].value, 'Ava');
+});
+
+test('automatic learning saves structured profile entries and semantic memory', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  const client = extractionClient([{
+    key: 'preference.meeting_time',
+    kind: 'preference',
+    value: '10 AM',
+    subject: '',
+    relationship: '',
+    instruction: 'Prefer meetings at 10 AM.',
+    replaces_key: '',
+    pinned: true,
+    confidence: 0.95
+  }]);
+  const memory = new MemoryV2({ profileStore, semanticMemory, client });
+  const result = await memory.learnFromUserMessage('I prefer meetings at 10 AM.');
+  assert.equal(result.learned.length, 1);
+  assert.equal((await profileStore.getOwnerProfile()).entries['preference.meeting_time'].value, '10 AM');
+  assert.equal(semanticMemory.rows.size, 1);
+});
+
+test('model and deterministic communication preferences merge into one canonical rule', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  const client = extractionClient([{
+    key: 'communication.avoid_closing_offer',
+    kind: 'communication',
+    value: 'Do not say if there is anything else.',
+    subject: '',
+    relationship: '',
+    instruction: 'Avoid generic offers of additional help.',
+    replaces_key: '',
+    pinned: true,
+    confidence: 0.95
+  }]);
+  const memory = new MemoryV2({ profileStore, semanticMemory, client });
+  const result = await memory.learnFromUserMessage(
+    "Don't end every reply by saying if there is anything else."
+  );
+  assert.equal(result.learned.length, 1);
+  assert.equal(result.learned[0].key, 'communication.generic_signoff');
+  assert.deepEqual(
+    Object.keys((await profileStore.getOwnerProfile()).entries),
+    ['communication.generic_signoff']
+  );
+});
+
+test('explicit corrections supersede the old memory and replace its profile key', async () => {
+  const profileStore = createProfileStore({
+    'people.emily': {
+      key: 'people.emily',
+      kind: 'relationship',
+      value: 'Emily',
+      subject: 'Emily',
+      relationship: 'daughter',
+      pinned: true,
+      memory_id: 1
+    }
+  });
+  const semanticMemory = createSemanticMemory();
+  await semanticMemory.save("Emily is the owner's daughter.", { kind: 'relationship' });
+  const client = extractionClient([{
+    key: 'people.emma',
+    kind: 'relationship',
+    value: 'Emma',
+    subject: 'Emma',
+    relationship: 'daughter',
+    instruction: '',
+    replaces_key: 'people.emily',
+    pinned: true,
+    confidence: 1
+  }]);
+  const memory = new MemoryV2({ profileStore, semanticMemory, client });
+  await memory.learnFromUserMessage('Her name is Emma, not Emily.', {
+    source: 'explicit_correction',
+    explicit: true
+  });
+  const profile = await profileStore.getOwnerProfile();
+  assert.equal(profile.entries['people.emily'], undefined);
+  assert.equal(profile.entries['people.emma'].value, 'Emma');
+  assert.deepEqual(semanticMemory.superseded, [{ id: 1, replacementId: 2 }]);
+});
+
+test('forget removes matching structured facts and linked semantic memories', async () => {
+  const profileStore = createProfileStore({
+    'people.ava': {
+      key: 'people.ava',
+      kind: 'relationship',
+      value: 'Ava',
+      subject: 'Ava',
+      relationship: 'daughter',
+      pinned: true,
+      memory_id: 1
+    },
+    'people.mia': {
+      key: 'people.mia',
+      kind: 'relationship',
+      value: 'Mia',
+      subject: 'Mia',
+      relationship: 'daughter',
+      pinned: true,
+      memory_id: 2
+    }
+  });
+  const semanticMemory = createSemanticMemory();
+  semanticMemory.rows.set(1, { id: 1, content: "Ava is the owner's daughter." });
+  semanticMemory.rows.set(2, { id: 2, content: "Mia is the owner's daughter." });
+  const memory = new MemoryV2({ profileStore, semanticMemory });
+  const result = await memory.forget("my daughters' names");
+  assert.equal(result.forgotten, true);
+  assert.deepEqual((await profileStore.getOwnerProfile()).entries, {});
+  assert.equal(semanticMemory.rows.size, 0);
+});
+
+test('rolling summaries update only after the message threshold', async () => {
+  let update = null;
+  const messages = Array.from({ length: 4 }, (_, index) => ({
+    id: index + 1,
+    role: index % 2 ? 'assistant' : 'user',
+    content: `message ${index + 1}`
+  }));
+  const stateStore = {
+    async messagesForSummary() {
+      return { existingSummary: 'Earlier context.', messages };
+    },
+    async updateConversationSummary(summary, throughMessageId) {
+      update = { summary, throughMessageId };
+    }
+  };
+  const client = {
+    chat: {
+      completions: {
+        async create() {
+          return {
+            choices: [{ message: { content: JSON.stringify({ summary: 'Updated context.' }) } }]
+          };
+        }
+      }
+    }
+  };
+  const service = new ConversationSummaryService({
+    stateStore,
+    client,
+    minimumMessages: 4
+  });
+  assert.deepEqual(await service.maybeSummarize(), { updated: true, throughMessageId: 4 });
+  assert.deepEqual(update, { summary: 'Updated context.', throughMessageId: 4 });
+});
+
+test('model routing defaults to Sol with Luna for memory work', () => {
+  const config = resolveModelConfig({});
+  assert.equal(config.primaryModel, 'gpt-5.6-sol');
+  assert.equal(config.memoryModel, 'gpt-5.6-luna');
+  assert.equal(config.reasoningEffort, 'medium');
+  assert.deepEqual(
+    brainRequestOptions(config, { messages: [] }),
+    {
+      messages: [],
+      model: 'gpt-5.6-sol',
+      reasoning_effort: 'medium'
+    }
+  );
 });
 
 test('bureau-specific letter labels become concise client phases', () => {

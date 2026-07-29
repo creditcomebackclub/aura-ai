@@ -61,6 +61,43 @@ uses Supabase Auth instead.
 The existing `semantic_memory.json` file is imported non-destructively into the
 structured SQLite memory table at startup.
 
+## Memory v2
+
+AURA keeps an always-loaded owner profile for stable identity facts, people and
+relationships, communication preferences, pronunciations, and business rules.
+Other durable facts remain searchable through hybrid exact and vector retrieval.
+Conversation continuity is maintained with rolling summaries in Supabase.
+
+AURA extracts durable facts automatically with the configured background model.
+These commands are also handled explicitly:
+
+```text
+Remember that I prefer meetings at 10 AM.
+Forget about my preferred meeting time.
+Correction: I prefer meetings at 11 AM.
+Pronounce "WK 4" as "week four."
+```
+
+Credentials, tokens, passwords, and one-time codes are never eligible for
+memory. Inspect the structured profile at `GET /api/profile`, remove one entry
+with `DELETE /api/profile/:key`, and inspect semantic memories at
+`GET /api/memories`.
+
+After enabling Memory v2, existing conversations can be scanned once for a
+small set of deterministic relationship, communication, and pronunciation
+facts without sending the historical transcript to a model:
+
+```bash
+npm run backfill:memory-v2
+```
+
+## Models
+
+Normal conversation and tool decisions use `AURA_CHAT_MODEL` (currently
+`gpt-5.6-sol`) with `AURA_REASONING_EFFORT=medium`. Automatic durable-fact
+extraction and rolling summaries use the lower-cost `AURA_MEMORY_MODEL`
+(`gpt-5.6-luna`). Both choices are environment-configurable.
+
 ## Notifications
 
 Proactive alerts are persisted before being emitted over WebSockets, so alerts
@@ -95,10 +132,12 @@ npm test
 npm run eval
 ```
 
-The unit suite covers tool authorization and validation, structured memory
-deduplication and retrieval, deletion, and graceful embedding outages. The live
-evaluation suite checks real model tool selection, business lookup behavior, and
-a prompt-injection regression case. Add scenarios to `eval/cases.json`.
+The unit suite covers tool authorization and validation, structured owner
+profiles, automatic extraction, corrections, forgetting, rolling summaries,
+hybrid retrieval, memory deduplication, and graceful embedding outages. The
+live evaluation suite checks real model tool selection, business lookup
+behavior, and a prompt-injection regression case. Add scenarios to
+`eval/cases.json`.
 
 ## Automatic Mac service
 
@@ -157,6 +196,8 @@ owner approves or rejects them.
 - `server.js` — HTTP/WebSocket server, agent loop, tools, cron jobs
 - `agent_policy.js` — tool authorization and argument validation
 - `memory_store.js` — structured long-term memory
+- `memory_v2.js` — pinned profile, extraction, corrections, retrieval, summaries
+- `model_router.js` — Sol/Luna model configuration
 - `supabase_state_store.js` — cloud conversations, memory, tasks, and approvals
 - `companion_worker.js` — outbound Mac capability worker
 - `ccc_database.js` — read-only CCC data/domain queries

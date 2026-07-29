@@ -111,6 +111,14 @@ class MemoryStore {
   forget(id) {
     return this.db.prepare('DELETE FROM semantic_memories WHERE id = ?').run(id).changes > 0;
   }
+
+  supersede(id, replacementId) {
+    return this.db.prepare(`
+      UPDATE semantic_memories
+      SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND superseded_by IS NULL
+    `).run(replacementId, id).changes > 0;
+  }
 }
 
 module.exports = { MemoryStore };

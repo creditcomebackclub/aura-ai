@@ -7,6 +7,7 @@ class SupabaseStateStore {
     this.ownerId = ownerId;
     this.embeddingProvider = embeddingProvider;
     this.conversationId = null;
+    this.profileWrite = Promise.resolve();
   }
 
   async ensureConversation() {
@@ -59,6 +60,78 @@ class SupabaseStateStore {
       .limit(limit);
     if (error) throw error;
     return (data || []).reverse().map(({ role, content }) => ({ role, content }));
+  }
+
+  async getConversationContext(limit = 30) {
+    const conversationId = await this.ensureConversation();
+    const [{ data: conversation, error: conversationError }, messages] = await Promise.all([
+      this.client
+        .from('aura_conversations')
+        .select('summary, metadata')
+        .eq('id', conversationId)
+        .eq('owner_id', this.ownerId)
+        .single(),
+      this.recentMessages(limit)
+    ]);
+    if (conversationError) throw conversationError;
+    return {
+      summary: conversation?.summary || '',
+      metadata: conversation?.metadata || {},
+      messages
+    };
+  }
+
+  async messagesForSummary(limit = 80) {
+    const conversationId = await this.ensureConversation();
+    const { data: conversation, error: conversationError } = await this.client
+      .from('aura_conversations')
+      .select('summary, metadata')
+      .eq('id', conversationId)
+      .eq('owner_id', this.ownerId)
+      .single();
+    if (conversationError) throw conversationError;
+
+    let query = this.client
+      .from('aura_messages')
+      .select('id, role, content, created_at')
+      .eq('conversation_id', conversationId)
+      .in('role', ['user', 'assistant'])
+      .order('id', { ascending: true })
+      .limit(Math.max(1, Math.min(200, limit)));
+    const summarizedThrough = Number(conversation?.metadata?.summary_through_message_id) || 0;
+    if (summarizedThrough > 0) query = query.gt('id', summarizedThrough);
+    const { data, error } = await query;
+    if (error) throw error;
+    return {
+      existingSummary: conversation?.summary || '',
+      summarizedThrough,
+      messages: data || []
+    };
+  }
+
+  async updateConversationSummary(summary, throughMessageId) {
+    const conversationId = await this.ensureConversation();
+    const { data: current, error: currentError } = await this.client
+      .from('aura_conversations')
+      .select('metadata')
+      .eq('id', conversationId)
+      .eq('owner_id', this.ownerId)
+      .single();
+    if (currentError) throw currentError;
+    const metadata = {
+      ...(current?.metadata || {}),
+      summary_through_message_id: throughMessageId
+    };
+    const { error } = await this.client
+      .from('aura_conversations')
+      .update({
+        summary,
+        metadata,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', conversationId)
+      .eq('owner_id', this.ownerId);
+    if (error) throw error;
   }
 
   async embed(text) {
@@ -151,6 +224,19 @@ class SupabaseStateStore {
   async forgetMemory(id) {
     const { error, count } = await this.client.from('aura_memories')
       .delete({ count: 'exact' }).eq('owner_id', this.ownerId).eq('id', id);
+    if (error) throw error;
+    return count > 0;
+  }
+
+  async supersedeMemory(id, replacementId) {
+    const { error, count } = await this.client.from('aura_memories')
+      .update({
+        superseded_by: replacementId,
+        updated_at: new Date().toISOString()
+      }, { count: 'exact' })
+      .eq('owner_id', this.ownerId)
+      .eq('id', id)
+      .is('superseded_by', null);
     if (error) throw error;
     return count > 0;
   }
@@ -266,6 +352,50 @@ class SupabaseStateStore {
       .select('*').maybeSingle();
     if (error) throw error;
     return data;
+  }
+
+  async getOwnerProfile() {
+    const value = await this.getState('owner_profile_v1');
+    return value && typeof value === 'object'
+      ? value
+      : { version: 1, entries: {}, updated_at: null };
+  }
+
+  async upsertOwnerProfileEntries(entries) {
+    this.profileWrite = this.profileWrite.catch(() => {}).then(async () => {
+      const profile = await this.getOwnerProfile();
+      const nextEntries = { ...(profile.entries || {}) };
+      for (const entry of entries) {
+        nextEntries[entry.key] = {
+          ...entry,
+          updated_at: new Date().toISOString()
+        };
+      }
+      const next = {
+        version: 1,
+        entries: nextEntries,
+        updated_at: new Date().toISOString()
+      };
+      await this.setState('owner_profile_v1', next);
+      return next;
+    });
+    return this.profileWrite;
+  }
+
+  async removeOwnerProfileEntries(keys) {
+    this.profileWrite = this.profileWrite.catch(() => {}).then(async () => {
+      const profile = await this.getOwnerProfile();
+      const nextEntries = { ...(profile.entries || {}) };
+      for (const key of keys) delete nextEntries[key];
+      const next = {
+        version: 1,
+        entries: nextEntries,
+        updated_at: new Date().toISOString()
+      };
+      await this.setState('owner_profile_v1', next);
+      return next;
+    });
+    return this.profileWrite;
   }
 
   async getState(key) {

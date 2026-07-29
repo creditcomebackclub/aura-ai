@@ -13,8 +13,12 @@ services:
         value: openai
       - key: AURA_CHAT_MODEL
         value: gpt-5.6-sol
+      - key: AURA_MEMORY_MODEL
+        value: gpt-5.6-luna
       - key: AURA_REASONING_EFFORT
         value: medium
+      - key: AURA_SUMMARY_MESSAGE_THRESHOLD
+        value: "40"
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_WEB_SEARCH_MODEL
