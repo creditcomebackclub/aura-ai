@@ -13,6 +13,8 @@ services:
         value: openai
       - key: OPENAI_API_KEY
         sync: false
+      - key: OPENAI_WEB_SEARCH_MODEL
+        value: gpt-5.4-mini
       - key: CARTESIA_API_KEY
         sync: false
       - key: SUPABASE_URL
@@ -29,6 +31,12 @@ services:
         value: 0.0.0.0
       - key: AURA_TIMEZONE
         value: America/Phoenix
+      - key: AURA_WEB_SEARCH_CONTEXT
+        value: medium
+      - key: AURA_WEB_SEARCH_TIMEOUT_MS
+        value: "45000"
+      - key: AURA_WEB_SEARCH_DAILY_LIMIT
+        value: "25"
       - key: AURA_SCHEDULER_ENABLED
         value: "true"
       - key: AURA_CRON_SECRET

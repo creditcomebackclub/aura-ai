@@ -2,7 +2,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { MemoryStore } = require('../memory_store');
-const { getToolPolicy, parseAndAuthorizeToolCall } = require('../agent_policy');
+const {
+  getToolPolicy,
+  parseAndAuthorizeToolCall,
+  validatePublicSearchInput
+} = require('../agent_policy');
 const {
   normalizePhaseLabel,
   isOutstanding,
@@ -48,6 +52,39 @@ test('tool arguments reject unsafe identifiers and invalid writes', () => {
 test('tool limits are clamped', () => {
   const parsed = parseAndAuthorizeToolCall(toolCall('query_finances', { limit: 5000 }));
   assert.equal(parsed.args.limit, 200);
+});
+
+test('web searches require a bounded non-empty query', () => {
+  assert.equal(
+    parseAndAuthorizeToolCall(toolCall('search_web', { query: 'latest Sebastian weather' })).policy,
+    'read'
+  );
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('search_web', { query: '   ' })),
+    /query is required/
+  );
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('search_web', { query: 'x'.repeat(501) })),
+    /query is too long/
+  );
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('search_web', {
+      query: `search for api_key=${'a'.repeat(48)}`
+    })),
+    /credential or secret/
+  );
+});
+
+test('public search input is isolated, bounded, and credential-safe', () => {
+  assert.equal(
+    validatePublicSearchInput('  weather in Sebastian Florida  '),
+    'weather in Sebastian Florida'
+  );
+  assert.throws(() => validatePublicSearchInput('x'.repeat(1001)), /1000 characters/);
+  assert.throws(
+    () => validatePublicSearchInput(`my token is ${'a'.repeat(64)}`),
+    /credential or secret/
+  );
 });
 
 test('memory deduplicates, retrieves relevant facts, and forgets', async () => {

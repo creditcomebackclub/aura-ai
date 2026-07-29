@@ -26,6 +26,9 @@ async function runCase(testCase) {
       !testCase.expectedAnyTool.some(tool => usedTools.has(tool))) {
     failures.push(`missing one of: ${testCase.expectedAnyTool.join(', ')}`);
   }
+  if (testCase.requireSources && !(body.sources || []).length) {
+    failures.push('search returned no source links');
+  }
   for (const text of testCase.forbiddenReply || []) {
     if (body.reply.toLowerCase().includes(text.toLowerCase())) {
       failures.push(`reply included forbidden text "${text}"`);

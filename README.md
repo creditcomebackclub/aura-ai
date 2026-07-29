@@ -13,7 +13,9 @@ read-only business intelligence for Credit Comeback Club.
 5. Open `http://localhost:3000`.
 
 OpenAI is currently required for transcription and semantic embeddings even when
-`AI_PROVIDER=deepseek` is used for chat. Cartesia provides speech synthesis.
+`AI_PROVIDER=deepseek` is used for chat. AURA's public internet tool uses
+OpenAI Responses web search with live access and source metadata. Cartesia
+provides speech synthesis.
 
 ## Phone and LAN access
 
@@ -39,6 +41,16 @@ uses Supabase Auth instead.
   reversible writes, or blocked.
 - Tool results, emails, webpages, database values, and memories are explicitly
   treated as untrusted data rather than agent instructions.
+- Public web searches use a supported provider rather than scraping search-result
+  HTML. Search calls have normal OpenAI model and web-tool usage costs.
+- Search is capped at two attempts per request, three provider tool calls per
+  attempt, and 25 search requests per Phoenix calendar day by default. Override
+  the daily cap with `AURA_WEB_SEARCH_DAILY_LIMIT`.
+- After web search, the next model pass is tool-free. AURA also refuses to send
+  a web search after reading private business, mail, calendar, finance, goal, or
+  Blackboard data in the same request.
+- The provider receives only the current user request for that search—not query
+  text composed from AURA's private memories or prior conversation history.
 - Conversation history, structured memories, notifications, goals, and finance
   logs use Supabase when `AURA_STATE_BACKEND=supabase`; otherwise they remain
   local in `aura.db`.
@@ -149,5 +161,6 @@ owner approves or rejects them.
 - `companion_worker.js` — outbound Mac capability worker
 - `ccc_database.js` — read-only CCC data/domain queries
 - `mac_integration.js` — Apple Mail and Calendar reads
-- `scraper.js` — Blackboard and web search
+- `web_search.js` — sourced live public-web search
+- `scraper.js` — Blackboard calendar and local browser access
 - `public/` — tap-to-talk PWA

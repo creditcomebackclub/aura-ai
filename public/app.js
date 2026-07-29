@@ -210,6 +210,9 @@ const socket = io({
 
 const orb = document.getElementById('orb');
 const statusText = document.getElementById('status-text');
+const sourcePanel = document.getElementById('source-panel');
+const webAnswer = document.getElementById('web-answer');
+const sourceLinks = document.getElementById('source-links');
 
 // Global audio player for iOS Safari unlocking
 const audioPlayer = new Audio();
@@ -231,6 +234,76 @@ let playbackCancelled = false;
 function setOrbState(state, text) {
   orb.className = state;
   statusText.textContent = text;
+}
+
+function safeWebUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function appendCitedBlock(block) {
+  if (!block?.text) return;
+  const paragraph = document.createElement('p');
+  let cursor = 0;
+  const citations = [...(block.citations || [])]
+    .filter(citation => Number.isInteger(citation.start_index) &&
+      Number.isInteger(citation.end_index) &&
+      citation.start_index >= cursor &&
+      citation.end_index > citation.start_index &&
+      citation.end_index <= block.text.length &&
+      safeWebUrl(citation.url))
+    .sort((a, b) => a.start_index - b.start_index);
+
+  for (const citation of citations) {
+    if (citation.start_index < cursor) continue;
+    paragraph.appendChild(document.createTextNode(
+      block.text.slice(cursor, citation.start_index)
+    ));
+    const url = safeWebUrl(citation.url);
+    const link = document.createElement('a');
+    link.href = url.toString();
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = citation.title && citation.title !== url.hostname
+      ? `[${citation.title} · ${url.hostname}]`
+      : `[${url.hostname}]`;
+    paragraph.appendChild(link);
+    cursor = citation.end_index;
+  }
+  paragraph.appendChild(document.createTextNode(block.text.slice(cursor)));
+  webAnswer.appendChild(paragraph);
+}
+
+function showSearchEvidence(webResults = [], sources = []) {
+  webAnswer.replaceChildren();
+  sourceLinks.replaceChildren();
+  const latestResult = webResults[webResults.length - 1];
+  if (latestResult?.citation_blocks?.length) {
+    for (const block of latestResult.citation_blocks) appendCitedBlock(block);
+  } else if (latestResult?.answer) {
+    const paragraph = document.createElement('p');
+    paragraph.textContent = latestResult.answer;
+    webAnswer.appendChild(paragraph);
+  }
+
+  for (const source of sources.slice(0, 6)) {
+    const url = safeWebUrl(source.url);
+    if (!url) continue;
+    const link = document.createElement('a');
+    link.href = url.toString();
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = source.title && source.title !== url.hostname
+      ? `${source.title} · ${url.hostname}`
+      : url.hostname;
+    sourceLinks.appendChild(link);
+  }
+  sourcePanel.hidden =
+    webAnswer.childElementCount === 0 && sourceLinks.childElementCount === 0;
 }
 
 // Cuts AURA off mid-sentence and returns the orb to idle.
@@ -343,6 +416,7 @@ document.getElementById('orb-container').addEventListener('click', async () => {
 async function startListening() {
   // Clear any prior interrupt so this new exchange is allowed to speak.
   playbackCancelled = false;
+  showSearchEvidence([], []);
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -423,8 +497,9 @@ async function processAudio(audioBlob) {
     });
 
     if (!chatRes.ok) throw new Error('Chat API failed');
-    const { reply } = await chatRes.json();
+    const { reply, sources = [], web_results: webResults = [] } = await chatRes.json();
     console.log('AURA:', reply);
+    showSearchEvidence(webResults, sources);
 
     // 3. Fetch TTS from Cartesia proxy
     setOrbState('thinking', 'Generating Voice...');
@@ -441,6 +516,7 @@ async function processAudio(audioBlob) {
     playAudioBlob(blob);
   } catch (err) {
     console.error(err);
+    showSearchEvidence([], []);
     setOrbState('error', 'Error occurred. Tap to retry.');
     isSpeaking = false;
     setTimeout(() => setOrbState('idle', 'Tap to talk to AURA'), 3000);

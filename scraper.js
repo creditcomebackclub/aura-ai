@@ -271,44 +271,10 @@ async function checkBlackboardAssignments() {
   }
 }
 
-async function searchWeb(query) {
-  try {
-    const res = await fetch('https://lite.duckduckgo.com/lite/', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      body: `q=${encodeURIComponent(query)}`
-    });
-    
-    if (!res.ok) throw new Error('Search failed');
-    
-    const text = await res.text();
-    const snippetRegex = /<td class='result-snippet'>([\s\S]*?)<\/td>/g;
-    
-    let match;
-    let results = [];
-    while ((match = snippetRegex.exec(text)) !== null) {
-      let snippet = match[1].replace(/<[^>]+>/g, '').trim();
-      snippet = snippet.replace(/&#x27;/g, "'").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
-      results.push(snippet);
-    }
-    
-    if (results.length === 0) return "No results found.";
-    
-    return results.slice(0, 3).join('\n\n');
-  } catch (error) {
-    console.error('Error in searchWeb:', error);
-    return "Error searching the web.";
-  }
-}
-
 module.exports = {
   checkBlackboardAssignments,
   checkBlackboardCalendarFeed,
   isIcsCalendar,
   parseIcsDate,
-  parseBlackboardIcs,
-  searchWeb
+  parseBlackboardIcs
 };

@@ -19,6 +19,27 @@ const TOOL_POLICIES = Object.freeze({
   save_semantic_memory: 'reversible_write'
 });
 
+const SEARCH_SECRET_PATTERNS = [
+  /\b(?:sk|rk|pk)-[a-z0-9_-]{20,}\b/i,
+  /\beyJ[a-z0-9_-]{20,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\b/i,
+  /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\s*(?:is|[:=])\s*\S{8,}/i,
+  /\b[a-f0-9]{48,}\b/i
+];
+
+function validatePublicSearchInput(value, maxLength = 1000) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('A public web search request is required.');
+  }
+  const normalized = value.trim();
+  if (normalized.length > maxLength) {
+    throw new Error(`Public web search requests must be ${maxLength} characters or fewer.`);
+  }
+  if (SEARCH_SECRET_PATTERNS.some(pattern => pattern.test(normalized))) {
+    throw new Error('Search query appears to contain a credential or secret.');
+  }
+  return normalized;
+}
+
 function getToolPolicy(name) {
   return TOOL_POLICIES[name] || 'blocked';
 }
@@ -47,7 +68,10 @@ function validateToolArguments(name, args) {
   if (name === 'get_client_snapshot' || name === 'get_client_current_phase') {
     requireString('name', 200);
   }
-  if (name === 'search_web') requireString('query', 500);
+  if (name === 'search_web') {
+    requireString('query', 500);
+    validatePublicSearchInput(args.query, 500);
+  }
   if (name === 'add_goal') requireString('description', 1000);
   if (name === 'save_semantic_memory') requireString('fact', 2000);
 
@@ -109,4 +133,10 @@ function parseAndAuthorizeToolCall(toolCall) {
   return { name, policy, args: validateToolArguments(name, args) };
 }
 
-module.exports = { TOOL_POLICIES, getToolPolicy, validateToolArguments, parseAndAuthorizeToolCall };
+module.exports = {
+  TOOL_POLICIES,
+  getToolPolicy,
+  parseAndAuthorizeToolCall,
+  validatePublicSearchInput,
+  validateToolArguments
+};
