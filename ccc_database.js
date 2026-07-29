@@ -18,10 +18,7 @@ async function listTables() {
   if (!db) return "Error: Database connection not configured.";
 
   try {
-    const { data, error } = await db.from('information_schema.tables')
-      .select('table_name, table_type')
-      .eq('table_schema', 'public');
-    
+    const { data, error } = await db.rpc('aura_list_tables');
     if (error) throw error;
     return JSON.stringify(data);
   } catch (error) {
@@ -34,11 +31,7 @@ async function getTableSchema(tableName) {
   if (!db) return "Error: Database connection not configured.";
 
   try {
-    const { data, error } = await db.from('information_schema.columns')
-      .select('column_name, data_type')
-      .eq('table_schema', 'public')
-      .eq('table_name', tableName);
-      
+    const { data, error } = await db.rpc('aura_table_schema', { p_table_name: tableName.toLowerCase() });
     if (error) throw error;
     return JSON.stringify(data);
   } catch (error) {
@@ -46,25 +39,131 @@ async function getTableSchema(tableName) {
   }
 }
 
-async function queryTable(tableName, limit = 50, filters = []) {
+// Applies a filter list to a query builder.
+// op: "match" = partial, case-insensitive, word-order-independent (e.g. "Karl Elliot" -> "Karl J Elliott")
+//     "is_null" / "not_null" = presence checks (need no value)
+//     "gt" / "gte" / "lt" / "lte" = comparisons, useful for dates
+//     default "eq" = exact match
+function applyFilters(query, filters = []) {
+  for (const filter of filters) {
+    if (!filter || !filter.column) continue;
+    const op = filter.op || 'eq';
+
+    if (op === 'is_null') { query = query.is(filter.column, null); continue; }
+    if (op === 'not_null') { query = query.not(filter.column, 'is', null); continue; }
+
+    if (filter.value === undefined || filter.value === null || filter.value === '') continue;
+
+    switch (op) {
+      case 'match':
+        for (const word of String(filter.value).trim().split(/\s+/)) {
+          query = query.ilike(filter.column, `%${word}%`);
+        }
+        break;
+      case 'gt': query = query.gt(filter.column, filter.value); break;
+      case 'gte': query = query.gte(filter.column, filter.value); break;
+      case 'lt': query = query.lt(filter.column, filter.value); break;
+      case 'lte': query = query.lte(filter.column, filter.value); break;
+      default: query = query.eq(filter.column, filter.value);
+    }
+  }
+  return query;
+}
+
+// A ledger entry counts as money still owed unless it is explicitly marked paid.
+// The app writes "Due" for open invoices, so matching on a fixed list of words
+// (Unpaid/Pending) silently reported $0 outstanding and never fired overdue alerts.
+function isOutstanding(status) {
+  if (!status) return false;
+  return String(status).trim().toLowerCase() !== 'paid';
+}
+
+// Lists every client with money still owed, reading inside the ledger JSON.
+// Needed because the ledger is a nested array that plain column filters can't reach.
+async function getOutstandingBalances() {
   const db = initSupabase();
   if (!db) return "Error: Database connection not configured.";
 
   try {
-    let query = db.from(tableName).select('*');
-    
-    // Apply optional simple eq filters (e.g. [{column: "status", value: "active"}])
-    for (const filter of filters) {
-      if (filter.column && filter.value) {
-        query = query.eq(filter.column, filter.value);
+    const { data, error } = await db.from('clients').select('name, billing_status, ledger');
+    if (error) throw error;
+
+    const results = [];
+    for (const client of data || []) {
+      if (!Array.isArray(client.ledger)) continue;
+
+      const open = client.ledger
+        .filter(e => isOutstanding(e.status) && (e.amount || 0) > 0)
+        .map(e => ({
+          amount: e.amount,
+          status: e.status,
+          description: e.description,
+          date: e.due_date || e.date || e.created_at
+        }));
+
+      if (open.length > 0) {
+        results.push({
+          client: client.name,
+          total_owed: open.reduce((sum, e) => sum + e.amount, 0),
+          entries: open
+        });
       }
     }
-    
-    query = query.limit(limit);
-    
-    const { data, error } = await query;
+
+    if (results.length === 0) return JSON.stringify({ outstanding_clients: [], note: 'Every client ledger is fully paid.' });
+    return JSON.stringify({ outstanding_clients: results });
+  } catch (error) {
+    return `Error fetching outstanding balances: ${error.message}`;
+  }
+}
+
+// Returns an exact row count without pulling the rows, so "how many..." questions
+// can be answered precisely instead of by counting a truncated page of results.
+async function countRows(tableName, filters = []) {
+  const db = initSupabase();
+  if (!db) return "Error: Database connection not configured.";
+
+  try {
+    let query = db.from(tableName.toLowerCase()).select('*', { count: 'exact', head: true });
+    query = applyFilters(query, filters);
+
+    const { count, error } = await query;
     if (error) throw error;
-    
+
+    return JSON.stringify({ table: tableName.toLowerCase(), matching_rows: count });
+  } catch (error) {
+    return `Error counting ${tableName}: ${error.message}`;
+  }
+}
+
+async function queryTable(tableName, limit = 200, filters = [], orderBy = null, orderDirection = 'desc') {
+  const db = initSupabase();
+  if (!db) return "Error: Database connection not configured.";
+
+  try {
+    // Ask for the total match count too, so truncation can be reported rather than hidden.
+    let query = db.from(tableName.toLowerCase()).select('*', { count: 'exact' });
+    query = applyFilters(query, filters);
+
+    if (orderBy) {
+      query = query.order(orderBy, { ascending: orderDirection !== 'desc' });
+    }
+
+    query = query.limit(limit);
+
+    const { data, error, count } = await query;
+    if (error) throw error;
+
+    // Never let her silently believe a partial page is the whole result set.
+    if (typeof count === 'number' && count > data.length) {
+      return JSON.stringify({
+        warning: `TRUNCATED: ${count} rows match this query but only ${data.length} are shown. Do NOT state totals from these rows - use count_database_rows for an exact count, or narrow the filters.`,
+        total_matching_rows: count,
+        returned_rows: data.length,
+        rows: data
+      });
+    }
+
     return JSON.stringify(data);
   } catch (error) {
     return `Error querying ${tableName}: ${error.message}`;
@@ -107,7 +206,7 @@ async function calculateFinancialMetrics() {
        if (client.ledger && Array.isArray(client.ledger)) {
            for (const entry of client.ledger) {
                const amt = entry.amount || 0;
-               if (entry.status === 'Unpaid' || entry.status === 'Pending') outstanding += amt;
+               if (isOutstanding(entry.status)) outstanding += amt;
                
                if (entry.status === 'Paid') {
                    lifetimeRevenue += amt;
@@ -151,7 +250,7 @@ async function getOverdueClients(daysThreshold = 3) {
       if (!client.ledger || !Array.isArray(client.ledger)) continue;
 
       for (const entry of client.ledger) {
-        if (entry.status !== 'Unpaid' && entry.status !== 'Pending') continue;
+        if (!isOutstanding(entry.status)) continue;
         if (!(entry.amount > 0)) continue;
 
         const dueDate = new Date(entry.due_date || entry.date || entry.created_at);
@@ -175,4 +274,4 @@ async function getOverdueClients(daysThreshold = 3) {
   }
 }
 
-module.exports = { listTables, getTableSchema, queryTable, calculateFinancialMetrics, getOverdueClients };
+module.exports = { listTables, getTableSchema, queryTable, countRows, getOutstandingBalances, calculateFinancialMetrics, getOverdueClients };

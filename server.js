@@ -180,20 +180,57 @@ const tools = [
     type: 'function',
     function: {
       name: 'query_database_table',
-      description: 'Queries a specific database table and returns the raw JSON data. You can optionally filter the data by providing an array of filter objects (e.g. [{"column": "status", "value": "active"}]).',
+      description: 'Queries a specific database table and returns the raw JSON data. Optionally filter with an array of filter objects (e.g. [{"column": "status", "value": "active"}]). If the result comes back with a "TRUNCATED" warning, more rows matched than were returned - never state totals from a truncated result, use count_database_rows instead.',
       parameters: {
         type: 'object',
         properties: {
           table_name: { type: 'string', description: 'The name of the table to query' },
-          limit: { type: 'number', description: 'The maximum number of rows to return (default 50)' },
-          filters: { 
-            type: 'array', 
+          limit: { type: 'number', description: 'The maximum number of rows to return (default 200)' },
+          order_by: { type: 'string', description: 'Optional column to sort by, e.g. "created_at". Required for "most recent"/"latest" questions.' },
+          order_direction: { type: 'string', description: '"desc" for newest first (default), "asc" for oldest first.' },
+          filters: {
+            type: 'array',
             description: 'Optional filters to apply to the query',
             items: {
               type: 'object',
               properties: {
                 column: { type: 'string' },
-                value: { type: 'string' }
+                value: { type: 'string' },
+                op: { type: 'string', description: 'One of: "eq" (exact, default), "match" (partial case-insensitive - ALWAYS use this for person names), "is_null" (column is empty - e.g. no response yet), "not_null" (column is set - e.g. has been mailed), "gt", "gte", "lt", "lte" (comparisons, useful for dates).' }
+              }
+            }
+          }
+        },
+        required: ['table_name']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_outstanding_balances',
+      description: 'Lists every client who still owes money, with the amount and what it is for. Use this for any question about who owes money, unpaid or pending balances, outstanding invoices, or who is behind on payments. Billing amounts live inside a nested ledger that ordinary table filters cannot read, so ALWAYS use this tool rather than querying the clients table for balances.',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'count_database_rows',
+      description: 'Returns the EXACT number of rows matching a filter, without returning the rows. You MUST use this for any "how many" question (e.g. how many active clients) instead of counting rows yourself - counting returned rows gives wrong answers because results can be truncated.',
+      parameters: {
+        type: 'object',
+        properties: {
+          table_name: { type: 'string', description: 'The name of the table to count' },
+          filters: {
+            type: 'array',
+            description: 'Optional filters, same format and operators as query_database_table',
+            items: {
+              type: 'object',
+              properties: {
+                column: { type: 'string' },
+                value: { type: 'string' },
+                op: { type: 'string' }
               }
             }
           }
@@ -362,8 +399,14 @@ async function handleToolCall(toolCall) {
       const schema = await ccc.getTableSchema(args.table_name);
       return `Schema for ${args.table_name}:\n${schema}`;
     case 'query_database_table':
-      const data = await ccc.queryTable(args.table_name, args.limit, args.filters);
+      const data = await ccc.queryTable(args.table_name, args.limit, args.filters, args.order_by, args.order_direction);
       return `Data from ${args.table_name}:\n${data}`;
+    case 'get_outstanding_balances':
+      const balances = await ccc.getOutstandingBalances();
+      return `Clients with money still owed:\n${balances}`;
+    case 'count_database_rows':
+      const rowCount = await ccc.countRows(args.table_name, args.filters);
+      return `Exact count from ${args.table_name}:\n${rowCount}`;
     case 'calculate_financial_metrics':
       const metrics = await ccc.calculateFinancialMetrics();
       return `Here are the real-time financial metrics for the business:\n${metrics}`;
@@ -423,7 +466,7 @@ app.post('/api/chat', async (req, res) => {
     
     const systemPrompt = {
       role: 'system',
-      content: 'You are AURA, a highly intelligent, proactive, and concise personal AI operating system. You have tools to manage finances, goals, save core memories, and search the live internet. If asked for real-time info, you MUST use your search_web tool. \n\nCRITICAL: You have access to semantic memory. You must proactively reason against past memories. If a user tells you something that conflicts or interacts with a past memory (e.g. canceling a gym session when they previously said the gym destresses them), you MUST bring it up and act as a proactive, reasoning partner. Keep voice responses conversational. Do not output markdown, as it will be spoken.' + semanticContext
+      content: 'You are AURA, a highly intelligent, proactive, and concise personal AI operating system. You have tools to manage finances, goals, save core memories, search the live internet, and query the live Credit Comeback Club (CCC) credit-repair business database. If asked for real-time info, you MUST use your search_web tool. \n\nCRITICAL - THE BUSINESS DATABASE: Anything about clients, leads, dispute letters, phases, rounds, furnishers, billing, or commissions MUST be answered from the CCC database using your database tools. NEVER use search_web for these and never answer them from memory - search_web knows nothing about this business. Key tables: "clients" (the client/lead records, with name, status, billing_status) and "letters" (the dispute letters, with client_name, client_id, phase, furnisher, mailed_date). A client\'s current phase/round comes from their most recent row in "letters", not from the clients table. Stored names often include middle initials or spelling variants, so when looking a person up by name ALWAYS filter with op "match", e.g. [{"column":"name","value":"Karl Elliot","op":"match"}] - never an exact match. Chain multiple tool calls when needed: look the client up first, then query their letters. If unsure where something lives, call list_database_tables and get_table_schema. \n\nACCURACY RULES - these prevent you giving wrong numbers: (1) For ANY "how many" question, call count_database_rows. NEVER count the rows of a query result yourself and never estimate. (2) If a query result contains a "TRUNCATED" warning, you are only seeing part of the data - do not state totals or say "there are none" based on it. (3) For "latest"/"most recent" questions, pass order_by (usually "created_at") with order_direction "desc". (4) For "no response yet" style questions use op "is_null", and for "has been mailed" use op "not_null" on the relevant column. (5) If a tool returns an error or no rows, say so plainly - NEVER invent a number, name, status, or date that did not come back from a tool. It is always better to say you could not find something than to guess. \n\nCRITICAL: You have access to semantic memory. You must proactively reason against past memories. If a user tells you something that conflicts or interacts with a past memory (e.g. canceling a gym session when they previously said the gym destresses them), you MUST bring it up and act as a proactive, reasoning partner. Keep voice responses conversational. Do not output markdown, as it will be spoken.' + semanticContext
     };
 
     const chatHistory = [systemPrompt, ...messages];
@@ -435,10 +478,10 @@ app.post('/api/chat', async (req, res) => {
       tool_choice: 'auto'
     });
 
-    const responseMessage = response.choices[0].message;
-
-    // Handle Tool Calls
-    if (responseMessage.tool_calls) {
+    // Keep handing tool results back until she answers, so multi-step lookups
+    // (find the client, then look up that client's letters) can complete.
+    for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
+      const responseMessage = response.choices[0].message;
       chatHistory.push(responseMessage);
       for (const toolCall of responseMessage.tool_calls) {
         const functionResult = await handleToolCall(toolCall);
@@ -449,15 +492,33 @@ app.post('/api/chat', async (req, res) => {
           content: functionResult,
         });
       }
-      
-      // Get final response after tools
+
+      response = await openai.chat.completions.create({
+        model: chatModel,
+        messages: chatHistory,
+        tools: tools,
+        tool_choice: 'auto'
+      });
+    }
+
+    // If she hit the round cap still wanting tools, force a text answer.
+    if (response.choices[0].message.tool_calls) {
+      chatHistory.push(response.choices[0].message);
+      for (const toolCall of response.choices[0].message.tool_calls) {
+        chatHistory.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          name: toolCall.function.name,
+          content: 'Tool budget exhausted for this turn. Answer with what you have.',
+        });
+      }
       response = await openai.chat.completions.create({
         model: chatModel,
         messages: chatHistory
       });
     }
-    
-    const reply = response.choices[0].message.content;
+
+    const reply = response.choices[0].message.content || "Sorry, I wasn't able to put together an answer for that.";
     db.prepare('INSERT INTO memory (role, content) VALUES (?, ?)').run('assistant', reply);
     
     res.json({ reply });
