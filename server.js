@@ -257,6 +257,15 @@ const authSupabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KE
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
   : null;
 const rateBuckets = new Map();
+const pendingAuthLinks = new Map();
+const AUTH_LINK_TTL_MS = 10 * 60 * 1000;
+
+function cleanPendingAuthLinks() {
+  const cutoff = Date.now() - AUTH_LINK_TTL_MS;
+  for (const [id, pending] of pendingAuthLinks.entries()) {
+    if (pending.createdAt < cutoff) pendingAuthLinks.delete(id);
+  }
+}
 
 function isDirectLocalhost(req) {
   const hostname = String(req.hostname || req.get?.('host') || '').split(':')[0].replace(/^\[|\]$/g, '');
@@ -314,15 +323,66 @@ app.post('/auth/request-link', rateLimit, async (req, res) => {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     return res.status(400).json({ error: 'Enter a valid email address.' });
   }
-  const redirectTo = process.env.AURA_PUBLIC_URL ||
+  const { data: ownerData, error: ownerError } = await authSupabase.auth.admin
+    .getUserById(process.env.AURA_OWNER_ID);
+  if (ownerError) {
+    console.error('[Auth] Owner lookup failed:', ownerError.message);
+    return res.status(503).json({ error: 'Authentication is temporarily unavailable.' });
+  }
+  // Preserve account privacy while preventing this endpoint from being used to
+  // send sign-in mail to unrelated Supabase users.
+  if (String(ownerData.user?.email || '').toLowerCase() !== email) {
+    return res.json({ sent: true });
+  }
+
+  cleanPendingAuthLinks();
+  const loginId = crypto.randomBytes(32).toString('hex');
+  pendingAuthLinks.set(loginId, { createdAt: Date.now(), session: null });
+  const publicUrl = process.env.AURA_PUBLIC_URL ||
     `${req.protocol}://${req.get('host')}${req.baseUrl || ''}/`;
+  const redirectUrl = new URL(publicUrl);
+  redirectUrl.searchParams.set('aura_login', loginId);
   const { error } = await authSupabase.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: redirectTo, shouldCreateUser: false }
+    options: { emailRedirectTo: redirectUrl.toString(), shouldCreateUser: false }
   });
   // Do not reveal whether an email account exists.
-  if (error) console.error('[Auth] Magic-link request failed:', error.message);
-  res.json({ sent: true });
+  if (error) {
+    pendingAuthLinks.delete(loginId);
+    console.error('[Auth] Magic-link request failed:', error.message);
+    return res.json({ sent: true });
+  }
+  res.json({ sent: true, login_id: loginId });
+});
+
+app.post('/auth/complete-link', rateLimit, async (req, res) => {
+  cleanPendingAuthLinks();
+  const loginId = String(req.body?.login_id || '');
+  const accessToken = String(req.body?.access_token || '');
+  const refreshToken = String(req.body?.refresh_token || '');
+  const pending = pendingAuthLinks.get(loginId);
+  if (!pending || !accessToken || !refreshToken) {
+    return res.status(400).json({ error: 'This sign-in request is invalid or expired.' });
+  }
+  const { data, error } = await authSupabase.auth.getUser(accessToken);
+  if (error || data.user?.id !== process.env.AURA_OWNER_ID) {
+    return res.status(401).json({ error: 'The Supabase session is not authorized for AURA.' });
+  }
+  pending.session = {
+    access_token: accessToken,
+    refresh_token: refreshToken
+  };
+  res.json({ completed: true });
+});
+
+app.post('/auth/link-status', rateLimit, (req, res) => {
+  cleanPendingAuthLinks();
+  const loginId = String(req.body?.login_id || '');
+  const pending = pendingAuthLinks.get(loginId);
+  if (!pending) return res.status(410).json({ error: 'This sign-in request expired.' });
+  if (!pending.session) return res.json({ ready: false });
+  pendingAuthLinks.delete(loginId);
+  res.json({ ready: true, ...pending.session });
 });
 
 app.post('/auth/refresh', rateLimit, async (req, res) => {

@@ -8,8 +8,11 @@
     // can try the retired shared token.
     (() => {
       const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const query = new URLSearchParams(window.location.search);
       const accessToken = hash.get('access_token');
       const refreshToken = hash.get('refresh_token');
+      const loginId = query.get('aura_login');
+      if (loginId) localStorage.setItem('aura_callback_login_id', loginId);
       if (accessToken) {
         localStorage.setItem('aura_session_token', accessToken);
         if (refreshToken) localStorage.setItem('aura_refresh_token', refreshToken);
@@ -43,6 +46,6 @@
   <div id="status-text">Tap to talk to AURA</div>
   
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=20260729-auth2"></script>
+  <script src="app.js?v=20260729-auth3"></script>
 </body>
 </html>

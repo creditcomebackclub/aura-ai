@@ -4,6 +4,10 @@ if (tokenFromUrl) {
   history.replaceState({}, document.title, window.location.pathname);
 }
 const authHash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+const loginIdFromUrl = new URLSearchParams(window.location.search).get('aura_login');
+if (loginIdFromUrl) {
+  localStorage.setItem('aura_callback_login_id', loginIdFromUrl);
+}
 if (authHash.get('access_token')) {
   localStorage.setItem('aura_session_token', authHash.get('access_token'));
   if (authHash.get('refresh_token')) {
@@ -18,6 +22,65 @@ let auraRefreshToken = localStorage.getItem('aura_refresh_token') || '';
 let authPromptOpen = false;
 let authMode = null;
 let refreshPromise = null;
+let loginPollPromise = null;
+
+async function completeLinkCallback() {
+  const loginId = localStorage.getItem('aura_callback_login_id');
+  if (!loginId || !auraSessionToken || !auraRefreshToken) return;
+  try {
+    const response = await fetch('/auth/complete-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        login_id: loginId,
+        access_token: auraSessionToken,
+        refresh_token: auraRefreshToken
+      })
+    });
+    if (response.ok) localStorage.removeItem('aura_callback_login_id');
+  } catch (error) {
+    console.error('Could not complete device sign-in:', error);
+  }
+}
+
+function pollPendingLogin() {
+  const loginId = localStorage.getItem('aura_pending_login_id');
+  if (!loginId) return Promise.resolve(false);
+  if (loginPollPromise) return loginPollPromise;
+  loginPollPromise = (async () => {
+    for (let attempt = 0; attempt < 150; attempt++) {
+      try {
+        const response = await fetch('/auth/link-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ login_id: loginId })
+        });
+        if (response.status === 410) {
+          localStorage.removeItem('aura_pending_login_id');
+          return false;
+        }
+        if (response.ok) {
+          const session = await response.json();
+          if (session.ready && session.access_token && session.refresh_token) {
+            localStorage.setItem('aura_session_token', session.access_token);
+            localStorage.setItem('aura_refresh_token', session.refresh_token);
+            localStorage.removeItem('aura_access_token');
+            localStorage.removeItem('aura_pending_login_id');
+            window.location.reload();
+            return true;
+          }
+        }
+      } catch {
+        // A backgrounded iPhone browser can briefly suspend its network access.
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    return false;
+  })().finally(() => {
+    loginPollPromise = null;
+  });
+  return loginPollPromise;
+}
 
 async function getAuthMode() {
   if (authMode) return authMode;
@@ -32,6 +95,10 @@ async function getAuthMode() {
 
 async function requestAccessToken() {
   if (authPromptOpen) return;
+  if (localStorage.getItem('aura_pending_login_id')) {
+    pollPendingLogin();
+    return;
+  }
   authPromptOpen = true;
   const mode = await getAuthMode();
   if (mode === 'supabase') {
@@ -43,6 +110,11 @@ async function requestAccessToken() {
         body: JSON.stringify({ email: email.trim() })
       });
       if (response.ok) {
+        const result = await response.json();
+        if (result.login_id) {
+          localStorage.setItem('aura_pending_login_id', result.login_id);
+          pollPendingLogin();
+        }
         window.alert('Check your email and open the AURA sign-in link on this device.');
       } else {
         window.alert('AURA could not send the sign-in link. Please try again.');
@@ -118,6 +190,9 @@ const authenticatedFetch = async (url, options = {}) => {
   }
   return response;
 };
+
+completeLinkCallback();
+pollPendingLogin();
 
 const socket = io({
   auth: { token: auraSessionToken || auraAccessToken },
