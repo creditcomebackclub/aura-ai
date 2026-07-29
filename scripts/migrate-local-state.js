@@ -18,6 +18,24 @@ async function insertMany(table, rows, batchSize = 100) {
 }
 
 (async () => {
+  const { data: existingImport, error: existingImportError } = await supabase
+    .from('aura_conversations')
+    .select('id')
+    .eq('owner_id', ownerId)
+    .contains('metadata', { imported_from: 'aura.db' })
+    .limit(1)
+    .maybeSingle();
+  if (existingImportError) throw existingImportError;
+  if (existingImport) {
+    console.log(JSON.stringify({
+      skipped: true,
+      reason: 'Local AURA state has already been imported.',
+      conversation_id: existingImport.id
+    }, null, 2));
+    db.close();
+    return;
+  }
+
   const { data: conversation, error: conversationError } = await supabase
     .from('aura_conversations')
     .insert({

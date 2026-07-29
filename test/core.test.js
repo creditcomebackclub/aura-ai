@@ -3,7 +3,14 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { MemoryStore } = require('../memory_store');
 const { getToolPolicy, parseAndAuthorizeToolCall } = require('../agent_policy');
-const { normalizePhaseLabel, isOutstanding, getLedgerTransactionDate } = require('../ccc_database');
+const {
+  normalizePhaseLabel,
+  isOutstanding,
+  getLedgerTransactionDate,
+  normalizeClientName,
+  scoreClientName,
+  rankClientMatches
+} = require('../ccc_database');
 const { parseBlackboardIcs } = require('../scraper');
 
 function toolCall(name, args) {
@@ -71,6 +78,26 @@ test('bureau-specific letter labels become concise client phases', () => {
   assert.equal(normalizePhaseLabel('Phase 1 — FDCPA §1692g(b) Validation'), 'Phase 1');
   assert.equal(normalizePhaseLabel('Round 2 - Escalation'), 'Round 2');
   assert.equal(normalizePhaseLabel('Personal Info & Inquiries'), 'Personal Info & Inquiries');
+});
+
+test('client names tolerate punctuation, honorifics, and omitted middle names', () => {
+  assert.deepEqual(normalizeClientName("Dr. Renée O'Connor's"), ['renee', 'o', 'connor']);
+  assert.equal(scoreClientName('Jordan Smith', 'Jordan Lee Smith') > 0.8, true);
+  assert.equal(scoreClientName('Jordan Smyth', 'Jordan Smith') > 0.85, true);
+});
+
+test('client matching selects a clear fuzzy winner but preserves ambiguity', () => {
+  const clear = rankClientMatches('Jordan Smyth', [
+    { id: 1, name: 'Jordan Smith' },
+    { id: 2, name: 'Taylor Jones' }
+  ]);
+  assert.deepEqual(clear.map(client => client.id), [1]);
+
+  const ambiguous = rankClientMatches('Jordan', [
+    { id: 1, name: 'Jordan Smith' },
+    { id: 2, name: 'Jordan Jones' }
+  ]);
+  assert.deepEqual(ambiguous.map(client => client.id), [2, 1]);
 });
 
 test('30-day income uses transaction date before import timestamp', () => {

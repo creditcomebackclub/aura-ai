@@ -178,14 +178,106 @@ async function queryTable(tableName, limit = 200, filters = [], orderBy = null, 
   }
 }
 
+const NAME_NOISE_WORDS = new Set([
+  'mr', 'mrs', 'ms', 'miss', 'dr',
+  'client', 'customer'
+]);
+
+function normalizeClientName(name) {
+  return String(name || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/['’]s\b/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(word => word && !NAME_NOISE_WORDS.has(word));
+}
+
+function levenshteinDistance(left, right) {
+  if (left === right) return 0;
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= left.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= right.length; j++) {
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1)
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function wordSimilarity(left, right) {
+  if (left === right) return 1;
+  const longest = Math.max(left.length, right.length);
+  if (!longest) return 1;
+  return 1 - (levenshteinDistance(left, right) / longest);
+}
+
+function directionalNameSimilarity(sourceTokens, targetTokens) {
+  if (!sourceTokens.length || !targetTokens.length) return 0;
+  const available = [...targetTokens];
+  let total = 0;
+  for (const source of sourceTokens) {
+    let bestIndex = -1;
+    let bestScore = 0;
+    for (let index = 0; index < available.length; index++) {
+      const score = wordSimilarity(source, available[index]);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+    // A weak resemblance between unrelated words should not inflate a name match.
+    if (bestScore >= 0.6) total += bestScore;
+    if (bestIndex >= 0) available.splice(bestIndex, 1);
+  }
+  return total / sourceTokens.length;
+}
+
+function scoreClientName(query, candidate) {
+  const queryTokens = normalizeClientName(query);
+  const candidateTokens = normalizeClientName(candidate);
+  if (!queryTokens.length || !candidateTokens.length) return 0;
+  if (queryTokens.join(' ') === candidateTokens.join(' ')) return 1;
+
+  const queryCoverage = directionalNameSimilarity(queryTokens, candidateTokens);
+  const candidateCoverage = directionalNameSimilarity(candidateTokens, queryTokens);
+  return Number(((queryCoverage + candidateCoverage) / 2).toFixed(4));
+}
+
+function rankClientMatches(name, clients) {
+  const ranked = (clients || [])
+    .map(client => ({ ...client, _match_score: scoreClientName(name, client.name) }))
+    .filter(client => client._match_score >= 0.68)
+    .sort((left, right) =>
+      right._match_score - left._match_score ||
+      String(left.name).localeCompare(String(right.name))
+    );
+
+  if (ranked.length <= 1) return ranked;
+  // A clearly superior match is safe to use. Close candidates must remain
+  // ambiguous so AURA asks the owner instead of guessing a client identity.
+  if (ranked[0]._match_score - ranked[1]._match_score >= 0.1) return [ranked[0]];
+  return ranked.filter(client => ranked[0]._match_score - client._match_score <= 0.04);
+}
+
 async function findClientsByName(name) {
   const db = initSupabase();
   if (!db) return { error: 'Database connection not configured.' };
-  const words = String(name).trim().split(/\s+/).filter(Boolean);
-  let query = db.from('clients').select('id, name, status, billing_status, billing_tier, ledger');
-  for (const word of words) query = query.ilike('name', `%${word}%`);
-  const { data, error } = await query.limit(10);
-  return error ? { error: error.message } : { data: data || [] };
+  const { data, error } = await db
+    .from('clients')
+    .select('id, name, status, billing_status, billing_tier, ledger')
+    .limit(1000);
+  if (error) return { error: error.message };
+  return { data: rankClientMatches(name, data || []) };
 }
 
 function normalizePhaseLabel(phase) {
@@ -234,6 +326,7 @@ async function getClientCurrentPhase(name) {
     return JSON.stringify({
       found: true,
       client: { id: client.id, name: client.name },
+      name_match_confidence: client._match_score,
       current_phase: currentPhase,
       detailed_phase: latest?.phase ?? null,
       latest_batch_saved_at: latest?.saved_at ?? null,
@@ -281,6 +374,7 @@ async function getClientSnapshot(name) {
         billing_status: client.billing_status,
         billing_tier: client.billing_tier
       },
+      name_match_confidence: client._match_score,
       current_phase: normalizePhaseLabel(letters?.[0]?.phase),
       detailed_phase: letters?.[0]?.phase ?? null,
       latest_letter: letters?.[0] || null,
@@ -406,6 +500,9 @@ module.exports = {
   calculateFinancialMetrics,
   getOverdueClients,
   getClientSnapshot,
+  normalizeClientName,
+  scoreClientName,
+  rankClientMatches,
   getClientCurrentPhase,
   normalizePhaseLabel,
   isOutstanding,

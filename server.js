@@ -195,18 +195,25 @@ if (db && fs.existsSync(legacyMemoryFile)) {
 
 const transientAlertState = new Map();
 
-function getAlertState(key) {
+async function getAlertState(key) {
+  if (cloudState) {
+    const value = await cloudState.getState(key);
+    transientAlertState.set(key, value);
+    return value;
+  }
   if (!db) return transientAlertState.get(key) ?? null;
   const row = db.prepare('SELECT value FROM alert_state WHERE key = ?').get(key);
   return row ? JSON.parse(row.value) : null;
 }
 
-function setAlertState(key, value) {
+async function setAlertState(key, value) {
+  if (cloudState) {
+    transientAlertState.set(key, value);
+    await cloudState.setState(key, value);
+    return;
+  }
   if (!db) {
     transientAlertState.set(key, value);
-    cloudState?.setState(key, value).catch(error =>
-      console.error('[State] Could not persist alert state:', error.message)
-    );
     return;
   }
   db.prepare(`
@@ -378,7 +385,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'get_client_snapshot',
-      description: 'Returns one deterministic client summary including status, billing, current phase, recent letters, and outstanding ledger entries. Prefer this over manually chaining generic table queries for a named client.',
+      description: 'Returns one deterministic client summary including status, billing, current phase, recent letters, and outstanding ledger entries. The name resolver tolerates punctuation, omitted middle names, and minor speech-transcription errors. Prefer this over manually chaining generic table queries for a named client.',
       parameters: {
         type: 'object',
         properties: { name: { type: 'string', description: 'Full or partial client name' } },
@@ -390,7 +397,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'get_client_current_phase',
-      description: 'Returns a named client’s current phase from their latest letter, including the source record used as evidence.',
+      description: 'Returns a named client’s current phase from their latest letter, including the source record used as evidence. The name resolver tolerates punctuation, omitted middle names, and minor speech-transcription errors.',
       parameters: {
         type: 'object',
         properties: { name: { type: 'string', description: 'Full or partial client name' } },
@@ -900,7 +907,7 @@ cron.schedule('0 8,16 * * *', async () => {
   try {
     const overdue = await ccc.getOverdueClients(3);
     if (Array.isArray(overdue)) {
-      const previousNames = new Set(getAlertState('overdue_clients') || []);
+      const previousNames = new Set((await getAlertState('overdue_clients')) || []);
       const currentNames = overdue.map(o => o.client);
       const newlyOverdue = overdue.filter(o => !previousNames.has(o.client));
 
@@ -912,13 +919,13 @@ cron.schedule('0 8,16 * * *', async () => {
             : `Heads up — ${newlyOverdue.length} clients just crossed into overdue status: ${list}.`
         );
       }
-      setAlertState('overdue_clients', currentNames);
+      await setAlertState('overdue_clients', currentNames);
     }
 
     const metricsJson = await ccc.calculateFinancialMetrics();
     if (typeof metricsJson === 'string' && !metricsJson.startsWith('Error')) {
       const parsed = JSON.parse(metricsJson);
-      const previous = getAlertState('financial_metrics');
+      const previous = await getAlertState('financial_metrics');
 
       if (previous) {
         const toNumber = (v) => parseFloat(String(v).replace(/[^0-9.-]/g, '')) || 0;
@@ -935,7 +942,7 @@ cron.schedule('0 8,16 * * *', async () => {
           await sendProactiveAlert(`Heads up — estimated MRR dropped from ${previous.est_mrr} to ${parsed.est_mrr}.`);
         }
       }
-      setAlertState('financial_metrics', parsed);
+      await setAlertState('financial_metrics', parsed);
     }
   } catch (error) {
     console.error('Error in scheduled business check:', error);
@@ -952,13 +959,13 @@ cron.schedule('0 7 * * *', async () => {
     if (!scraped || typeof scraped !== 'string' || scraped.length < 50) return;
     if (scraped.startsWith('BLACKBOARD_')) {
       const errorType = scraped.split(':')[0];
-      if (getAlertState('blackboard_error') !== errorType) {
+      if ((await getAlertState('blackboard_error')) !== errorType) {
         await sendProactiveAlert(scraped.replace(/^BLACKBOARD_[A-Z_]+:\s*/, ''), 'blackboard', 'normal');
-        setAlertState('blackboard_error', errorType);
+        await setAlertState('blackboard_error', errorType);
       }
       return;
     }
-    setAlertState('blackboard_error', null);
+    await setAlertState('blackboard_error', null);
 
     const phoenixDate = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'America/Phoenix',
@@ -966,7 +973,7 @@ cron.schedule('0 7 * * *', async () => {
       month: '2-digit',
       day: '2-digit'
     }).format(new Date());
-    if (getAlertState('blackboard_digest_date') === phoenixDate) return;
+    if ((await getAlertState('blackboard_digest_date')) === phoenixDate) return;
 
     // Calendar feeds are structured enough to evaluate deterministically,
     // avoiding an LLM inventing or dropping a due date.
@@ -1001,7 +1008,7 @@ cron.schedule('0 7 * * *', async () => {
             'normal'
           );
         }
-        setAlertState('blackboard_digest_date', phoenixDate);
+        await setAlertState('blackboard_digest_date', phoenixDate);
         return;
       }
     } catch {
@@ -1023,7 +1030,7 @@ cron.schedule('0 7 * * *', async () => {
     if (text && text.toUpperCase() !== 'NONE') {
       await sendProactiveAlert(text, 'blackboard', 'normal');
     }
-    setAlertState('blackboard_digest_date', phoenixDate);
+    await setAlertState('blackboard_digest_date', phoenixDate);
   } catch (error) {
     console.error('Error in scheduled Blackboard check:', error);
   }
