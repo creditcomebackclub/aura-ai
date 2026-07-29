@@ -19,10 +19,53 @@ let audioUnlocked = false;
 let mediaRecorder = null;
 let audioChunks = [];
 
+// Tracks the clip currently loaded so it can be torn down on interrupt.
+let currentAudioUrl = null;
+// Set when the user interrupts, so a reply whose audio is still being
+// generated doesn't start playing after they've told her to stop.
+let playbackCancelled = false;
+
 // State Management
 function setOrbState(state, text) {
   orb.className = state;
   statusText.textContent = text;
+}
+
+// Cuts AURA off mid-sentence and returns the orb to idle.
+function stopSpeaking() {
+  playbackCancelled = true;
+  audioPlayer.pause();
+  audioPlayer.currentTime = 0;
+  releaseAudioUrl();
+  isSpeaking = false;
+  setOrbState('idle', 'Tap to talk to AURA');
+}
+
+function releaseAudioUrl() {
+  if (currentAudioUrl) {
+    URL.revokeObjectURL(currentAudioUrl);
+    currentAudioUrl = null;
+  }
+}
+
+// Loads and plays a reply, unless the user interrupted while it was generating.
+function playAudioBlob(blob) {
+  if (playbackCancelled) return;
+
+  releaseAudioUrl();
+  currentAudioUrl = URL.createObjectURL(blob);
+  audioPlayer.src = currentAudioUrl;
+
+  setOrbState('speaking', 'Speaking... Tap to stop');
+  isSpeaking = true;
+
+  audioPlayer.onended = () => {
+    isSpeaking = false;
+    releaseAudioUrl();
+    setOrbState('idle', 'Tap to talk to AURA');
+  };
+
+  audioPlayer.play();
 }
 
 // WebSocket Reconnection Handling
@@ -45,7 +88,9 @@ socket.on('connect_error', (err) => {
 
 socket.on('proactive-alert', async (data) => {
   console.log('Proactive alert received:', data.text);
-  if (isSpeaking) return;
+  if (isSpeaking || isListening) return;
+  // A new alert is its own exchange, so a previous interrupt shouldn't mute it.
+  playbackCancelled = false;
   setOrbState('thinking', 'AURA is notifying you...');
   try {
     const ttsRes = await fetch('/api/tts', {
@@ -55,11 +100,7 @@ socket.on('proactive-alert', async (data) => {
     });
     if (!ttsRes.ok) throw new Error('TTS API failed');
     const blob = await ttsRes.blob();
-    audioPlayer.src = URL.createObjectURL(blob);
-    setOrbState('speaking', 'Speaking...');
-    isSpeaking = true;
-    audioPlayer.onended = () => { isSpeaking = false; setOrbState('idle', 'Tap to talk to AURA'); };
-    audioPlayer.play();
+    playAudioBlob(blob);
   } catch (err) { console.error(err); setOrbState('idle', 'Tap to talk to AURA'); }
 });
 
@@ -71,7 +112,11 @@ document.getElementById('orb-container').addEventListener('click', async () => {
     audioUnlocked = true;
   }
 
-  if (isSpeaking) return;
+  // Tapping the orb while she's speaking (orange) interrupts her.
+  if (isSpeaking) {
+    stopSpeaking();
+    return;
+  }
 
   if (isListening) {
     // Tap to STOP listening
@@ -83,6 +128,8 @@ document.getElementById('orb-container').addEventListener('click', async () => {
 });
 
 async function startListening() {
+  // Clear any prior interrupt so this new exchange is allowed to speak.
+  playbackCancelled = false;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -178,18 +225,7 @@ async function processAudio(audioBlob) {
 
     // 4. Play audio
     const blob = await ttsRes.blob();
-    const url = URL.createObjectURL(blob);
-    audioPlayer.src = url;
-
-    setOrbState('speaking', 'Speaking...');
-    isSpeaking = true;
-
-    audioPlayer.onended = () => {
-      isSpeaking = false;
-      setOrbState('idle', 'Tap to talk to AURA');
-    };
-
-    audioPlayer.play();
+    playAudioBlob(blob);
   } catch (err) {
     console.error(err);
     setOrbState('error', 'Error occurred. Tap to retry.');
