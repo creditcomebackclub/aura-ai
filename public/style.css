@@ -51,7 +51,7 @@ body {
   border-radius: 50%;
   filter: blur(70px);
   mix-blend-mode: screen;
-  opacity: 0.4;
+  opacity: 0.3;
   will-change: transform;
 }
 
@@ -106,6 +106,126 @@ body[data-aura-state="error"] .aurora-blob--b {
 body[data-aura-state="error"] .aurora-blob--c {
   background: radial-gradient(circle, rgba(255, 150, 150, 0.4) 0%, rgba(255, 150, 150, 0) 70%);
 }
+
+/* Tron floor: a perspective grid receding toward a horizon below the orb,
+   with a bright line sweeping up through it on a loop. This is the piece
+   that actually reads as "Tron" - soft colour blobs alone read as ambient
+   nebula, not circuitry. Grid and sweep share one colour per state so they
+   never fall out of sync with each other. */
+#grid-floor {
+  position: absolute;
+  left: -20%;
+  right: -20%;
+  bottom: 0;
+  height: 58vh;
+  overflow: hidden;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.6;
+  transition: opacity 420ms ease;
+}
+
+#grid-floor::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0, 170, 255, 0.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 170, 255, 0.55) 1px, transparent 1px);
+  background-size: 56px 56px;
+  transform: perspective(500px) rotateX(62deg);
+  transform-origin: bottom center;
+  mask-image: linear-gradient(to top, black 0%, transparent 78%);
+  -webkit-mask-image: linear-gradient(to top, black 0%, transparent 78%);
+  transition: background-image 420ms ease;
+}
+
+/* The sweep: a bright horizontal line travelling up through the grid on a loop. */
+#grid-floor::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(120, 224, 255, 0.95), transparent);
+  box-shadow: 0 0 18px 2px rgba(0, 170, 255, 0.85);
+  animation: grid-scan 7s cubic-bezier(0.3, 0, 0.7, 1) infinite;
+  transition: background 420ms ease, box-shadow 420ms ease;
+}
+
+body[data-aura-state="listening"] #grid-floor::before {
+  background-image:
+    linear-gradient(rgba(0, 225, 140, 0.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 225, 140, 0.55) 1px, transparent 1px);
+}
+body[data-aura-state="listening"] #grid-floor::after {
+  background: linear-gradient(90deg, transparent, rgba(140, 255, 190, 0.95), transparent);
+  box-shadow: 0 0 18px 2px rgba(0, 225, 140, 0.85);
+}
+
+body[data-aura-state="speaking"] #grid-floor::before {
+  background-image:
+    linear-gradient(rgba(255, 140, 40, 0.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 140, 40, 0.55) 1px, transparent 1px);
+}
+body[data-aura-state="speaking"] #grid-floor::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 196, 130, 0.95), transparent);
+  box-shadow: 0 0 18px 2px rgba(255, 140, 40, 0.85);
+}
+
+body[data-aura-state="error"] #grid-floor::before {
+  background-image:
+    linear-gradient(rgba(255, 60, 60, 0.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 60, 60, 0.55) 1px, transparent 1px);
+}
+body[data-aura-state="error"] #grid-floor::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 150, 150, 0.95), transparent);
+  box-shadow: 0 0 18px 2px rgba(255, 60, 60, 0.85);
+}
+
+/* HUD corner brackets - a control-panel frame around the whole screen, echoing
+   "operating system" rather than a plain logo splash. Kept clear of the iPhone
+   notch/home-indicator via safe-area insets. */
+.hud-corner {
+  position: fixed;
+  width: 30px;
+  height: 30px;
+  border: 1.5px solid rgba(0, 180, 255, 0.55);
+  opacity: 0.6;
+  z-index: 5;
+  pointer-events: none;
+  transition: border-color 420ms ease;
+}
+
+.hud-corner--tl {
+  top: max(18px, env(safe-area-inset-top));
+  left: max(18px, env(safe-area-inset-left));
+  border-right: none;
+  border-bottom: none;
+}
+.hud-corner--tr {
+  top: max(18px, env(safe-area-inset-top));
+  right: max(18px, env(safe-area-inset-right));
+  border-left: none;
+  border-bottom: none;
+}
+.hud-corner--bl {
+  bottom: max(18px, env(safe-area-inset-bottom));
+  left: max(18px, env(safe-area-inset-left));
+  border-right: none;
+  border-top: none;
+}
+.hud-corner--br {
+  bottom: max(18px, env(safe-area-inset-bottom));
+  right: max(18px, env(safe-area-inset-right));
+  border-left: none;
+  border-top: none;
+}
+
+body[data-aura-state="listening"] .hud-corner { border-color: rgba(0, 225, 140, 0.6); }
+body[data-aura-state="speaking"] .hud-corner { border-color: rgba(255, 140, 40, 0.65); }
+body[data-aura-state="error"] .hud-corner { border-color: rgba(255, 60, 60, 0.65); }
 
 /* Neon wordmark. Thin letterforms and wide tracking do the "premium" work;
    the glow is layered from a tight white core out to a wide coloured bloom so
@@ -260,6 +380,22 @@ body[data-aura-state="error"] #aura-title {
   z-index: 0;
   transition: all 0.5s ease;
 }
+
+/* Sonar rings expanding out from the orb - reads as "she's listening/alive"
+   and ties the orb visually to the grid floor beneath it. */
+#orb-container::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid var(--orb-glow-idle);
+  animation: sonar-pulse 3.2s ease-out infinite;
+  pointer-events: none;
+}
+
+body[data-aura-state="listening"] #orb-container::after { border-color: var(--orb-glow-listen); }
+body[data-aura-state="speaking"] #orb-container::after { border-color: var(--orb-glow-speak); }
+body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-glow-error); }
 
 #orb {
   width: 110px;
@@ -491,15 +627,34 @@ body[data-aura-state="error"] #aura-title {
   50% { transform: translate(calc(-50% + 4vmax), 3vmax) scale(0.95); }
 }
 
+@keyframes grid-scan {
+  0% { top: 100%; opacity: 0; }
+  8% { opacity: 1; }
+  92% { opacity: 1; }
+  100% { top: 0%; opacity: 0; }
+}
+
+@keyframes sonar-pulse {
+  0% { transform: scale(1); opacity: 0.55; }
+  100% { transform: scale(1.85); opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   #orb,
   #orb-container::before,
+  #orb-container::after,
   #aura-title,
   #aura-title::before,
   .aurora-blob,
+  #grid-floor::after,
   #voice-wave {
     animation: none !important;
     transition: none !important;
+  }
+
+  #orb-container::after,
+  #grid-floor::after {
+    display: none;
   }
 
   #voice-wave,
