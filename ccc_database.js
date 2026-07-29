@@ -491,11 +491,148 @@ async function getOverdueClients(daysThreshold = 3) {
   }
 }
 
+// Only rows that are unmistakably scratch data may ever be deleted. Both the
+// client name and the furnisher must look like test records, and the letter
+// must never have been mailed - a mailed letter is a real artifact of a real
+// dispute, whatever it happens to be named.
+const TEST_RECORD_PATTERN = /\b(test|delete me|dummy|sample)\b/i;
+
+function describeLetter(letter) {
+  return {
+    id: letter.id,
+    client_name: letter.client_name,
+    furnisher: letter.furnisher,
+    phase: letter.phase,
+    date: letter.date,
+    mailed_date: letter.mailed_date
+  };
+}
+
+// Explains, in full, why a letter may or may not be deleted. Returns
+// { ok: true, letter } or { ok: false, reason } - never throws for a
+// non-deletable row, because the caller needs to tell the user why.
+async function inspectDeletableTestLetter(letterId) {
+  const db = initSupabase();
+  if (!db) return { ok: false, reason: 'Database connection not configured.' };
+
+  if (typeof letterId !== 'string' || !letterId.trim()) {
+    return { ok: false, reason: 'A specific letter id is required.' };
+  }
+
+  const { data, error } = await db.from('letters').select('*').eq('id', letterId.trim());
+  if (error) return { ok: false, reason: `Could not read letter: ${error.message}` };
+  if (!data || data.length === 0) {
+    return { ok: false, reason: `No letter exists with id "${letterId}".` };
+  }
+  if (data.length > 1) {
+    return { ok: false, reason: 'That id matched more than one letter; refusing to act.' };
+  }
+
+  const letter = data[0];
+
+  if (letter.mailed_date) {
+    return {
+      ok: false,
+      reason: `Letter "${letter.id}" was mailed on ${letter.mailed_date}. Mailed letters are real dispute records and cannot be deleted.`
+    };
+  }
+  if (!TEST_RECORD_PATTERN.test(letter.client_name || '')) {
+    return {
+      ok: false,
+      reason: `Client "${letter.client_name}" is not a test record. Only test letters can be deleted.`
+    };
+  }
+  if (!TEST_RECORD_PATTERN.test(letter.furnisher || '')) {
+    return {
+      ok: false,
+      reason: `Furnisher "${letter.furnisher}" is not a test record. Only test letters can be deleted.`
+    };
+  }
+
+  return { ok: true, letter };
+}
+
+// Lists the test letters that are currently eligible for deletion.
+async function listDeletableTestLetters() {
+  const db = initSupabase();
+  if (!db) return "Error: Database connection not configured.";
+
+  try {
+    const { data, error } = await db.from('letters').select('*').is('mailed_date', null);
+    if (error) throw error;
+
+    const eligible = (data || [])
+      .filter(letter =>
+        TEST_RECORD_PATTERN.test(letter.client_name || '') &&
+        TEST_RECORD_PATTERN.test(letter.furnisher || ''))
+      .map(describeLetter);
+
+    return JSON.stringify({ deletable_test_letters: eligible, count: eligible.length });
+  } catch (error) {
+    return `Error listing test letters: ${error.message}`;
+  }
+}
+
+// Deletes a single test letter, recording a full snapshot first so the row can
+// be reconstructed. Re-checks eligibility here rather than trusting the caller.
+async function deleteTestLetter(letterId, { actor, actorModel, userInstruction } = {}) {
+  const db = initSupabase();
+  if (!db) return { ok: false, reason: 'Database connection not configured.' };
+
+  const inspection = await inspectDeletableTestLetter(letterId);
+  if (!inspection.ok) return inspection;
+
+  const { letter } = inspection;
+  const ownerId = process.env.AURA_OWNER_ID || null;
+
+  // Write the audit row first. No trail, no deletion - the trail is not optional.
+  const { data: action, error: logError } = await db.from('aura_actions').insert({
+    owner_id: ownerId,
+    agent_id: 'aura_core',
+    tool_name: 'confirm_test_letter_deletion',
+    arguments: { table: 'letters', letter_id: letter.id, instruction: userInstruction || null },
+    risk_level: 'destructive_write',
+    requires_approval: true,
+    status: 'executing',
+    approved_by: ownerId,
+    approved_at: new Date().toISOString()
+  }).select('id').single();
+
+  if (logError) {
+    return { ok: false, reason: `Could not write the deletion audit record, so nothing was deleted: ${logError.message}` };
+  }
+
+  const { error: deleteError } = await db.from('letters').delete().eq('id', letter.id);
+
+  if (deleteError) {
+    await db.from('aura_actions')
+      .update({ status: 'failed', error: deleteError.message, executed_at: new Date().toISOString() })
+      .eq('id', action.id);
+    return { ok: false, reason: `Nothing was deleted: ${deleteError.message}` };
+  }
+
+  // Keep the full row in the audit record so the letter can be reconstructed.
+  const executedAt = new Date().toISOString();
+  await db.from('aura_actions')
+    .update({
+      status: 'succeeded',
+      executed_at: executedAt,
+      result: { deleted_by: actor || 'AURA', actor_model: actorModel || null, record_snapshot: letter }
+    })
+    .eq('id', action.id);
+
+  return { ok: true, deleted: describeLetter(letter), auditId: action.id, deletedAt: executedAt };
+}
+
 module.exports = {
   listTables,
   getTableSchema,
   queryTable,
   countRows,
+  inspectDeletableTestLetter,
+  listDeletableTestLetters,
+  deleteTestLetter,
+  TEST_RECORD_PATTERN,
   getOutstandingBalances,
   calculateFinancialMetrics,
   getOverdueClients,

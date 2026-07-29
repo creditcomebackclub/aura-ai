@@ -13,10 +13,14 @@ const TOOL_POLICIES = Object.freeze({
   query_finances: 'read',
   check_blackboard: 'read',
   search_web: 'read',
+  list_deletable_test_letters: 'read',
   add_goal: 'reversible_write',
   update_goal_status: 'reversible_write',
   log_finance: 'reversible_write',
-  save_semantic_memory: 'reversible_write'
+  save_semantic_memory: 'reversible_write',
+  // Staging a deletion changes nothing on its own; only the confirm step destroys data.
+  propose_test_letter_deletion: 'reversible_write',
+  confirm_test_letter_deletion: 'destructive_write'
 });
 
 const SEARCH_SECRET_PATTERNS = [
@@ -71,6 +75,9 @@ function validateToolArguments(name, args) {
   if (name === 'search_web') {
     requireString('query', 500);
     validatePublicSearchInput(args.query, 500);
+  }
+  if (name === 'propose_test_letter_deletion' || name === 'confirm_test_letter_deletion') {
+    requireString('letter_id', 300);
   }
   if (name === 'add_goal') requireString('description', 1000);
   if (name === 'save_semantic_memory') requireString('fact', 2000);
