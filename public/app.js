@@ -222,7 +222,10 @@ async function handleUtterance(audioBlob) {
 
     let command = transcript;
     if (hasWakeWord) {
-      command = transcript.replace(WAKE_WORD, '').replace(/^[\s,:.!-]+/, '').trim();
+      // Drop everything up to and including the wake word (e.g. a leading "Hey"),
+      // not just blank out the matched word in place.
+      const match = transcript.match(WAKE_WORD);
+      command = transcript.slice(match.index + match[0].length).replace(/^[\s,:.!-]+/, '').trim();
     }
 
     if (!command) {
