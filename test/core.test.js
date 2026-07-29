@@ -440,6 +440,18 @@ test('model routing defaults to Sol with Luna for memory work', () => {
       reasoning_effort: 'medium'
     }
   );
+  assert.deepEqual(
+    brainRequestOptions(config, {
+      messages: [],
+      tools: [{ type: 'function', function: { name: 'lookup' } }]
+    }),
+    {
+      messages: [],
+      tools: [{ type: 'function', function: { name: 'lookup' } }],
+      model: 'gpt-5.6-sol',
+      reasoning_effort: 'none'
+    }
+  );
 });
 
 test('bureau-specific letter labels become concise client phases', () => {

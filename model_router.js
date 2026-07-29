@@ -26,11 +26,17 @@ function resolveModelConfig(env = process.env) {
 
 function brainRequestOptions(config, options = {}) {
   const model = options.model || config.primaryModel;
+  const hasFunctionTools = Array.isArray(options.tools) && options.tools.length > 0;
   return {
     ...options,
     model,
     ...(config.provider === 'openai' && /^gpt-5\.6/.test(model)
-      ? { reasoning_effort: config.reasoningEffort }
+      ? {
+          // GPT-5.6 Sol supports Chat Completions function tools only when
+          // reasoning effort is disabled. Tool-free synthesis can retain the
+          // configured reasoning level.
+          reasoning_effort: hasFunctionTools ? 'none' : config.reasoningEffort
+        }
       : {})
   };
 }
