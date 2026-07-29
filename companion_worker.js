@@ -3,9 +3,15 @@ const mac = require('./mac_integration');
 require('dotenv').config({ quiet: true });
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+const ownerId = process.env.AURA_OWNER_ID;
 const targetDevice = process.env.AURA_COMPANION_DEVICE || 'chriss-macbook-pro';
 const pollInterval = Math.max(2000, Number(process.env.AURA_COMPANION_POLL_MS) || 5000);
 let stopping = false;
+let lastMaintenanceAt = 0;
+
+if (!ownerId) {
+  throw new Error('AURA_OWNER_ID is required for the Mac companion.');
+}
 
 async function executeCapability(capability) {
   switch (capability) {
@@ -19,9 +25,36 @@ async function executeCapability(capability) {
 }
 
 async function claimNextJob() {
+  const now = Date.now();
+  if (now - lastMaintenanceAt >= 60000) {
+    lastMaintenanceAt = now;
+    const currentTimestamp = new Date(now).toISOString();
+    const staleClaimTimestamp = new Date(now - 2 * 60000).toISOString();
+
+    const { error: expireError } = await supabase
+      .from('aura_companion_jobs')
+      .update({ status: 'expired', completed_at: currentTimestamp })
+      .eq('owner_id', ownerId)
+      .eq('target_device', targetDevice)
+      .in('status', ['queued', 'claimed'])
+      .lt('expires_at', currentTimestamp);
+    if (expireError) throw expireError;
+
+    const { error: reclaimError } = await supabase
+      .from('aura_companion_jobs')
+      .update({ status: 'queued', claimed_at: null })
+      .eq('owner_id', ownerId)
+      .eq('target_device', targetDevice)
+      .eq('status', 'claimed')
+      .lt('claimed_at', staleClaimTimestamp)
+      .gt('expires_at', currentTimestamp);
+    if (reclaimError) throw reclaimError;
+  }
+
   const { data: queued, error } = await supabase
     .from('aura_companion_jobs')
     .select('id, capability, request, expires_at')
+    .eq('owner_id', ownerId)
     .eq('target_device', targetDevice)
     .eq('status', 'queued')
     .gt('expires_at', new Date().toISOString())
@@ -35,6 +68,7 @@ async function claimNextJob() {
     .from('aura_companion_jobs')
     .update({ status: 'claimed', claimed_at: new Date().toISOString() })
     .eq('id', job.id)
+    .eq('owner_id', ownerId)
     .eq('status', 'queued')
     .select('id, capability, request')
     .maybeSingle();
@@ -49,14 +83,14 @@ async function processJob(job) {
       status: 'succeeded',
       result: { text: result },
       completed_at: new Date().toISOString()
-    }).eq('id', job.id);
+    }).eq('id', job.id).eq('owner_id', ownerId);
     if (error) throw error;
   } catch (error) {
     await supabase.from('aura_companion_jobs').update({
       status: 'failed',
       error: error.message,
       completed_at: new Date().toISOString()
-    }).eq('id', job.id);
+    }).eq('id', job.id).eq('owner_id', ownerId);
   }
 }
 

@@ -2,7 +2,7 @@ services:
   - type: web
     name: aura-brain
     runtime: docker
-    plan: starter
+    plan: free
     branch: codex/aura-cloud-brain
     healthCheckPath: /healthz
     autoDeployTrigger: commit
@@ -19,8 +19,6 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
-      - key: SUPABASE_ANON_KEY
-        sync: false
       - key: AURA_OWNER_ID
         sync: false
       - key: AURA_STATE_BACKEND
@@ -33,6 +31,8 @@ services:
         value: America/Phoenix
       - key: AURA_SCHEDULER_ENABLED
         value: "true"
+      - key: AURA_CRON_SECRET
+        sync: false
       - key: AURA_COMPANION_DEVICE
         value: chriss-macbook-pro
       - key: BLACKBOARD_ICAL_URL

@@ -49,11 +49,15 @@ create table if not exists public.aura_notifications (
   category text not null default 'general',
   urgency text not null default 'normal'
     check (urgency in ('low', 'normal', 'high', 'critical')),
+  dedupe_key text,
   metadata jsonb not null default '{}'::jsonb,
   delivered_at timestamptz,
   acknowledged_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table public.aura_notifications
+  add column if not exists dedupe_key text;
 
 create table if not exists public.aura_state (
   owner_id uuid references auth.users(id) on delete cascade,
@@ -138,6 +142,9 @@ create index if not exists aura_messages_conversation_created
   on public.aura_messages(conversation_id, created_at);
 create index if not exists aura_notifications_owner_unread
   on public.aura_notifications(owner_id, acknowledged_at, created_at desc);
+create unique index if not exists aura_notifications_owner_dedupe
+  on public.aura_notifications(owner_id, dedupe_key)
+  where dedupe_key is not null;
 create index if not exists aura_tasks_owner_status
   on public.aura_tasks(owner_id, status, created_at desc);
 create index if not exists aura_actions_task_status

@@ -11,7 +11,16 @@ const {
   scoreClientName,
   rankClientMatches
 } = require('../ccc_database');
-const { parseBlackboardIcs } = require('../scraper');
+const {
+  checkBlackboardCalendarFeed,
+  isIcsCalendar,
+  parseBlackboardIcs
+} = require('../scraper');
+const { createBlackboardDeadlineCheck } = require('../blackboard_deadline_check');
+const {
+  createSchedulerAuthenticator,
+  isValidCronSecret
+} = require('../scheduler_auth');
 
 function toolCall(name, args) {
   return { function: { name, arguments: JSON.stringify(args) } };
@@ -144,5 +153,189 @@ test('Blackboard iCalendar events are parsed into structured assignments', () =>
   assert.equal(events[0].title, 'Week 3, Written Assignment');
   assert.match(events[0].description, /Worth 100 points/);
   assert.equal(events[0].url, 'https://example.edu/assignment/123');
-  assert.equal(events[0].due_at.slice(0, 10), '2026-08-02');
+  assert.equal(events[0].due_at, '2026-08-02T06:59:00.000Z');
+});
+
+test('Blackboard calendar validation rejects an HTML login page', () => {
+  assert.equal(isIcsCalendar('<html><title>Sign in</title></html>'), false);
+  assert.equal(isIcsCalendar('BEGIN:VCALENDAR\r\nEND:VCALENDAR'), true);
+});
+
+test('Blackboard calendar feed rejects an HTTP 200 login page', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    text: async () => '<html><title>Sign in</title></html>'
+  });
+  try {
+    const result = await checkBlackboardCalendarFeed('https://example.edu/calendar.ics');
+    assert.match(result, /^BLACKBOARD_CALENDAR_ERROR:/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('scheduler authentication fails closed and accepts only the configured secret', () => {
+  const configuredSecret = 'a'.repeat(64);
+  assert.equal(isValidCronSecret(configuredSecret), true);
+  assert.equal(isValidCronSecret('too-short'), false);
+
+  function invoke(expectedSecret, providedSecret) {
+    const response = {
+      statusCode: 200,
+      body: null,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(body) {
+        this.body = body;
+        return this;
+      }
+    };
+    let nextCalled = false;
+    createSchedulerAuthenticator(expectedSecret)(
+      { get: () => providedSecret },
+      response,
+      () => { nextCalled = true; }
+    );
+    return { response, nextCalled };
+  }
+
+  assert.equal(invoke('', configuredSecret).response.statusCode, 503);
+  assert.equal(invoke(configuredSecret, 'b'.repeat(64)).response.statusCode, 401);
+  const authorized = invoke(configuredSecret, configuredSecret);
+  assert.equal(authorized.response.statusCode, 200);
+  assert.equal(authorized.nextCalled, true);
+  assert.equal(JSON.stringify(invoke(configuredSecret, 'b'.repeat(64)).response.body).includes('b'.repeat(64)), false);
+});
+
+test('Blackboard deadline checks are deterministic and idempotent', async () => {
+  const state = new Map();
+  const alerts = [];
+  let calendarReads = 0;
+  const check = createBlackboardDeadlineCheck({
+    now: () => new Date('2026-07-29T14:00:00Z'),
+    checkAssignments: async () => {
+      calendarReads += 1;
+      return JSON.stringify({
+        source: 'blackboard_ical',
+        assignments: [
+          {
+            title: 'Week 5 Discussion',
+            due_at: '2026-07-30T06:59:00Z'
+          },
+          {
+            title: 'Later Assignment',
+            due_at: '2026-08-10T06:59:00Z'
+          }
+        ]
+      });
+    },
+    getAlertState: async key => state.get(key) ?? null,
+    setAlertState: async (key, value) => state.set(key, value),
+    sendAlert: async (text, category, urgency) => alerts.push({ text, category, urgency })
+  });
+
+  const first = await check();
+  const retry = await check();
+
+  assert.equal(first.status, 'complete');
+  assert.equal(first.due_count, 1);
+  assert.equal(retry.status, 'already_checked');
+  assert.equal(calendarReads, 1);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0].text, /Week 5 Discussion/);
+  assert.equal(state.get('blackboard_digest_date'), '2026-07-29');
+});
+
+test('concurrent Blackboard scheduler calls share one active check', async () => {
+  const state = new Map();
+  let reads = 0;
+  let releases;
+  const blockedRead = new Promise(resolve => {
+    releases = resolve;
+  });
+  const check = createBlackboardDeadlineCheck({
+    now: () => new Date('2026-07-29T14:00:00Z'),
+    checkAssignments: async () => {
+      reads += 1;
+      await blockedRead;
+      return JSON.stringify({ source: 'blackboard_ical', assignments: [] });
+    },
+    getAlertState: async key => state.get(key) ?? null,
+    setAlertState: async (key, value) => state.set(key, value),
+    sendAlert: async () => {}
+  });
+
+  const first = check();
+  const overlapping = check();
+  releases();
+  const [firstResult, overlappingResult] = await Promise.all([first, overlapping]);
+
+  assert.equal(reads, 1);
+  assert.equal(firstResult.status, 'complete');
+  assert.equal(firstResult.due_count, 0);
+  assert.deepEqual(overlappingResult, firstResult);
+});
+
+test('separate schedulers use the same durable Blackboard notification key', async () => {
+  const state = new Map();
+  const notificationKeys = new Set();
+  let notificationsCreated = 0;
+  const dependencies = {
+    now: () => new Date('2026-07-29T14:00:00Z'),
+    checkAssignments: async () => JSON.stringify({
+      source: 'blackboard_ical',
+      assignments: [{
+        title: 'Week 5 Discussion',
+        due_at: '2026-07-30T06:59:00Z'
+      }]
+    }),
+    getAlertState: async key => state.get(key) ?? null,
+    setAlertState: async (key, value) => state.set(key, value),
+    sendAlert: async (_text, _category, _urgency, options) => {
+      if (notificationKeys.has(options.dedupeKey)) return { deduplicated: true };
+      notificationKeys.add(options.dedupeKey);
+      notificationsCreated += 1;
+      return { deduplicated: false };
+    }
+  };
+  const macCheck = createBlackboardDeadlineCheck(dependencies);
+  const cloudCheck = createBlackboardDeadlineCheck(dependencies);
+
+  await Promise.all([macCheck(), cloudCheck()]);
+
+  assert.equal(notificationsCreated, 1);
+  assert.deepEqual([...notificationKeys], ['blackboard-deadlines:2026-07-29']);
+});
+
+test('separate schedulers deduplicate Blackboard source errors', async () => {
+  const state = new Map();
+  const notificationKeys = new Set();
+  let notificationsCreated = 0;
+  const dependencies = {
+    now: () => new Date('2026-07-29T14:00:00Z'),
+    checkAssignments: async () =>
+      'BLACKBOARD_CALENDAR_ERROR: Calendar feed did not return iCalendar data.',
+    getAlertState: async key => state.get(key) ?? null,
+    setAlertState: async (key, value) => state.set(key, value),
+    sendAlert: async (_text, _category, _urgency, options) => {
+      if (notificationKeys.has(options.dedupeKey)) return { deduplicated: true };
+      notificationKeys.add(options.dedupeKey);
+      notificationsCreated += 1;
+      return { deduplicated: false };
+    }
+  };
+
+  await Promise.all([
+    createBlackboardDeadlineCheck(dependencies)(),
+    createBlackboardDeadlineCheck(dependencies)()
+  ]);
+
+  assert.equal(notificationsCreated, 1);
+  assert.deepEqual(
+    [...notificationKeys],
+    ['blackboard-error:BLACKBOARD_CALENDAR_ERROR:2026-07-29']
+  );
 });

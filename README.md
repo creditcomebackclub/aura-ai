@@ -17,17 +17,19 @@ OpenAI is currently required for transcription and semantic embeddings even when
 
 ## Phone and LAN access
 
-Localhost works without a token. All non-localhost API and WebSocket connections
-are denied unless `AURA_ACCESS_TOKEN` is set.
+The recommended Mac-hosted mode uses Tailscale Serve and Tailscale identity:
 
-To pair a phone on the same network, use:
-
-```text
-http://YOUR_MAC_IP:3000/?token=YOUR_AURA_ACCESS_TOKEN
+```bash
+tailscale serve --bg http://127.0.0.1:3000
 ```
 
-The browser stores the token locally and removes it from the visible URL. Use a
-long random token and do not share that URL.
+Set `AURA_AUTH_MODE=tailscale`, `AURA_PUBLIC_URL` to the generated HTTPS URL,
+and `AURA_TAILSCALE_LOGIN` to the owner's Tailscale login. The phone must have
+Tailscale connected whenever it opens this private Mac URL. No shared AURA token
+is needed in this mode.
+
+`AURA_ACCESS_TOKEN` remains available as a legacy LAN option. The cloud service
+uses Supabase Auth instead.
 
 ## Privacy and security
 
@@ -38,7 +40,8 @@ long random token and do not share that URL.
 - Tool results, emails, webpages, database values, and memories are explicitly
   treated as untrusted data rather than agent instructions.
 - Conversation history, structured memories, notifications, goals, and finance
-  logs are stored locally in `aura.db`.
+  logs use Supabase when `AURA_STATE_BACKEND=supabase`; otherwise they remain
+  local in `aura.db`.
 - Raw Blackboard text is not saved unless `AURA_DEBUG_SCRAPES=true`.
 - Memory can be inspected with `GET /api/memories` and deleted with
   `DELETE /api/memories/:id`.
@@ -60,8 +63,9 @@ subscription. If the Blackboard Calendar settings offer an iCal or "external
 calendar subscription" link, store it as `BLACKBOARD_ICAL_URL` in `.env`. Treat
 that URL like a password.
 
-When no calendar URL is configured, AURA uses a persistent browser session.
-Renew an expired session with:
+When no calendar URL is configured, Mac-hosted AURA can use a persistent browser
+session. Cloud AURA fails closed instead of attempting to store or automate a
+Blackboard login. Renew an expired local session with:
 
 ```bash
 node login-blackboard.js
@@ -105,10 +109,28 @@ Service output is written to `aura-service.log` and
 4. Set `AURA_STATE_BACKEND=supabase`.
 5. Restart and verify chat history, memories, notifications, and tasks.
 
-`render.yaml` and `Dockerfile` define the always-on cloud service. Configure the
-secret environment variables in the Render blueprint, set `AURA_PUBLIC_URL` to
-the deployed HTTPS origin, and add that origin to the Supabase Auth redirect
-allowlist.
+`render.yaml` and `Dockerfile` define a $0 Render Free web service. Configure
+the secret environment variables in the Render blueprint, set
+`AURA_PUBLIC_URL` to the deployed HTTPS origin, and add that exact origin to the
+Supabase Auth redirect allowlist.
+
+Render Free sleeps after 15 minutes without inbound HTTP or WebSocket traffic.
+Opening AURA wakes it, which can take about a minute. All durable state stays in
+Supabase, so sleeping and redeploying do not erase conversations, tasks,
+notifications, or memories.
+
+The in-process 7:00 AM deadline timer cannot run while Render is asleep. To keep
+that check reliable without a paid cron service:
+
+1. Generate a 64-character secret with `openssl rand -hex 32` and configure it
+   in Render as `AURA_CRON_SECRET`. Do not paste it into chat or commit it.
+2. In Supabase Vault, create `aura_deadline_origin` with the Render HTTPS origin
+   and `aura_deadline_cron_secret` with that same random secret.
+3. Run `supabase_free_scheduler.sql` in the Supabase SQL Editor.
+
+Supabase then calls the protected deadline endpoint shortly after 7:00 AM
+Phoenix time. Calls repeat briefly to survive a cold start, while AURA's durable
+daily state prevents duplicate alerts.
 
 In cloud mode, Apple Mail and Calendar requests become jobs in
 `aura_companion_jobs`. Run `npm run companion` on the Mac to service them. The

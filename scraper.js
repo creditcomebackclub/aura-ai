@@ -14,11 +14,56 @@ function decodeIcsText(value = '') {
     .trim();
 }
 
-function parseIcsDate(value) {
+function isIcsCalendar(text) {
+  return /(?:^|\r?\n)BEGIN:VCALENDAR(?:\r?\n|$)/i.test(String(text));
+}
+
+function dateTimeInZone({ year, month, day, hour, minute, second }, timeZone) {
+  const desiredTimestamp = Date.UTC(year, month - 1, day, hour, minute, second);
+  let candidateTimestamp = desiredTimestamp;
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  });
+
+  // Intl exposes wall-clock parts but not the offset directly. Recalculate the
+  // candidate twice so DST-aware zones also settle on the intended instant.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const parts = Object.fromEntries(
+      formatter.formatToParts(new Date(candidateTimestamp))
+        .filter(part => part.type !== 'literal')
+        .map(part => [part.type, Number(part.value)])
+    );
+    const representedTimestamp = Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour,
+      parts.minute,
+      parts.second
+    );
+    candidateTimestamp += desiredTimestamp - representedTimestamp;
+  }
+  return new Date(candidateTimestamp);
+}
+
+function parseIcsDate(value, timeZone = process.env.AURA_TIMEZONE || 'America/Phoenix') {
   if (!value) return null;
   const clean = value.trim();
   const match = clean.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?Z?)?$/);
   if (!match) {
+    // Only accept a non-ICS fallback when it carries an explicit UTC offset.
+    // Otherwise Node would interpret it in the host timezone, producing
+    // different deadlines on the Mac and Render's UTC container.
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/i.test(clean)) {
+      return null;
+    }
     const parsed = new Date(clean);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
@@ -28,7 +73,25 @@ function parseIcsDate(value) {
   if (clean.endsWith('Z')) {
     return new Date(Date.UTC(+year, +month - 1, +day, +hour, +minute, +second));
   }
-  return new Date(+year, +month - 1, +day, +hour, +minute, +second);
+  try {
+    return dateTimeInZone({
+      year: +year,
+      month: +month,
+      day: +day,
+      hour: +hour,
+      minute: +minute,
+      second: +second
+    }, String(timeZone || 'America/Phoenix').replace(/^"(.*)"$/, '$1'));
+  } catch {
+    return dateTimeInZone({
+      year: +year,
+      month: +month,
+      day: +day,
+      hour: +hour,
+      minute: +minute,
+      second: +second
+    }, 'America/Phoenix');
+  }
 }
 
 function parseBlackboardIcs(text) {
@@ -36,14 +99,35 @@ function parseBlackboardIcs(text) {
   const blocks = unfolded.match(/BEGIN:VEVENT[\s\S]*?END:VEVENT/g) || [];
   return blocks.map(block => {
     const fields = {};
+    const fieldParameters = {};
     for (const line of block.split(/\r?\n/)) {
       const separator = line.indexOf(':');
       if (separator < 0) continue;
       const rawKey = line.slice(0, separator);
       const key = rawKey.split(';')[0].toUpperCase();
-      if (!fields[key]) fields[key] = line.slice(separator + 1);
+      if (!fields[key]) {
+        fields[key] = line.slice(separator + 1);
+        fieldParameters[key] = Object.fromEntries(
+          rawKey.split(';').slice(1).map(parameter => {
+            const equals = parameter.indexOf('=');
+            if (equals < 0) return [parameter.toUpperCase(), ''];
+            return [
+              parameter.slice(0, equals).toUpperCase(),
+              parameter.slice(equals + 1)
+            ];
+          })
+        );
+      }
     }
-    const due = parseIcsDate(fields.DTSTART || fields.DUE || fields.DTEND);
+    const dueField = fields.DTSTART
+      ? 'DTSTART'
+      : fields.DUE
+        ? 'DUE'
+        : 'DTEND';
+    const due = parseIcsDate(
+      fields[dueField],
+      fieldParameters[dueField]?.TZID || process.env.AURA_TIMEZONE || 'America/Phoenix'
+    );
     return {
       title: decodeIcsText(fields.SUMMARY || 'Untitled assignment'),
       due_at: due ? due.toISOString() : null,
@@ -64,7 +148,11 @@ async function checkBlackboardCalendarFeed(feedUrl) {
       signal: AbortSignal.timeout(20000)
     });
     if (!response.ok) return `BLACKBOARD_CALENDAR_ERROR: Calendar feed returned HTTP ${response.status}.`;
-    const events = parseBlackboardIcs(await response.text());
+    const calendarText = await response.text();
+    if (!isIcsCalendar(calendarText)) {
+      return 'BLACKBOARD_CALENDAR_ERROR: Calendar feed did not return iCalendar data.';
+    }
+    const events = parseBlackboardIcs(calendarText);
     const now = Date.now();
     const relevant = events.filter(event => {
       const due = new Date(event.due_at).getTime();
@@ -83,6 +171,9 @@ async function checkBlackboardCalendarFeed(feedUrl) {
 async function checkBlackboardAssignments() {
   if (process.env.BLACKBOARD_ICAL_URL) {
     return checkBlackboardCalendarFeed(process.env.BLACKBOARD_ICAL_URL);
+  }
+  if (process.env.AURA_RUNTIME === 'cloud') {
+    return 'BLACKBOARD_CALENDAR_ERROR: Blackboard calendar access is not configured on the cloud service.';
   }
 
   let browser;
@@ -216,6 +307,8 @@ async function searchWeb(query) {
 module.exports = {
   checkBlackboardAssignments,
   checkBlackboardCalendarFeed,
+  isIcsCalendar,
+  parseIcsDate,
   parseBlackboardIcs,
   searchWeb
 };

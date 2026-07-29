@@ -2,9 +2,19 @@ const { execFile } = require('child_process');
 
 function runAppleScript(script) {
   return new Promise((resolve, reject) => {
-    execFile('osascript', ['-e', script], {
+    execFile('/usr/bin/osascript', ['-e', script], {
       timeout: 75000,
-      maxBuffer: 1024 * 1024
+      maxBuffer: 1024 * 1024,
+      // Do not pass API keys or the Blackboard feed token from AURA's process
+      // into AppleScript child processes.
+      env: Object.fromEntries(Object.entries({
+        HOME: process.env.HOME,
+        USER: process.env.USER,
+        LOGNAME: process.env.LOGNAME,
+        TMPDIR: process.env.TMPDIR,
+        LANG: process.env.LANG || 'en_US.UTF-8',
+        PATH: '/usr/bin:/bin:/usr/sbin:/sbin'
+      }).filter(([, value]) => typeof value === 'string' && value))
     }, (error, stdout, stderr) => {
       if (error) {
         console.error('AppleScript Error:', stderr);
@@ -59,16 +69,16 @@ async function getUnreadEmails() {
       end timeout
     on error errMsg number errNum
       if errNum is -1712 then
-        return "Apple Mail did not finish the unread-message scan within 60 seconds."
+        error "Apple Mail did not finish the unread-message scan within 60 seconds."
       else
-        return "Error reading Apple Mail: " & errMsg
+        error "Error reading Apple Mail: " & errMsg
       end if
     end try
   `;
   try {
     return await runAppleScript(script);
-  } catch (e) {
-    return "Error reading Apple Mail. Please ensure you clicked 'Allow' if prompted for permissions on your Mac.";
+  } catch {
+    throw new Error("Apple Mail could not be read. Check the Mac's Automation permission for AURA.");
   }
 }
 
@@ -97,8 +107,8 @@ async function getTodaysCalendar() {
   `;
   try {
     return await runAppleScript(script);
-  } catch (e) {
-    return "Error reading Apple Calendar. Please ensure you clicked 'Allow' if prompted for permissions on your Mac.";
+  } catch {
+    throw new Error("Apple Calendar could not be read. Check the Mac's Automation permission for AURA.");
   }
 }
 

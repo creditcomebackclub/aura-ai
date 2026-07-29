@@ -13,6 +13,8 @@ const compression = require('compression');
 const multer = require('multer');
 const crypto = require('crypto');
 const scraper = require('./scraper');
+const { createBlackboardDeadlineCheck } = require('./blackboard_deadline_check');
+const { createSchedulerAuthenticator } = require('./scheduler_auth');
 const mac = require('./mac_integration');
 const ccc = require('./ccc_database');
 const { MemoryStore } = require('./memory_store');
@@ -84,6 +86,7 @@ if (db) db.exec(`
     text TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'general',
     urgency TEXT NOT NULL DEFAULT 'normal',
+    dedupe_key TEXT,
     delivered_at DATETIME,
     acknowledged_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -94,7 +97,9 @@ if (db) db.exec(`
 // so the column is added bare here and backfilled separately.
 if (db) {
   try { db.exec("ALTER TABLE goals ADD COLUMN created_at DATETIME"); } catch (e) { /* column already exists */ }
+  try { db.exec("ALTER TABLE notifications ADD COLUMN dedupe_key TEXT"); } catch (e) { /* column already exists */ }
   db.exec("UPDATE goals SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_key ON notifications(dedupe_key) WHERE dedupe_key IS NOT NULL");
 }
 
 // AI Setup
@@ -229,29 +234,45 @@ async function setAlertState(key, value) {
   `).run(key, JSON.stringify(value));
 }
 
-async function sendProactiveAlert(text, category = 'general', urgency = 'normal') {
-  console.log('[Proactive Alert]', text);
+async function sendProactiveAlert(text, category = 'general', urgency = 'normal', options = {}) {
   let notification;
   if (cloudState) {
-    notification = await cloudState.createNotification(text, category, urgency);
+    notification = await cloudState.createNotification(text, category, urgency, options);
   } else {
-    const result = db.prepare(
-      'INSERT INTO notifications (text, category, urgency) VALUES (?, ?, ?)'
-    ).run(text, category, urgency);
+    if (options.dedupeKey) {
+      const existing = db.prepare(
+        'SELECT * FROM notifications WHERE dedupe_key = ?'
+      ).get(options.dedupeKey);
+      if (existing) return { ...existing, deduplicated: true };
+    }
+    const result = db.prepare(`
+      INSERT INTO notifications (text, category, urgency, dedupe_key)
+      VALUES (?, ?, ?, ?)
+    `).run(text, category, urgency, options.dedupeKey || null);
     notification = {
       id: Number(result.lastInsertRowid),
       text,
       category,
       urgency,
+      dedupe_key: options.dedupeKey || null,
+      deduplicated: false,
       created_at: new Date().toISOString()
     };
     db.prepare('UPDATE notifications SET delivered_at = CURRENT_TIMESTAMP WHERE id = ?')
       .run(notification.id);
   }
+  if (notification.deduplicated) return notification;
+  console.log('[Proactive Alert] Created notification:', {
+    id: notification.id,
+    category,
+    urgency
+  });
   io.emit('proactive-alert', notification);
+  return notification;
 }
 
 const accessToken = process.env.AURA_ACCESS_TOKEN || '';
+const cronSecret = process.env.AURA_CRON_SECRET || '';
 const authMode = process.env.AURA_AUTH_MODE || 'token';
 const authSupabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
@@ -299,11 +320,15 @@ function isTrustedTailscaleRequest(req) {
     login === expectedLogin;
 }
 
-function safeTokenEqual(provided) {
-  if (!accessToken || typeof provided !== 'string') return false;
-  const expected = Buffer.from(accessToken);
+function safeSecretEqual(expectedSecret, provided) {
+  if (!expectedSecret || typeof provided !== 'string') return false;
+  const expected = Buffer.from(expectedSecret);
   const actual = Buffer.from(provided);
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+function safeTokenEqual(provided) {
+  return safeSecretEqual(accessToken, provided);
 }
 
 async function authenticate(req, res, next) {
@@ -341,6 +366,43 @@ function rateLimit(req, res, next) {
   if (bucket.count > 60) return res.status(429).json({ error: 'Too many requests. Try again shortly.' });
   next();
 }
+
+const runBlackboardDeadlineCheck = createBlackboardDeadlineCheck({
+  checkAssignments: () => scraper.checkBlackboardAssignments(),
+  getAlertState,
+  setAlertState,
+  sendAlert: sendProactiveAlert,
+  timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
+  summarizeText: async scraped => {
+    const summary = await openai.chat.completions.create({
+      model: chatModel,
+      messages: [
+        {
+          role: 'system',
+          content: 'You monitor a students Blackboard/university portal page for upcoming assignment deadlines. Given the raw scraped page text, respond with ONE short spoken sentence naming only deadlines due within the next 3 days. Do not use markdown. If nothing is due within 3 days, respond with exactly: NONE'
+        },
+        { role: 'user', content: scraped }
+      ]
+    });
+    return summary.choices[0].message.content;
+  }
+});
+
+const authenticateCron = createSchedulerAuthenticator(cronSecret);
+
+// Supabase Cron calls this route directly. It intentionally has a dedicated
+// secret instead of reusing a phone session, user JWT, or Supabase service key.
+app.post('/internal/scheduled/blackboard-deadlines', authenticateCron, rateLimit, async (req, res) => {
+  try {
+    const result = await runBlackboardDeadlineCheck();
+    // pg_net temporarily retains response bodies, so return operational status
+    // only—never assignment names, dates, or other private calendar details.
+    res.json({ ok: true, status: result.status });
+  } catch (error) {
+    console.error('Error in external Blackboard deadline check:', error);
+    res.status(500).json({ ok: false, error: 'Deadline check failed.' });
+  }
+});
 
 app.get('/auth/config', (req, res) => {
   res.json({ mode: authMode === 'hybrid' ? 'supabase' : authMode });
@@ -1089,88 +1151,14 @@ if (schedulerEnabled) cron.schedule('0 8,16 * * *', async () => {
   }
 }, schedulerOptions);
 
-// Blackboard deadline check, once daily in the morning. The calendar is
-// reevaluated every day so an unchanged assignment still triggers when it
-// crosses into the three-day warning window.
+// Blackboard deadline check, once daily in the morning. On a sleeping Render
+// Free instance, Supabase Cron invokes the same function through the protected
+// route above a few minutes later.
 if (schedulerEnabled) cron.schedule('0 7 * * *', async () => {
   console.log('[Cron] Running scheduled Blackboard check...');
   try {
-    const scraped = await scraper.checkBlackboardAssignments();
-    if (!scraped || typeof scraped !== 'string' || scraped.length < 50) return;
-    if (scraped.startsWith('BLACKBOARD_')) {
-      const errorType = scraped.split(':')[0];
-      if ((await getAlertState('blackboard_error')) !== errorType) {
-        await sendProactiveAlert(scraped.replace(/^BLACKBOARD_[A-Z_]+:\s*/, ''), 'blackboard', 'normal');
-        await setAlertState('blackboard_error', errorType);
-      }
-      return;
-    }
-    await setAlertState('blackboard_error', null);
-
-    const phoenixDate = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/Phoenix',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).format(new Date());
-    if ((await getAlertState('blackboard_digest_date')) === phoenixDate) return;
-
-    // Calendar feeds are structured enough to evaluate deterministically,
-    // avoiding an LLM inventing or dropping a due date.
-    try {
-      const calendar = JSON.parse(scraped);
-      if (calendar.source === 'blackboard_ical' && Array.isArray(calendar.assignments)) {
-        const now = Date.now();
-        const cutoff = now + 3 * 86400000;
-        const upcoming = calendar.assignments
-          .filter(item => {
-            const due = new Date(item.due_at).getTime();
-            return Number.isFinite(due) && due >= now && due <= cutoff;
-          })
-          .sort((a, b) => new Date(a.due_at) - new Date(b.due_at));
-
-        if (upcoming.length > 0) {
-          const dueFormatter = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'America/Phoenix',
-            weekday: 'short',
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit'
-          });
-          const list = upcoming
-            .slice(0, 6)
-            .map(item => `${item.title}, due ${dueFormatter.format(new Date(item.due_at))}`)
-            .join('; ');
-          await sendProactiveAlert(
-            `You have ${upcoming.length} Blackboard deadline${upcoming.length === 1 ? '' : 's'} in the next three days: ${list}.`,
-            'blackboard',
-            'normal'
-          );
-        }
-        await setAlertState('blackboard_digest_date', phoenixDate);
-        return;
-      }
-    } catch {
-      // Browser-scraped text falls through to LLM extraction below.
-    }
-
-    const summary = await openai.chat.completions.create({
-      model: chatModel,
-      messages: [
-        {
-          role: 'system',
-          content: 'You monitor a students Blackboard/university portal page for upcoming assignment deadlines. Given the raw scraped page text, respond with ONE short spoken sentence naming only deadlines due within the next 3 days. Do not use markdown. If nothing is due within 3 days, respond with exactly: NONE'
-        },
-        { role: 'user', content: scraped }
-      ]
-    });
-
-    const text = summary.choices[0].message.content.trim();
-    if (text && text.toUpperCase() !== 'NONE') {
-      await sendProactiveAlert(text, 'blackboard', 'normal');
-    }
-    await setAlertState('blackboard_digest_date', phoenixDate);
+    const result = await runBlackboardDeadlineCheck();
+    console.log('[Cron] Blackboard check result:', result.status);
   } catch (error) {
     console.error('Error in scheduled Blackboard check:', error);
   }

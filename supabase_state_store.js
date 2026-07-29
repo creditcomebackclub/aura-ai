@@ -155,12 +155,33 @@ class SupabaseStateStore {
     return count > 0;
   }
 
-  async createNotification(text, category = 'general', urgency = 'normal') {
-    const { data, error } = await this.client.from('aura_notifications').insert({
-      owner_id: this.ownerId, text, category, urgency
-    }).select('*').single();
-    if (error) throw error;
-    return data;
+  async createNotification(text, category = 'general', urgency = 'normal', options = {}) {
+    const row = {
+      owner_id: this.ownerId,
+      text,
+      category,
+      urgency,
+      metadata: options.metadata || {}
+    };
+    if (options.dedupeKey) row.dedupe_key = options.dedupeKey;
+
+    const { data, error } = await this.client.from('aura_notifications')
+      .insert(row).select('*').single();
+    if (!error) return { ...data, deduplicated: false };
+
+    // Mac and cloud schedulers can race. The unique owner/dedupe key is the
+    // durable source of truth, so the losing insert reuses the existing alert.
+    if (error.code === '23505' && options.dedupeKey) {
+      const { data: existing, error: findError } = await this.client
+        .from('aura_notifications')
+        .select('*')
+        .eq('owner_id', this.ownerId)
+        .eq('dedupe_key', options.dedupeKey)
+        .single();
+      if (findError) throw findError;
+      return { ...existing, deduplicated: true };
+    }
+    throw error;
   }
 
   async listNotifications(limit = 30) {
