@@ -228,6 +228,12 @@ let audioAnalyser = null;
 let audioSource = null;
 let waveformSamples = null;
 let waveformFrame = null;
+// Advances every frame so the wave travels on its own. The analyser only
+// scales this motion, so the wave still animates when it reports silence
+// (or when the audio graph is unavailable, as on a locked-down iPhone).
+let waveformPhase = 0;
+// Smoothed 0..1 loudness from her actual voice, used as amplitude gain.
+let waveformEnergy = 0;
 
 let mediaRecorder = null;
 let audioChunks = [];
@@ -279,15 +285,30 @@ function drawVoiceWave(samples = null) {
     ? 'rgba(255, 137, 45, 0.7)'
     : 'rgba(72, 168, 255, 0.34)';
 
-  const pointCount = samples?.length || 72;
+  // Travelling wave, always in motion while speaking. Her voice raises the
+  // amplitude on top of a floor, so quiet passages still read as "talking"
+  // and loud ones visibly swell.
+  const gain = isSpeaking
+    ? 0.30 + waveformEnergy * 0.85
+    : 0.05;
+  const still = reducedMotion.matches;
+
+  const pointCount = 96;
   for (let index = 0; index < pointCount; index += 1) {
-    const progress = index / Math.max(1, pointCount - 1);
+    const progress = index / (pointCount - 1);
     const edgeFade = Math.sin(Math.PI * progress);
-    const normalized = samples
-      ? (samples[index] - 128) / 128
-      : reducedMotion.matches
-        ? 0
-        : Math.sin(progress * Math.PI * 4) * 0.035;
+
+    let normalized;
+    if (still) {
+      normalized = 0;
+    } else {
+      // Two detuned travelling components keep it from looking like a metronome.
+      normalized =
+        Math.sin(progress * Math.PI * 5 - waveformPhase) * 0.62 +
+        Math.sin(progress * Math.PI * 9 - waveformPhase * 1.7) * 0.24;
+      normalized *= gain;
+    }
+
     const x = progress * width;
     const y = centerY + normalized * amplitude * edgeFade;
     if (index === 0) voiceWaveContext.moveTo(x, y);
@@ -296,10 +317,32 @@ function drawVoiceWave(samples = null) {
   voiceWaveContext.stroke();
 }
 
+// Converts the analyser's raw PCM into a smoothed 0..1 loudness figure.
+// Returns false when the graph reports nothing usable, so the caller can
+// keep the wave alive on its own motion instead of flatlining.
+function readVoiceEnergy() {
+  if (!audioAnalyser || !waveformSamples) return false;
+  audioAnalyser.getByteTimeDomainData(waveformSamples);
+
+  let peak = 0;
+  for (let index = 0; index < waveformSamples.length; index += 1) {
+    const deviation = Math.abs(waveformSamples[index] - 128) / 128;
+    if (deviation > peak) peak = deviation;
+  }
+
+  // Anything this small is indistinguishable from a silent/idle graph.
+  if (peak < 0.012) return false;
+
+  const target = Math.min(1, peak * 1.8);
+  waveformEnergy += (target - waveformEnergy) * 0.35;
+  return true;
+}
+
 function stopVoiceWave() {
   if (waveformFrame) cancelAnimationFrame(waveformFrame);
   waveformFrame = null;
   voiceWave.classList.remove('speaking');
+  waveformEnergy = 0;
   drawVoiceWave();
 }
 
@@ -308,12 +351,15 @@ function animateVoiceWave() {
     stopVoiceWave();
     return;
   }
-  if (audioAnalyser && waveformSamples) {
-    audioAnalyser.getByteTimeDomainData(waveformSamples);
-    drawVoiceWave(waveformSamples);
-  } else {
-    drawVoiceWave();
+
+  // If the analyser gives us nothing usable, ease toward a mid-level so the
+  // wave keeps moving convincingly rather than collapsing to a flat line.
+  if (!readVoiceEnergy()) {
+    waveformEnergy += (0.45 - waveformEnergy) * 0.08;
   }
+
+  waveformPhase += 0.22;
+  drawVoiceWave();
   waveformFrame = requestAnimationFrame(animateVoiceWave);
 }
 
@@ -339,6 +385,8 @@ async function ensureAudioGraph() {
 function startVoiceWave() {
   if (waveformFrame) cancelAnimationFrame(waveformFrame);
   voiceWave.classList.add('speaking');
+  // Start with visible motion immediately instead of ramping up from flat.
+  waveformEnergy = Math.max(waveformEnergy, 0.4);
   waveformFrame = requestAnimationFrame(animateVoiceWave);
 }
 
