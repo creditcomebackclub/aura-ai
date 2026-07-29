@@ -1,0 +1,12 @@
+node_modules
+.git
+.env
+.env.*
+!.env.example
+*.db
+*.log
+.browser_data
+.ccc_browser_data
+uploads
+semantic_memory.json
+scraped_blackboard.txt

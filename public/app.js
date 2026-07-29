@@ -1,4 +1,83 @@
+const tokenFromUrl = new URLSearchParams(window.location.search).get('token');
+if (tokenFromUrl) {
+  localStorage.setItem('aura_access_token', tokenFromUrl);
+  history.replaceState({}, document.title, window.location.pathname);
+}
+const authHash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+if (authHash.get('access_token')) {
+  localStorage.setItem('aura_session_token', authHash.get('access_token'));
+  history.replaceState({}, document.title, window.location.pathname);
+}
+let auraAccessToken = localStorage.getItem('aura_access_token') || '';
+let auraSessionToken = localStorage.getItem('aura_session_token') || '';
+let authPromptOpen = false;
+let authMode = null;
+
+async function getAuthMode() {
+  if (authMode) return authMode;
+  try {
+    const response = await fetch('/auth/config');
+    authMode = (await response.json()).mode || 'token';
+  } catch {
+    authMode = 'token';
+  }
+  return authMode;
+}
+
+async function requestAccessToken() {
+  if (authPromptOpen) return;
+  authPromptOpen = true;
+  const mode = await getAuthMode();
+  if (mode === 'supabase') {
+    const email = window.prompt('Enter your email address and AURA will send you a secure sign-in link:');
+    if (email && email.trim()) {
+      const response = await fetch('/auth/request-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim() })
+      });
+      if (response.ok) {
+        window.alert('Check your email and open the AURA sign-in link on this device.');
+      } else {
+        window.alert('AURA could not send the sign-in link. Please try again.');
+      }
+    }
+    authPromptOpen = false;
+    return;
+  }
+  const token = window.prompt('Enter your AURA access token to pair this device:');
+  authPromptOpen = false;
+  if (token && token.trim()) {
+    localStorage.setItem('aura_access_token', token.trim());
+    window.location.reload();
+  }
+}
+
+const authenticatedFetch = async (url, options = {}) => {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...(auraSessionToken
+        ? { Authorization: `Bearer ${auraSessionToken}` }
+        : auraAccessToken
+          ? { 'X-AURA-Token': auraAccessToken }
+          : {})
+    }
+  });
+  if (response.status === 401 && window.location.hostname !== 'localhost' &&
+      window.location.hostname !== '127.0.0.1') {
+    localStorage.removeItem('aura_access_token');
+    localStorage.removeItem('aura_session_token');
+    auraAccessToken = '';
+    auraSessionToken = '';
+    requestAccessToken();
+  }
+  return response;
+};
+
 const socket = io({
+  auth: { token: auraSessionToken || auraAccessToken },
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
@@ -83,7 +162,16 @@ socket.on('disconnect', (reason) => {
 
 socket.on('connect_error', (err) => {
   console.log('Connection error:', err.message);
-  setOrbState('error', 'Connection error...');
+  if (/auth|token|disabled/i.test(err.message)) {
+    setOrbState('error', 'Authentication required');
+    localStorage.removeItem('aura_access_token');
+    localStorage.removeItem('aura_session_token');
+    auraAccessToken = '';
+    auraSessionToken = '';
+    requestAccessToken();
+  } else {
+    setOrbState('error', 'Connection error...');
+  }
 });
 
 socket.on('proactive-alert', async (data) => {
@@ -93,7 +181,7 @@ socket.on('proactive-alert', async (data) => {
   playbackCancelled = false;
   setOrbState('thinking', 'AURA is notifying you...');
   try {
-    const ttsRes = await fetch('/api/tts', {
+    const ttsRes = await authenticatedFetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: data.text })
@@ -186,7 +274,7 @@ async function processAudio(audioBlob) {
     const ext = audioBlob.type.includes('mp4') ? 'm4a' : 'webm';
     formData.append('audio', audioBlob, `recording.${ext}`);
 
-    const transcribeRes = await fetch('/api/transcribe', {
+    const transcribeRes = await authenticatedFetch('/api/transcribe', {
       method: 'POST',
       body: formData
     });
@@ -203,7 +291,7 @@ async function processAudio(audioBlob) {
     setOrbState('thinking', 'Thinking...');
 
     // 2. Send text to the chat backend
-    const chatRes = await fetch('/api/chat', {
+    const chatRes = await authenticatedFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: transcript })
@@ -215,7 +303,7 @@ async function processAudio(audioBlob) {
 
     // 3. Fetch TTS from Cartesia proxy
     setOrbState('thinking', 'Generating Voice...');
-    const ttsRes = await fetch('/api/tts', {
+    const ttsRes = await authenticatedFetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: reply })

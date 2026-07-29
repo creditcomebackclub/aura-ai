@@ -75,7 +75,15 @@ function applyFilters(query, filters = []) {
 // (Unpaid/Pending) silently reported $0 outstanding and never fired overdue alerts.
 function isOutstanding(status) {
   if (!status) return false;
-  return String(status).trim().toLowerCase() !== 'paid';
+  return ['due', 'unpaid', 'pending', 'overdue', 'past due']
+    .includes(String(status).trim().toLowerCase());
+}
+
+function getLedgerTransactionDate(entry) {
+  const value = entry?.paid_at || entry?.date || entry?.created_at;
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 // Lists every client with money still owed, reading inside the ledger JSON.
@@ -170,12 +178,128 @@ async function queryTable(tableName, limit = 200, filters = [], orderBy = null, 
   }
 }
 
+async function findClientsByName(name) {
+  const db = initSupabase();
+  if (!db) return { error: 'Database connection not configured.' };
+  const words = String(name).trim().split(/\s+/).filter(Boolean);
+  let query = db.from('clients').select('id, name, status, billing_status, billing_tier, ledger');
+  for (const word of words) query = query.ilike('name', `%${word}%`);
+  const { data, error } = await query.limit(10);
+  return error ? { error: error.message } : { data: data || [] };
+}
+
+function normalizePhaseLabel(phase) {
+  const value = String(phase || '').trim();
+  const phaseMatch = value.match(/^phase\s*(\d+)/i);
+  if (phaseMatch) return `Phase ${phaseMatch[1]}`;
+  const roundMatch = value.match(/^round\s*(\d+)/i);
+  if (roundMatch) return `Round ${roundMatch[1]}`;
+  return value || null;
+}
+
+async function getClientCurrentPhase(name) {
+  const db = initSupabase();
+  if (!db) return "Error: Database connection not configured.";
+  try {
+    const clients = await findClientsByName(name);
+    if (clients.error) throw new Error(clients.error);
+    if (clients.data.length === 0) return JSON.stringify({ found: false, query: name });
+    if (clients.data.length > 1) {
+      return JSON.stringify({
+        found: false,
+        ambiguous: true,
+        query: name,
+        matches: clients.data.map(client => ({ id: client.id, name: client.name }))
+      });
+    }
+
+    const client = clients.data[0];
+    const { data: letters, error } = await db.from('letters')
+      .select('id, client_id, client_name, phase, furnisher, mailed_date, saved_at')
+      .eq('client_id', client.id)
+      .order('saved_at', { ascending: false })
+      .limit(25);
+    if (error) throw error;
+
+    const latest = letters?.[0] || null;
+    const currentPhase = normalizePhaseLabel(latest?.phase);
+    const latestSavedAt = latest?.saved_at ? new Date(latest.saved_at).getTime() : null;
+    const latestBatch = latestSavedAt === null
+      ? (latest ? [latest] : [])
+      : letters.filter(letter => {
+          const savedAt = new Date(letter.saved_at).getTime();
+          return Number.isFinite(savedAt) && Math.abs(latestSavedAt - savedAt) <= 10 * 60 * 1000;
+        });
+
+    return JSON.stringify({
+      found: true,
+      client: { id: client.id, name: client.name },
+      current_phase: currentPhase,
+      detailed_phase: latest?.phase ?? null,
+      latest_batch_saved_at: latest?.saved_at ?? null,
+      latest_batch_furnishers: [...new Set(latestBatch.map(letter => letter.furnisher).filter(Boolean))],
+      evidence: latest
+    });
+  } catch (error) {
+    return `Error finding current phase for ${name}: ${error.message}`;
+  }
+}
+
+async function getClientSnapshot(name) {
+  const db = initSupabase();
+  if (!db) return "Error: Database connection not configured.";
+  try {
+    const clients = await findClientsByName(name);
+    if (clients.error) throw new Error(clients.error);
+    if (clients.data.length === 0) return JSON.stringify({ found: false, query: name });
+    if (clients.data.length > 1) {
+      return JSON.stringify({
+        found: false,
+        ambiguous: true,
+        query: name,
+        matches: clients.data.map(client => ({ id: client.id, name: client.name }))
+      });
+    }
+
+    const client = clients.data[0];
+    const { data: letters, error } = await db.from('letters')
+      .select('id, phase, furnisher, mailed_date, saved_at')
+      .eq('client_id', client.id)
+      .order('saved_at', { ascending: false })
+      .limit(10);
+    if (error) throw error;
+
+    const openLedger = Array.isArray(client.ledger)
+      ? client.ledger.filter(entry => isOutstanding(entry.status) && Number(entry.amount) > 0)
+      : [];
+    return JSON.stringify({
+      found: true,
+      client: {
+        id: client.id,
+        name: client.name,
+        status: client.status,
+        billing_status: client.billing_status,
+        billing_tier: client.billing_tier
+      },
+      current_phase: normalizePhaseLabel(letters?.[0]?.phase),
+      detailed_phase: letters?.[0]?.phase ?? null,
+      latest_letter: letters?.[0] || null,
+      recent_letters: letters || [],
+      outstanding_total: openLedger.reduce((sum, entry) => sum + Number(entry.amount || 0), 0),
+      outstanding_entries: openLedger
+    });
+  } catch (error) {
+    return `Error building client snapshot for ${name}: ${error.message}`;
+  }
+}
+
 async function calculateFinancialMetrics() {
   const db = initSupabase();
   if (!db) return "Error: Database connection not configured.";
 
   try {
-    const { data: clients, error } = await db.from('clients').select('billing_status, billing_tier, ledger, referral_fee, commission_paid');
+    const { data: clients, error } = await db.from('clients')
+      .select('billing_status, billing_type, billing_tier, ledger, referral_fee, commission_paid');
     if (error) throw error;
     
     let outstanding = 0;
@@ -189,7 +313,7 @@ async function calculateFinancialMetrics() {
     
     for (const client of clients) {
        // Estimate MRR based on active clients
-       if (client.billing_status === 'Active') {
+       if (client.billing_status === 'Active' && client.billing_type === 'Automated Recurring') {
           let mrrContribution = 0;
           if (client.ledger && Array.isArray(client.ledger)) {
              const monthlyPayments = client.ledger.filter(l => l.status === 'Paid' && l.amount > 0 && 
@@ -210,16 +334,15 @@ async function calculateFinancialMetrics() {
                
                if (entry.status === 'Paid') {
                    lifetimeRevenue += amt;
-                   const entryDate = new Date(entry.paid_at || entry.created_at || entry.date);
-                   if (entryDate >= thirtyDaysAgo) collected30Days += amt;
+                   const entryDate = getLedgerTransactionDate(entry);
+                   if (entryDate && entryDate >= thirtyDaysAgo) collected30Days += amt;
                }
            }
        }
        
        // Calculate commissions
        const referralFee = client.referral_fee || 0;
-       const commissionPaid = client.commission_paid || 0;
-       if (referralFee > commissionPaid) commissionOwed += (referralFee - commissionPaid);
+       if (referralFee > 0 && client.commission_paid !== true) commissionOwed += referralFee;
     }
     
     return JSON.stringify({
@@ -274,4 +397,17 @@ async function getOverdueClients(daysThreshold = 3) {
   }
 }
 
-module.exports = { listTables, getTableSchema, queryTable, countRows, getOutstandingBalances, calculateFinancialMetrics, getOverdueClients };
+module.exports = {
+  listTables,
+  getTableSchema,
+  queryTable,
+  countRows,
+  getOutstandingBalances,
+  calculateFinancialMetrics,
+  getOverdueClients,
+  getClientSnapshot,
+  getClientCurrentPhase,
+  normalizePhaseLabel,
+  isOutstanding,
+  getLedgerTransactionDate
+};

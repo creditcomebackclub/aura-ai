@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: aura-brain
+    runtime: docker
+    plan: starter
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: AURA_RUNTIME
+        value: cloud
+      - key: AI_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CARTESIA_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: AURA_OWNER_ID
+        sync: false
+      - key: AURA_STATE_BACKEND
+        value: supabase
+      - key: AURA_AUTH_MODE
+        value: supabase
+      - key: AURA_PUBLIC_URL
+        sync: false
+      - key: BLACKBOARD_ICAL_URL
+        sync: false
+      - key: EMAIL_PROVIDER
+        sync: false
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false

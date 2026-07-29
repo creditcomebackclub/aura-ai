@@ -1,37 +1,119 @@
 const puppeteer = require('puppeteer');
 const path = require('path');
 
+function unfoldIcs(text) {
+  return String(text).replace(/\r?\n[ \t]/g, '');
+}
+
+function decodeIcsText(value = '') {
+  return value
+    .replace(/\\n/gi, ' ')
+    .replace(/\\,/g, ',')
+    .replace(/\\;/g, ';')
+    .replace(/\\\\/g, '\\')
+    .trim();
+}
+
+function parseIcsDate(value) {
+  if (!value) return null;
+  const clean = value.trim();
+  const match = clean.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?Z?)?$/);
+  if (!match) {
+    const parsed = new Date(clean);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const [, year, month, day, hour = '00', minute = '00', second = '00'] = match;
+  // Date-only and non-Z Blackboard values are intentionally interpreted in
+  // AURA's local timezone, matching how deadlines appear to the user.
+  if (clean.endsWith('Z')) {
+    return new Date(Date.UTC(+year, +month - 1, +day, +hour, +minute, +second));
+  }
+  return new Date(+year, +month - 1, +day, +hour, +minute, +second);
+}
+
+function parseBlackboardIcs(text) {
+  const unfolded = unfoldIcs(text);
+  const blocks = unfolded.match(/BEGIN:VEVENT[\s\S]*?END:VEVENT/g) || [];
+  return blocks.map(block => {
+    const fields = {};
+    for (const line of block.split(/\r?\n/)) {
+      const separator = line.indexOf(':');
+      if (separator < 0) continue;
+      const rawKey = line.slice(0, separator);
+      const key = rawKey.split(';')[0].toUpperCase();
+      if (!fields[key]) fields[key] = line.slice(separator + 1);
+    }
+    const due = parseIcsDate(fields.DTSTART || fields.DUE || fields.DTEND);
+    return {
+      title: decodeIcsText(fields.SUMMARY || 'Untitled assignment'),
+      due_at: due ? due.toISOString() : null,
+      description: decodeIcsText(fields.DESCRIPTION || '').slice(0, 500),
+      url: decodeIcsText(fields.URL || '')
+    };
+  }).filter(event => event.due_at).sort((a, b) => new Date(a.due_at) - new Date(b.due_at));
+}
+
+async function checkBlackboardCalendarFeed(feedUrl) {
+  const normalizedUrl = String(feedUrl).replace(/^webcal:/i, 'https:');
+  if (!/^https:\/\//i.test(normalizedUrl)) {
+    return 'BLACKBOARD_CALENDAR_ERROR: The configured calendar URL must use HTTPS or webcal.';
+  }
+  try {
+    const response = await fetch(normalizedUrl, {
+      headers: { 'User-Agent': 'AURA Blackboard Calendar Monitor/1.0' },
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!response.ok) return `BLACKBOARD_CALENDAR_ERROR: Calendar feed returned HTTP ${response.status}.`;
+    const events = parseBlackboardIcs(await response.text());
+    const now = Date.now();
+    const relevant = events.filter(event => {
+      const due = new Date(event.due_at).getTime();
+      return due >= now - 2 * 86400000 && due <= now + 90 * 86400000;
+    });
+    return JSON.stringify({ source: 'blackboard_ical', assignments: relevant });
+  } catch (error) {
+    return `BLACKBOARD_CALENDAR_ERROR: ${error.message}`;
+  }
+}
+
 /**
  * Checks Blackboard assignments using a Persistent User Data Directory.
- * This completely bypasses SSO and 2FA because the user already authenticated manually.
+ * Reuses a session the user authenticated manually; it never stores a password.
  */
 async function checkBlackboardAssignments() {
+  if (process.env.BLACKBOARD_ICAL_URL) {
+    return checkBlackboardCalendarFeed(process.env.BLACKBOARD_ICAL_URL);
+  }
+
   let browser;
   try {
     const userDataDir = path.join(__dirname, '.browser_data');
     
-    // Launch completely headlessly using the hijacked session with bot-evasion flags
+    // Launch headlessly using the user's persistent, previously authenticated session.
     browser = await puppeteer.launch({ 
       headless: 'new',
       userDataDir: userDataDir,
-      ignoreDefaultArgs: ['--enable-automation'],
-      args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled'
-      ] 
     });
     const page = await browser.newPage();
 
     // 1. Navigate directly to the Phoenix Portal
-    await page.goto('https://my.phoenix.edu', { waitUntil: 'networkidle2' });
+    await page.goto('https://my.phoenix.edu', { waitUntil: 'networkidle2', timeout: 30000 });
+
+    const portalState = await page.evaluate(() => ({
+      url: location.href,
+      text: document.body?.innerText || ''
+    }));
+    if (/login|sign.?in/i.test(portalState.url) ||
+        (/user name|username/i.test(portalState.text) && /password/i.test(portalState.text))) {
+      return 'BLACKBOARD_LOGIN_REQUIRED: Your saved University of Phoenix session expired. Run "node login-blackboard.js" on the Mac, complete login and 2FA, reach the dashboard, then close the browser window.';
+    }
 
     console.log('Scanning Phoenix Portal for class links...');
     
     // 2. Click the 'Go to class' button
     const classHref = await page.evaluate(() => {
       const elements = Array.from(document.querySelectorAll('a, button'));
-      const goBtn = elements.find(el => el.innerText && el.innerText.trim() === 'Go to class');
+      const goBtn = elements.find(el => /go to class/i.test(el.innerText || ''));
       // If it's a link, return the href. If it's a button with an onclick, we fallback.
       return goBtn ? (goBtn.href || goBtn.getAttribute('href')) : null;
     });
@@ -45,7 +127,7 @@ async function checkBlackboardAssignments() {
       console.log('Could not find the href for "Go to class", attempting manual click...');
       const clicked = await page.evaluate(() => {
         const elements = Array.from(document.querySelectorAll('*'));
-        const goBtn = elements.find(el => el.innerText && el.innerText.trim() === 'Go to class');
+        const goBtn = elements.find(el => /go to class/i.test(el.innerText || ''));
         if (goBtn) {
           goBtn.click();
           return true;
@@ -53,7 +135,7 @@ async function checkBlackboardAssignments() {
         return false;
       });
       
-      if (!clicked) return "Could not find any active classes on the dashboard.";
+      if (!clicked) return 'BLACKBOARD_NAVIGATION_ERROR: AURA reached the portal but could not find an active "Go to class" control.';
       
       await new Promise(r => setTimeout(r, 5000));
       const pages = await browser.pages();
@@ -65,7 +147,7 @@ async function checkBlackboardAssignments() {
       console.log('Clicking Calendar tab...');
       await classPage.evaluate(() => {
         const tabs = Array.from(document.querySelectorAll('a, span, div, li'));
-        const calendarTab = tabs.find(el => el.innerText && el.innerText.trim() === 'Calendar');
+        const calendarTab = tabs.find(el => /^calendar$/i.test((el.innerText || '').trim()));
         if (calendarTab) calendarTab.click();
       });
       
@@ -78,17 +160,19 @@ async function checkBlackboardAssignments() {
         return document.body.innerText;
       });
       
-      require('fs').writeFileSync('scraped_blackboard.txt', gradebookData);
+      if (process.env.AURA_DEBUG_SCRAPES === 'true') {
+        require('fs').writeFileSync('scraped_blackboard.txt', gradebookData);
+      }
       
       console.log('Successfully scraped Gradebook data!');
-      return gradebookData.substring(0, 4000); // Truncate to save tokens, usually the top assignments are first
+      return gradebookData.substring(0, 12000);
     }
     
-    return "Failed to load the Blackboard class page.";
+    return 'BLACKBOARD_NAVIGATION_ERROR: Failed to load the Blackboard class page.';
 
   } catch (error) {
     console.error('Error in checkBlackboardAssignments:', error);
-    return [];
+    return `BLACKBOARD_ERROR: ${error.message}`;
   } finally {
     if (browser) {
       await browser.close();
@@ -129,4 +213,9 @@ async function searchWeb(query) {
   }
 }
 
-module.exports = { checkBlackboardAssignments, searchWeb };
+module.exports = {
+  checkBlackboardAssignments,
+  checkBlackboardCalendarFeed,
+  parseBlackboardIcs,
+  searchWeb
+};
