@@ -336,15 +336,17 @@ app.post('/auth/request-link', rateLimit, async (req, res) => {
   }
 
   cleanPendingAuthLinks();
+  // AURA currently has one owner, so only one device-link request should be
+  // pending. This lets the email use the exact allowlisted callback URL
+  // without adding query parameters that Supabase may reject.
+  pendingAuthLinks.clear();
   const loginId = crypto.randomBytes(32).toString('hex');
   pendingAuthLinks.set(loginId, { createdAt: Date.now(), session: null });
   const publicUrl = process.env.AURA_PUBLIC_URL ||
     `${req.protocol}://${req.get('host')}${req.baseUrl || ''}/`;
-  const redirectUrl = new URL(publicUrl);
-  redirectUrl.searchParams.set('aura_login', loginId);
   const { error } = await authSupabase.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: redirectUrl.toString(), shouldCreateUser: false }
+    options: { emailRedirectTo: publicUrl, shouldCreateUser: false }
   });
   // Do not reveal whether an email account exists.
   if (error) {
@@ -360,7 +362,9 @@ app.post('/auth/complete-link', rateLimit, async (req, res) => {
   const loginId = String(req.body?.login_id || '');
   const accessToken = String(req.body?.access_token || '');
   const refreshToken = String(req.body?.refresh_token || '');
-  const pending = pendingAuthLinks.get(loginId);
+  const effectiveLoginId = loginId ||
+    (pendingAuthLinks.size === 1 ? pendingAuthLinks.keys().next().value : '');
+  const pending = pendingAuthLinks.get(effectiveLoginId);
   if (!pending || !accessToken || !refreshToken) {
     return res.status(400).json({ error: 'This sign-in request is invalid or expired.' });
   }

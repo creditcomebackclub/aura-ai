@@ -26,7 +26,7 @@ let loginPollPromise = null;
 
 async function completeLinkCallback() {
   const loginId = localStorage.getItem('aura_callback_login_id');
-  if (!loginId || !auraSessionToken || !auraRefreshToken) return;
+  if (!auraSessionToken || !auraRefreshToken) return;
   try {
     const response = await fetch('/auth/complete-link', {
       method: 'POST',
