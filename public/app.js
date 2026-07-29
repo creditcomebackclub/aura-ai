@@ -123,6 +123,11 @@ async function requestAccessToken() {
     authPromptOpen = false;
     return;
   }
+  if (mode === 'tailscale') {
+    authPromptOpen = false;
+    window.alert('AURA is available only through your authenticated Tailscale connection. Make sure Tailscale is connected, then reload this page.');
+    return;
+  }
   const token = window.prompt('Enter your AURA access token to pair this device:');
   authPromptOpen = false;
   if (token && token.trim()) {

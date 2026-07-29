@@ -12,7 +12,6 @@ const fs = require('fs');
 const compression = require('compression');
 const multer = require('multer');
 const crypto = require('crypto');
-const os = require('os');
 const scraper = require('./scraper');
 const mac = require('./mac_integration');
 const ccc = require('./ccc_database');
@@ -276,6 +275,29 @@ function isDirectLocalhost(req) {
   return loopbackAddress && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1');
 }
 
+function isTrustedTailscaleRequest(req) {
+  const address = req.socket.remoteAddress || '';
+  const loopbackAddress = address === '127.0.0.1' ||
+    address === '::1' ||
+    address.endsWith('::ffff:127.0.0.1');
+  if (!loopbackAddress) return false;
+
+  let expectedHost = '';
+  try {
+    expectedHost = new URL(process.env.AURA_PUBLIC_URL || '').hostname;
+  } catch {
+    return false;
+  }
+  const hostname = String(req.hostname || req.get?.('host') || '')
+    .split(':')[0]
+    .replace(/^\[|\]$/g, '');
+  const login = String(req.get?.('tailscale-user-login') || '').toLowerCase();
+  const expectedLogin = String(process.env.AURA_TAILSCALE_LOGIN || '').toLowerCase();
+  return Boolean(expectedHost && login && expectedLogin) &&
+    hostname === expectedHost &&
+    login === expectedLogin;
+}
+
 function safeTokenEqual(provided) {
   if (!accessToken || typeof provided !== 'string') return false;
   const expected = Buffer.from(accessToken);
@@ -285,6 +307,14 @@ function safeTokenEqual(provided) {
 
 async function authenticate(req, res, next) {
   if (process.env.AURA_RUNTIME !== 'cloud' && isDirectLocalhost(req)) return next();
+  if (authMode === 'tailscale' && isTrustedTailscaleRequest(req)) {
+    req.auraUser = {
+      id: process.env.AURA_OWNER_ID,
+      email: req.get('tailscale-user-login'),
+      provider: 'tailscale'
+    };
+    return next();
+  }
   const provided = req.get('x-aura-token') || req.get('authorization')?.replace(/^Bearer\s+/i, '');
   if ((authMode === 'token' || authMode === 'hybrid') && safeTokenEqual(provided)) return next();
   if ((authMode === 'supabase' || authMode === 'hybrid') && provided && authSupabase) {
@@ -973,6 +1003,18 @@ io.use((socket, next) => {
   const isLocalSocket = (address === '127.0.0.1' || address === '::1' || address.endsWith('::ffff:127.0.0.1')) &&
     (host === 'localhost' || host === '127.0.0.1' || host === '::1');
   if (process.env.AURA_RUNTIME !== 'cloud' && isLocalSocket) return next();
+  const tailscaleLogin = String(socket.handshake.headers['tailscale-user-login'] || '').toLowerCase();
+  let tailscaleHost = '';
+  try {
+    tailscaleHost = new URL(process.env.AURA_PUBLIC_URL || '').hostname;
+  } catch {}
+  if (authMode === 'tailscale' &&
+      (address === '127.0.0.1' || address === '::1' || address.endsWith('::ffff:127.0.0.1')) &&
+      host === tailscaleHost &&
+      tailscaleLogin &&
+      tailscaleLogin === String(process.env.AURA_TAILSCALE_LOGIN || '').toLowerCase()) {
+    return next();
+  }
   const provided = socket.handshake.auth?.token;
   if ((authMode === 'token' || authMode === 'hybrid') && safeTokenEqual(provided)) return next();
   if ((authMode === 'supabase' || authMode === 'hybrid') && provided && authSupabase) {
@@ -1153,17 +1195,7 @@ cron.schedule('0 9 * * 1', async () => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`AURA server running on http://localhost:${PORT}`);
-
-  // Print the LAN address too, so it's easy to open from a phone on the
-  // same Wi-Fi without hunting for the machine's IP separately.
-  const nets = os.networkInterfaces();
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal) {
-        console.log(`On your local network:  http://${net.address}:${PORT}`);
-      }
-    }
-  }
+const BIND_HOST = process.env.AURA_BIND_HOST || '127.0.0.1';
+server.listen(PORT, BIND_HOST, () => {
+  console.log(`AURA server running on http://${BIND_HOST}:${PORT}`);
 });
