@@ -59,6 +59,11 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     runtime: process.env.AURA_RUNTIME || 'mac',
+    brain: {
+      provider: aiProvider,
+      model: chatModel,
+      reasoning_effort: reasoningEffort || null
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -115,18 +120,28 @@ const aiProvider = process.env.AI_PROVIDER || 'openai';
 
 let openai;
 let chatModel;
+let reasoningEffort;
 
 if (aiProvider === 'deepseek') {
   openai = new OpenAI({
     baseURL: 'https://api.deepseek.com',
     apiKey: process.env.DEEPSEEK_API_KEY || 'dummy_key'
   });
-  chatModel = 'deepseek-chat';
+  chatModel = process.env.AURA_CHAT_MODEL || 'deepseek-chat';
 } else {
   openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY || 'dummy_key'
   });
-  chatModel = 'gpt-4o-mini';
+  chatModel = process.env.AURA_CHAT_MODEL || 'gpt-5.6-sol';
+  reasoningEffort = process.env.AURA_REASONING_EFFORT || 'medium';
+}
+
+function brainRequest(options) {
+  return {
+    ...options,
+    model: chatModel,
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {})
+  };
 }
 
 const openaiEmbeddings = new OpenAI({
@@ -395,8 +410,7 @@ const runBlackboardDeadlineCheck = createBlackboardDeadlineCheck({
   sendAlert: sendProactiveAlert,
   timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
   summarizeText: async scraped => {
-    const summary = await openai.chat.completions.create({
-      model: chatModel,
+    const summary = await openai.chat.completions.create(brainRequest({
       messages: [
         {
           role: 'system',
@@ -404,7 +418,7 @@ const runBlackboardDeadlineCheck = createBlackboardDeadlineCheck({
         },
         { role: 'user', content: scraped }
       ]
-    });
+    }));
     return summary.choices[0].message.content;
   }
 });
@@ -923,12 +937,11 @@ app.post('/api/chat', async (req, res) => {
 
     const chatHistory = [systemPrompt, ...messages];
 
-    let response = await openai.chat.completions.create({
-      model: chatModel,
+    let response = await openai.chat.completions.create(brainRequest({
       messages: chatHistory,
       tools: tools,
       tool_choice: 'auto'
-    });
+    }));
 
     // Keep handing tool results back until she answers, so multi-step lookups
     // (find the client, then look up that client's letters) can complete.
@@ -1032,16 +1045,14 @@ app.post('/api/chat', async (req, res) => {
 
       if (webSearchAttempts >= 2) forceToolFreeAnswer = true;
       response = forceToolFreeAnswer
-        ? await openai.chat.completions.create({
-            model: chatModel,
+        ? await openai.chat.completions.create(brainRequest({
             messages: chatHistory
-          })
-        : await openai.chat.completions.create({
-            model: chatModel,
+          }))
+        : await openai.chat.completions.create(brainRequest({
             messages: chatHistory,
             tools: tools,
             tool_choice: 'auto'
-          });
+          }));
       if (forceToolFreeAnswer) break;
     }
 
@@ -1056,10 +1067,9 @@ app.post('/api/chat', async (req, res) => {
           content: 'Tool budget exhausted. Clearly say the lookup is incomplete; do not infer missing facts.',
         });
       }
-      response = await openai.chat.completions.create({
-        model: chatModel,
+      response = await openai.chat.completions.create(brainRequest({
         messages: chatHistory
-      });
+      }));
     }
 
     const reply = response.choices[0].message.content || "Sorry, I wasn't able to put together an answer for that.";

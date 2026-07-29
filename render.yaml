@@ -11,6 +11,10 @@ services:
         value: cloud
       - key: AI_PROVIDER
         value: openai
+      - key: AURA_CHAT_MODEL
+        value: gpt-5.6-sol
+      - key: AURA_REASONING_EFFORT
+        value: medium
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_WEB_SEARCH_MODEL
