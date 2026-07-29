@@ -229,18 +229,6 @@ body {
   background: rgba(255, 255, 255, 0.14);
 }
 
-@media (min-width: 900px) and (pointer: fine) {
-  #source-panel:not([hidden]) {
-    display: block;
-  }
-}
-
-@media (display-mode: standalone) and (max-width: 899px) {
-  #source-panel {
-    display: none !important;
-  }
-}
-
 /* Hover effects for premium feel */
 @media (hover: hover) {
   #orb-container:hover #orb.idle {

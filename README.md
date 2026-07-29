@@ -108,8 +108,8 @@ extraction and rolling summaries use the lower-cost `AURA_MEMORY_MODEL`
 
 The phone and home-screen interface is text-free. A canvas waveform reacts to
 AURA's actual speech through the Web Audio API, with a reduced-motion fallback.
-Sourced live-web results remain readable and clickable on desktop screens with
-a fine pointer, while staying hidden on the mobile voice surface.
+Live-web evidence remains available to AURA for grounded spoken answers, while
+the visual surface stays clear on both phone and desktop.
 
 ## Notifications
 

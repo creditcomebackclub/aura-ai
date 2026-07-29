@@ -8,19 +8,12 @@ const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(publicDir, 'style.css'), 'utf8');
 const app = fs.readFileSync(path.join(publicDir, 'app.js'), 'utf8');
 
-test('voice surface is text-free on mobile and includes an accessible reactive wave', () => {
+test('voice surface is text-free and includes an accessible reactive wave', () => {
   assert.match(html, /<canvas id="voice-wave"[^>]+aria-hidden="true"/);
   assert.doesNotMatch(html, /id="aura-title"/);
   assert.match(css, /#status-text\s*\{[^}]*clip-path:\s*inset\(50%\)/s);
   assert.match(css, /#source-panel\s*\{[^}]*display:\s*none/s);
-  assert.match(
-    css,
-    /@media \(min-width:\s*900px\) and \(pointer:\s*fine\)[\s\S]*#source-panel:not\(\[hidden\]\)/
-  );
-  assert.match(
-    css,
-    /@media \(display-mode:\s*standalone\) and \(max-width:\s*899px\)/
-  );
+  assert.doesNotMatch(css, /#source-panel:not\(\[hidden\]\)/);
 });
 
 test('waveform is driven by the actual AURA audio element', () => {
