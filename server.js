@@ -921,16 +921,8 @@ const PRIVATE_CONTEXT_TOOLS = new Set(
 // turn it was made in, and the matching confirmation is only honoured on a LATER
 // turn - so a real user message has to arrive in between. AURA cannot propose and
 // confirm inside a single exchange no matter how she chains her tool calls.
-const pendingDeletions = new Map();
 const DELETION_CONFIRMATION_TTL_MS = 10 * 60 * 1000;
 let conversationTurn = 0;
-
-function prunePendingDeletions() {
-  const now = Date.now();
-  for (const [token, pending] of pendingDeletions) {
-    if (now > pending.expiresAt) pendingDeletions.delete(token);
-  }
-}
 
 // The owner's own words are the gate. These are checked against the raw message
 // text, not against anything the model produced, so an assistant that convinces
@@ -938,40 +930,39 @@ function prunePendingDeletions() {
 const DELETION_APPROVAL_PATTERN = /\b(yes|yeah|yep|yup|confirm|confirmed|confirming|approve|approved|go ahead|do it|delete it|proceed|permission granted)\b/i;
 const DELETION_REFUSAL_PATTERN = /\b(no|nope|don'?t|do not|cancel|stop|wait|hold off|never ?mind|not yet)\b/i;
 
-function stagePendingDeletion(letter, turn) {
-  prunePendingDeletions();
-  pendingDeletions.set(letter.id, {
-    letterId: letter.id,
-    proposedOnTurn: turn,
-    expiresAt: Date.now() + DELETION_CONFIRMATION_TTL_MS
-  });
-}
-
-function redeemPendingDeletion(letterId, turn, ownerMessage) {
-  prunePendingDeletions();
-  const pending = pendingDeletions.get(letterId);
-  if (!pending) {
-    // Almost always a wrong id (e.g. the client name) rather than a missing
-    // stage, so name the staged ids and let her retry with the exact one.
-    const staged = [...pendingDeletions.keys()];
+// Proposals live in the database, so the only in-process signal needed is when
+// THIS request began. A proposal created during this same request is newer than
+// the request start, which is how "propose and confirm in one breath" is caught -
+// and unlike a turn counter, this survives a restart.
+async function redeemStagedDeletion(letterId, requestStartedAtMs, ownerMessage) {
+  const staged = await ccc.findStagedDeletion(letterId);
+  if (!staged) {
+    const others = await ccc.listStagedDeletionIds();
     return {
       ok: false,
-      reason: staged.length
-        ? `"${letterId}" is not a staged letter id. Retry using this exact id: ${staged.join(', ')}`
+      reason: others.length
+        ? `"${letterId}" is not a staged letter id - never reconstruct an id from a pattern. ACT NOW: call confirm_test_letter_deletion again immediately, in this same turn, copying this id exactly: ${others.join(', ')}. Do not reply to the owner until you have done so.`
         : 'Nothing is staged for deletion. Stage it first, then ask the owner.'
     };
   }
-  if (turn <= pending.proposedOnTurn) {
+
+  const proposedAtMs = Number(staged.arguments?.proposed_at_ms) || Date.parse(staged.created_at);
+
+  if (proposedAtMs >= requestStartedAtMs) {
     return {
       ok: false,
       reason: 'The owner has not replied yet. Present the letter, wait for their answer, then confirm on a later turn.'
     };
   }
+  if (Date.now() - proposedAtMs > DELETION_CONFIRMATION_TTL_MS) {
+    await ccc.discardStagedDeletion(staged.id);
+    return { ok: false, reason: 'That staged deletion expired. Stage it again and ask the owner to confirm.' };
+  }
 
   const message = typeof ownerMessage === 'string' ? ownerMessage : '';
   if (DELETION_REFUSAL_PATTERN.test(message)) {
-    pendingDeletions.delete(letterId);
-    return { ok: false, reason: 'The owner did not approve this. The pending deletion has been discarded.' };
+    await ccc.discardStagedDeletion(staged.id);
+    return { ok: false, reason: 'The owner did not approve this. The staged deletion has been discarded.' };
   }
   if (!DELETION_APPROVAL_PATTERN.test(message)) {
     return {
@@ -980,8 +971,7 @@ function redeemPendingDeletion(letterId, turn, ownerMessage) {
     };
   }
 
-  pendingDeletions.delete(letterId);
-  return { ok: true };
+  return { ok: true, actionId: staged.id };
 }
 
 async function handleToolCall(toolCall, options = {}) {
@@ -1068,7 +1058,11 @@ async function handleToolCall(toolCall, options = {}) {
         result = `This letter cannot be deleted. ${inspection.reason}`;
         break;
       }
-      stagePendingDeletion(inspection.letter, turn);
+      const staged = await ccc.stageTestLetterDeletion(inspection.letter.id, options.requestStartedAtMs ?? Date.now());
+      if (!staged.ok) {
+        result = `Could not stage this letter for deletion. ${staged.reason}`;
+        break;
+      }
       result = [
         'Staged for deletion. Nothing has been deleted yet.',
         'Describe this letter to the owner and ask them to confirm, then STOP and wait for their reply.',
@@ -1087,7 +1081,11 @@ async function handleToolCall(toolCall, options = {}) {
       break;
     }
     case 'confirm_test_letter_deletion': {
-      const redemption = redeemPendingDeletion(args.letter_id, turn, options.userInstruction);
+      const redemption = await redeemStagedDeletion(
+        args.letter_id,
+        options.requestStartedAtMs ?? Date.now(),
+        options.userInstruction
+      );
       if (!redemption.ok) {
         result = `Deletion refused. ${redemption.reason}`;
         break;
@@ -1095,7 +1093,8 @@ async function handleToolCall(toolCall, options = {}) {
       const outcome = await ccc.deleteTestLetter(args.letter_id, {
         actor: 'AURA',
         actorModel: chatModel,
-        userInstruction: options.userInstruction || null
+        userInstruction: options.userInstruction || null,
+        actionId: redemption.actionId
       });
       result = outcome.ok
         ? `Deleted at ${outcome.deletedAt}, logged to the audit trail as performed by AURA (audit id ${outcome.auditId}): ${JSON.stringify(outcome.deleted)}`
@@ -1173,6 +1172,7 @@ app.post('/api/chat', async (req, res) => {
     // One turn per owner message. A staged deletion can only be confirmed on a
     // later turn than it was proposed, which forces a real reply in between.
     const requestTurn = ++conversationTurn;
+    const requestStartedAtMs = Date.now();
     const memoryCommand = parseMemoryCommand(text);
     const priorMessages = memoryCommand
       ? await recentConversationMessages(20)
@@ -1331,9 +1331,9 @@ app.post('/api/chat', async (req, res) => {
             webSearchAttempts += 1;
             const publicSearchInput = validatePublicSearchInput(text);
             await dailyWebSearchLimiter.consume();
-            functionResult = await handleToolCall(toolCall, { publicSearchInput, turn: requestTurn });
+            functionResult = await handleToolCall(toolCall, { publicSearchInput, turn: requestTurn, requestStartedAtMs });
           } else {
-            functionResult = await handleToolCall(toolCall, { turn: requestTurn, userInstruction: text });
+            functionResult = await handleToolCall(toolCall, { turn: requestTurn, requestStartedAtMs, userInstruction: text });
             if (PRIVATE_CONTEXT_TOOLS.has(toolName)) {
               privateContextToolCompleted = true;
             }

@@ -573,9 +573,67 @@ async function listDeletableTestLetters() {
   }
 }
 
+// Records a proposed deletion in aura_actions. Stored in the database rather
+// than in process memory so a staged deletion survives a restart - Render's free
+// tier sleeps after inactivity, which silently discarded in-memory proposals
+// between the owner being asked and the owner answering.
+async function stageTestLetterDeletion(letterId, proposedAtMs) {
+  const db = initSupabase();
+  if (!db) return { ok: false, reason: 'Database connection not configured.' };
+
+  const inspection = await inspectDeletableTestLetter(letterId);
+  if (!inspection.ok) return inspection;
+
+  const { error } = await db.from('aura_actions').insert({
+    owner_id: process.env.AURA_OWNER_ID || null,
+    agent_id: 'aura_core',
+    tool_name: 'confirm_test_letter_deletion',
+    arguments: { table: 'letters', letter_id: inspection.letter.id, proposed_at_ms: proposedAtMs },
+    risk_level: 'destructive_write',
+    requires_approval: true,
+    status: 'proposed'
+  });
+
+  if (error) return { ok: false, reason: `Could not stage the deletion: ${error.message}` };
+  return { ok: true, letter: inspection.letter };
+}
+
+// Finds the newest still-open proposal for a letter.
+async function findStagedDeletion(letterId) {
+  const db = initSupabase();
+  if (!db) return null;
+
+  const { data } = await db.from('aura_actions').select('id, arguments, created_at')
+    .eq('tool_name', 'confirm_test_letter_deletion')
+    .eq('status', 'proposed')
+    .order('created_at', { ascending: false })
+    .limit(25);
+
+  return (data || []).find(row => row.arguments?.letter_id === letterId) || null;
+}
+
+async function listStagedDeletionIds() {
+  const db = initSupabase();
+  if (!db) return [];
+
+  const { data } = await db.from('aura_actions').select('arguments')
+    .eq('tool_name', 'confirm_test_letter_deletion')
+    .eq('status', 'proposed')
+    .order('created_at', { ascending: false })
+    .limit(25);
+
+  return [...new Set((data || []).map(row => row.arguments?.letter_id).filter(Boolean))];
+}
+
+async function discardStagedDeletion(actionId) {
+  const db = initSupabase();
+  if (!db) return;
+  await db.from('aura_actions').update({ status: 'rejected' }).eq('id', actionId);
+}
+
 // Deletes a single test letter, recording a full snapshot first so the row can
 // be reconstructed. Re-checks eligibility here rather than trusting the caller.
-async function deleteTestLetter(letterId, { actor, actorModel, userInstruction } = {}) {
+async function deleteTestLetter(letterId, { actor, actorModel, userInstruction, actionId } = {}) {
   const db = initSupabase();
   if (!db) return { ok: false, reason: 'Database connection not configured.' };
 
@@ -584,22 +642,36 @@ async function deleteTestLetter(letterId, { actor, actorModel, userInstruction }
 
   const { letter } = inspection;
   const ownerId = process.env.AURA_OWNER_ID || null;
+  const approvedAt = new Date().toISOString();
 
-  // Write the audit row first. No trail, no deletion - the trail is not optional.
-  const { data: action, error: logError } = await db.from('aura_actions').insert({
-    owner_id: ownerId,
-    agent_id: 'aura_core',
-    tool_name: 'confirm_test_letter_deletion',
-    arguments: { table: 'letters', letter_id: letter.id, instruction: userInstruction || null },
-    risk_level: 'destructive_write',
-    requires_approval: true,
-    status: 'executing',
-    approved_by: ownerId,
-    approved_at: new Date().toISOString()
-  }).select('id').single();
-
-  if (logError) {
-    return { ok: false, reason: `Could not write the deletion audit record, so nothing was deleted: ${logError.message}` };
+  // Mark the existing proposal approved, or fall back to writing a fresh audit
+  // row. Either way there is an audit record before anything is destroyed.
+  let action;
+  if (actionId) {
+    const { data, error } = await db.from('aura_actions')
+      .update({ status: 'executing', approved_by: ownerId, approved_at: approvedAt })
+      .eq('id', actionId).eq('status', 'proposed')
+      .select('id').maybeSingle();
+    if (error || !data) {
+      return { ok: false, reason: 'The staged deletion was already used or withdrawn, so nothing was deleted.' };
+    }
+    action = data;
+  } else {
+    const { data, error } = await db.from('aura_actions').insert({
+      owner_id: ownerId,
+      agent_id: 'aura_core',
+      tool_name: 'confirm_test_letter_deletion',
+      arguments: { table: 'letters', letter_id: letter.id, instruction: userInstruction || null },
+      risk_level: 'destructive_write',
+      requires_approval: true,
+      status: 'executing',
+      approved_by: ownerId,
+      approved_at: approvedAt
+    }).select('id').single();
+    if (error) {
+      return { ok: false, reason: `Could not write the deletion audit record, so nothing was deleted: ${error.message}` };
+    }
+    action = data;
   }
 
   const { error: deleteError } = await db.from('letters').delete().eq('id', letter.id);
@@ -631,6 +703,10 @@ module.exports = {
   countRows,
   inspectDeletableTestLetter,
   listDeletableTestLetters,
+  stageTestLetterDeletion,
+  findStagedDeletion,
+  listStagedDeletionIds,
+  discardStagedDeletion,
   deleteTestLetter,
   TEST_RECORD_PATTERN,
   getOutstandingBalances,
