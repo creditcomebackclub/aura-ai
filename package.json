@@ -1,0 +1,27 @@
+{
+  "name": "aura",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@cartesia/cartesia-js": "^3.5.0",
+    "@supabase/supabase-js": "^2.111.0",
+    "better-sqlite3": "^13.0.1",
+    "compression": "^1.8.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
+    "openai": "^7.0.0",
+    "puppeteer": "^25.4.0",
+    "socket.io": "^4.8.3"
+  }
+}
