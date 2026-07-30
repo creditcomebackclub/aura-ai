@@ -464,8 +464,13 @@ function showSearchEvidence(webResults = [], sources = []) {
       : url.hostname;
     sourceLinks.appendChild(link);
   }
-  sourcePanel.hidden =
-    webAnswer.childElementCount === 0 && sourceLinks.childElementCount === 0;
+  // Non-persistent by design: only ever made visible when a search actually
+  // returned content, and hidden again as soon as it doesn't - opacity/
+  // transform driven (see CSS) rather than the `hidden` attribute, so it can
+  // fade in/out instead of snapping.
+  const hasContent = webAnswer.childElementCount > 0 || sourceLinks.childElementCount > 0;
+  sourcePanel.classList.toggle('visible', hasContent);
+  sourcePanel.setAttribute('aria-hidden', String(!hasContent));
 }
 
 // Cuts AURA off mid-sentence and returns the orb to idle.

@@ -14,8 +14,24 @@ test('voice surface shows only the wordmark and an accessible reactive wave', ()
   assert.match(html, /<h1 id="aura-title">AURA<\/h1>/);
   assert.match(css, /#aura-title\s*\{[^}]*text-shadow:/s);
   assert.match(css, /#status-text\s*\{[^}]*clip-path:\s*inset\(50%\)/s);
-  assert.match(css, /#source-panel\s*\{[^}]*display:\s*none/s);
-  assert.doesNotMatch(css, /#source-panel:not\(\[hidden\]\)/);
+});
+
+test('the search-results panel is non-persistent and appears only with content', () => {
+  // Deliberately reactivated (was fully display:none, permanently, for a
+  // stretch): hidden by default via opacity/pointer-events so it can animate,
+  // never display:none (which cannot transition), and made visible only by
+  // a .visible class - which app.js adds only when a search actually
+  // returned content, and removes on every new turn otherwise.
+  const sourcePanelTag = html.match(/<section id="source-panel"[^>]*>/)[0];
+  assert.match(sourcePanelTag, /aria-hidden="true"/);
+  assert.doesNotMatch(sourcePanelTag, /(?<!aria-)\bhidden\b/);
+  assert.match(css, /#source-panel\s*\{[^}]*opacity:\s*0;/s);
+  assert.match(css, /#source-panel\s*\{[^}]*pointer-events:\s*none;/s);
+  assert.match(css, /#source-panel\.visible\s*\{[^}]*opacity:\s*1;/s);
+  assert.match(app, /sourcePanel\.classList\.toggle\('visible',\s*hasContent\)/);
+  assert.match(app, /sourcePanel\.setAttribute\('aria-hidden'/);
+  // Cleared at the start of every new listen and on error, not just set once.
+  assert.match(app, /showSearchEvidence\(\[\],\s*\[\]\)/);
 });
 
 test('waveform is driven by the actual AURA audio element', () => {

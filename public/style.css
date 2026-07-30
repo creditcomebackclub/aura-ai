@@ -476,40 +476,66 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   white-space: nowrap;
 }
 
+/* Search-results HUD panel. Non-persistent by design: hidden by default via
+   opacity/transform (not display:none, so it can transition) and only made
+   visible by app.js adding .visible - which it does exactly when a search
+   actually returned content, and removes again on the next turn if not. */
 #source-panel {
-  display: none;
   position: absolute;
   left: 50%;
   bottom: max(28px, env(safe-area-inset-bottom));
   width: min(90vw, 620px);
-  max-height: 30vh;
+  max-height: 32vh;
   overflow-y: auto;
-  transform: translateX(-50%);
-  padding: 14px 16px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  border-radius: 18px;
-  background: rgba(8, 8, 14, 0.82);
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.34);
+  transform: translate(-50%, 14px);
+  padding: 16px 18px 12px;
+  border: 1px solid rgba(0, 170, 255, 0.4);
+  border-radius: 16px;
+  background: rgba(6, 10, 16, 0.86);
+  box-shadow:
+    0 0 0 1px rgba(0, 170, 255, 0.08) inset,
+    0 0 26px rgba(0, 140, 255, 0.22),
+    0 20px 60px rgba(0, 0, 0, 0.45);
   text-align: left;
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   -webkit-overflow-scrolling: touch;
   z-index: 10;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 320ms ease, transform 320ms ease;
+}
+
+#source-panel.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+/* Thin neon rule under the label, echoing the wordmark's underline. */
+#source-panel::before {
+  content: '';
+  display: block;
+  height: 1px;
+  margin: -2px 0 12px;
+  background: linear-gradient(90deg, rgba(0, 170, 255, 0.9), transparent 85%);
+  box-shadow: 0 0 8px rgba(0, 170, 255, 0.6);
 }
 
 #source-label {
   margin-bottom: 10px;
-  color: rgba(255, 255, 255, 0.52);
+  color: rgba(140, 224, 255, 0.85);
   font-size: 0.72rem;
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
+  text-shadow: 0 0 10px rgba(0, 170, 255, 0.5);
 }
 
 #web-answer {
-  color: rgba(255, 255, 255, 0.82);
+  color: rgba(230, 245, 255, 0.88);
   font-size: 0.82rem;
-  line-height: 1.45;
+  line-height: 1.5;
   user-select: text;
 }
 
@@ -522,8 +548,9 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
 }
 
 #web-answer a {
-  color: #8ecbff;
+  color: #7fd4ff;
   text-decoration: none;
+  text-shadow: 0 0 6px rgba(0, 170, 255, 0.35);
 }
 
 #source-links {
@@ -544,19 +571,27 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   max-width: 180px;
   overflow: hidden;
   padding: 8px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(0, 170, 255, 0.32);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.82);
+  background: rgba(0, 140, 255, 0.08);
+  color: rgba(210, 240, 255, 0.9);
   font-size: 0.76rem;
   text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
   -webkit-tap-highlight-color: transparent;
+  transition: background 160ms ease, border-color 160ms ease;
 }
 
 #source-links a:active {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(0, 170, 255, 0.18);
+  border-color: rgba(0, 170, 255, 0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #source-panel {
+    transition: none;
+  }
 }
 
 /* Hover effects for premium feel */
