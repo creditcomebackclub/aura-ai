@@ -55,8 +55,22 @@ uses Supabase Auth instead.
   logs use Supabase when `AURA_STATE_BACKEND=supabase`; otherwise they remain
   local in `aura.db`.
 - Raw Blackboard text is not saved unless `AURA_DEBUG_SCRAPES=true`.
-- Memory can be inspected with `GET /api/memories` and deleted with
-  `DELETE /api/memories/:id`.
+- Memory can be inspected with `GET /api/memories`. In cloud mode, deleting a
+  memory (`DELETE /api/memories/:id`) or a pinned profile key
+  (`DELETE /api/profile/:key`) does not delete immediately - it stages the
+  deletion into a pending-actions queue (`GET /api/actions/pending`), which
+  only executes once explicitly approved (`POST /api/actions/:id/approve`) or
+  discards it if rejected (`POST /api/actions/:id/reject`). Local/no-Supabase
+  mode has no approval queue and deletes immediately.
+- AURA's core persona and behavioral rules live in `SOUL.md`, loaded once at
+  server boot - not inline code or a hot-editable database row, so changes go
+  through the same git review and test gate as any other code change.
+- Run `npm run memory:view` (or hit the authenticated `GET /api/memory/view`)
+  for a plain-English snapshot of everything AURA currently "believes": the
+  pinned profile, durable memories, and the rolling conversation summary,
+  with a warning if the summary contains a self-capability negation (e.g. a
+  claim that she lacks access she actually has). This exists because
+  diagnosing a poisoned summary previously required raw Supabase queries.
 
 The existing `semantic_memory.json` file is imported non-destructively into the
 structured SQLite memory table at startup.
@@ -79,9 +93,12 @@ Pronounce "WK 4" as "week four."
 ```
 
 Credentials, tokens, passwords, and one-time codes are never eligible for
-memory. Inspect the structured profile at `GET /api/profile`, remove one entry
-with `DELETE /api/profile/:key`, and inspect semantic memories at
-`GET /api/memories`.
+memory. Inspect the structured profile at `GET /api/profile`, inspect semantic
+memories at `GET /api/memories`, or get a combined human-readable view of both
+plus the rolling summary with `npm run memory:view` /
+`GET /api/memory/view`. Removing a profile entry (`DELETE /api/profile/:key`)
+stages a deletion for approval in cloud mode rather than removing it
+immediately - see "Privacy and security" above.
 
 Ordinary conversation extraction is queued durably in Supabase and runs after
 the chat response is returned. Jobs are keyed to persisted user messages,

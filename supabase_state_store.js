@@ -104,7 +104,7 @@ class SupabaseStateStore {
     const [{ data: conversation, error: conversationError }, messages] = await Promise.all([
       this.client
         .from('aura_conversations')
-        .select('summary, metadata')
+        .select('summary, metadata, updated_at')
         .eq('id', conversationId)
         .eq('owner_id', this.ownerId)
         .single(),
@@ -114,6 +114,7 @@ class SupabaseStateStore {
     return {
       summary: conversation?.summary || '',
       metadata: conversation?.metadata || {},
+      updatedAt: conversation?.updated_at || null,
       messages
     };
   }
@@ -397,6 +398,20 @@ class SupabaseStateStore {
       : { status: 'rejected' };
     const { data, error } = await this.client.from('aura_actions').update(patch)
       .eq('owner_id', this.ownerId).eq('id', id).eq('status', 'proposed')
+      .select('*').maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
+  // Marks an approved action as executed (succeeded/failed), recording its result
+  // or error and an execution timestamp - the audit trail for what actually happened,
+  // as distinct from decideAction's record of what was merely authorized.
+  async recordActionResult(id, status, { result = null, error: errorMessage = null } = {}) {
+    const patch = { status, executed_at: new Date().toISOString() };
+    if (result !== null) patch.result = result;
+    if (errorMessage !== null) patch.error = errorMessage;
+    const { data, error } = await this.client.from('aura_actions').update(patch)
+      .eq('owner_id', this.ownerId).eq('id', id)
       .select('*').maybeSingle();
     if (error) throw error;
     return data;

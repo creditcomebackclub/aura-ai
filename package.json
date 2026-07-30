@@ -10,6 +10,7 @@
     "eval": "node eval/run.js",
     "migrate:supabase": "node scripts/migrate-local-state.js",
     "backfill:memory-v2": "node scripts/backfill-memory-v2.js",
+    "memory:view": "node scripts/memory-view.js",
     "companion": "node companion_worker.js"
   },
   "keywords": [],

@@ -323,6 +323,110 @@ function buildProfileContext(profile) {
   return context;
 }
 
+// Targets the specific shape of the incident that motivated this: a summary
+// (or any self-referential text) telling AURA she lacks access she actually
+// has. Deliberately narrow - a summary can legitimately contain ordinary
+// business imperatives ("remember to call the client back") that have
+// nothing to do with AURA's own tool access, and over-broadening this would
+// make it noisy rather than useful.
+const SELF_CAPABILITY_NEGATION_PATTERNS = [
+  /do not claim access/i,
+  /\bno access to (?:the |your )?(?:database|tools?|memory|ccc)\b/i,
+  /\bcannot (?:access|confirm|verify)\b[^.]{0,60}\b(?:database|tool|memory)\b/i,
+  /\bunable to (?:query|access)\b[^.]{0,60}\b(?:database|tool|memory)\b/i,
+  /without verified tool output/i
+];
+
+function findSelfCapabilityNegation(text) {
+  const value = String(text || '');
+  for (const pattern of SELF_CAPABILITY_NEGATION_PATTERNS) {
+    const match = value.match(pattern);
+    if (match) {
+      const start = Math.max(0, match.index - 40);
+      const end = Math.min(value.length, match.index + match[0].length + 40);
+      return { pattern: pattern.source, snippet: value.slice(start, end).trim() };
+    }
+  }
+  return null;
+}
+
+const PROFILE_KIND_LABELS = {
+  identity: 'Identity',
+  relationship: 'People',
+  communication: 'Communication Preferences',
+  preference: 'Preferences',
+  pronunciation: 'Pronunciation Notes',
+  business_rule: 'Business Rules',
+  durable_fact: 'Durable Facts'
+};
+
+function renderProfileEntryLine(entry) {
+  const provenance = `_(source: ${entry.source || 'unknown'}, confidence ${entry.confidence ?? '?'})_`;
+  if (entry.kind === 'relationship') {
+    const who = entry.subject || entry.value;
+    const relationship = entry.relationship || 'known person';
+    return `- **${who}** — ${relationship}${entry.pinned ? '' : ' (not pinned)'} ${provenance}`;
+  }
+  if ((entry.kind === 'communication' || entry.kind === 'business_rule') && entry.instruction) {
+    return `- ${entry.instruction} _(underlying value: "${entry.value}", source: ${entry.source || 'unknown'})_`;
+  }
+  return `- **${entry.key}**: ${entry.value} ${provenance}`;
+}
+
+// Renders the profile + durable memories + rolling summary as one clean,
+// plain-English document - the "MEMORY.md" analog. A real MEMORY.md is a
+// static file a human edits; AURA's memory changes every request, so this is
+// an on-demand rendering over the existing structured stores rather than a
+// file replacing them. Pure function - callers fetch the data, this just
+// formats it, so it is trivially testable without touching Supabase.
+function renderMemoryDocument({ profile, memories = [], summary = '', summaryUpdatedAt = null } = {}) {
+  const rows = profileRows(profile);
+  const byKind = new Map();
+  for (const entry of rows) {
+    if (!byKind.has(entry.kind)) byKind.set(entry.kind, []);
+    byKind.get(entry.kind).push(entry);
+  }
+
+  const warnings = [];
+  const negation = findSelfCapabilityNegation(summary);
+  if (negation) {
+    warnings.push(`Conversation summary contains a self-capability negation: "${negation.snippet}"`);
+  }
+
+  const sections = [];
+  if (warnings.length) {
+    sections.push(`## ⚠ Warnings\n${warnings.map(warning => `- ${warning}`).join('\n')}`);
+  }
+
+  sections.push('# AURA Memory Snapshot');
+
+  for (const kind of Object.keys(PROFILE_KIND_LABELS)) {
+    const entries = (byKind.get(kind) || []).sort((a, b) => String(a.key).localeCompare(String(b.key)));
+    if (!entries.length) continue;
+    sections.push(`## ${PROFILE_KIND_LABELS[kind]}\n${entries.map(renderProfileEntryLine).join('\n')}`);
+  }
+
+  // Every learned fact is saved to both the profile and aura_memories, linked
+  // by memory_id - only list memories NOT already shown above, to avoid
+  // double-listing. This is also exactly where a legacy or otherwise
+  // unlinked memory row would surface, which is the provenance gap the
+  // original incident needed and didn't have.
+  const linkedMemoryIds = new Set(rows.map(entry => entry.memory_id).filter(Boolean));
+  const orphanMemories = (memories || []).filter(memory => memory && !linkedMemoryIds.has(memory.id));
+  if (orphanMemories.length) {
+    sections.push(`## Additional Long-Term Memories\n${orphanMemories
+      .map(memory => `- [${memory.kind}, confidence ${memory.confidence}] ${memory.content} _(source: ${memory.source || 'unknown'}, id ${memory.id})_`)
+      .join('\n')}`);
+  }
+
+  const summaryHeader = summaryUpdatedAt
+    ? `## Conversation Continuity Summary _(updated ${summaryUpdatedAt})_`
+    : '## Conversation Continuity Summary';
+  sections.push(`${summaryHeader}\n${summary ? summary : '_(none yet)_'}`);
+
+  return { markdown: sections.join('\n\n'), warnings };
+}
+
 function canonicalMemory(entry) {
   if (entry.kind === 'relationship') {
     return `${entry.subject || entry.value} is the owner's ${entry.relationship || 'known person'}.`;
@@ -593,7 +697,21 @@ class ConversationSummaryService {
     if (!summary) return { updated: false };
     const throughMessageId = context.messages[context.messages.length - 1].id;
     await this.stateStore.updateConversationSummary(summary, throughMessageId);
-    return { updated: true, throughMessageId };
+    // Detect-and-flag, not reject-and-block: a hard rejection risks a worse
+    // failure mode than the one this guards against - if the heuristic ever
+    // false-positives, the whole regenerated summary (including genuinely new,
+    // useful continuity info) would silently fail to save, with nothing
+    // indicating why. The save always proceeds; this only makes the exact
+    // failure mode from the incident (a summary that convinces AURA she lacks
+    // access she actually has) visible via a log line and the return value.
+    // The reliable surfacing mechanism is renderMemoryDocument re-checking
+    // whatever is CURRENTLY stored, independent of how it got there - this is
+    // a secondary, earliest-possible tripwire, not the only line of defense.
+    const negation = findSelfCapabilityNegation(summary);
+    if (negation) {
+      console.warn('[Memory v2] New conversation summary flagged for self-capability negation:', negation.snippet);
+    }
+    return { updated: true, throughMessageId, flagged: Boolean(negation), snippet: negation?.snippet || null };
   }
 }
 
@@ -604,7 +722,9 @@ module.exports = {
   containsSecret,
   deterministicEntries,
   findProfileMatches,
+  findSelfCapabilityNegation,
   normalizeEntry,
   parseMemoryCommand,
+  renderMemoryDocument,
   textMatchScore
 };
