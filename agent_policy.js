@@ -25,6 +25,14 @@ const TOOL_POLICIES = Object.freeze({
   // Same shape: staging an email changes nothing, only confirm sends it.
   propose_owner_email: 'reversible_write',
   confirm_owner_email: 'destructive_write',
+  // Arbitrary recipient, unlike propose_owner_email above - the recipient IS
+  // a real tool argument here, so external_action (not destructive_write)
+  // is the honest label: this can affect something outside AURA's own data,
+  // not just destroy a record within it. Safety comes entirely from the
+  // mandatory propose/confirm gate, since there is no fixed-recipient
+  // guarantee to fall back on.
+  propose_email: 'reversible_write',
+  confirm_email: 'external_action',
   // No staging - the recipient is fixed to the owner's own chat regardless,
   // so a confirmation step protects against nothing here (unlike email).
   send_telegram_message: 'destructive_write'
@@ -92,6 +100,21 @@ function validateToolArguments(name, args) {
     if (args.pdf_content !== undefined) requireString('pdf_content', 20000);
   }
   if (name === 'confirm_owner_email') {
+    requireString('action_id', 100);
+    if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
+      throw new Error(`Invalid action_id for ${name}.`);
+    }
+  }
+  if (name === 'propose_email') {
+    requireString('to', 320);
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.to.trim())) {
+      throw new Error(`Invalid arguments for ${name}: to is not a valid email address.`);
+    }
+    requireString('subject', 300);
+    requireString('body', 8000);
+    if (args.pdf_content !== undefined) requireString('pdf_content', 20000);
+  }
+  if (name === 'confirm_email') {
     requireString('action_id', 100);
     if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
       throw new Error(`Invalid action_id for ${name}.`);

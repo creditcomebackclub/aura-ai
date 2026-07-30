@@ -125,11 +125,12 @@ function escapeAppleScriptString(value) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
 }
 
-// Sends an email FROM the Mac's own Mail app. The recipient is always the
-// caller-supplied ownerEmail - this function has no path for sending to any
-// other address, which is the actual safety property here: even a fully
-// compromised subject/body can only ever reach the owner's own inbox, never
-// exfiltrate data to a third party.
+// Sends an email FROM the Mac's own Mail app to whatever address the caller
+// passes as ownerEmail. This function itself is recipient-agnostic - the
+// safety property lives at the call site in server.js, not here: the
+// send_owner_email path always passes the fixed AURA_OWNER_EMAIL, while the
+// arbitrary-recipient send_email path only ever reaches this function after
+// the owner has explicitly confirmed the exact address on a later turn.
 async function sendEmailToOwner(ownerEmail, subject, body, attachmentPath = null) {
   if (!ownerEmail) throw new Error('An owner email address is required to send mail.');
   const safeSubject = escapeAppleScriptString(subject);

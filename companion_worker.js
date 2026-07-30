@@ -43,6 +43,28 @@ async function executeCapability(capability, request = {}) {
         if (attachmentPath) fs.unlink(attachmentPath, () => {});
       }
     }
+    // Distinct from 'send_email' above: this one sends to whatever address
+    // the server passes in request.to, for the arbitrary-recipient tool
+    // (propose_email/confirm_email). Safety here lives entirely in the
+    // server's mandatory propose/confirm gate before this ever gets queued,
+    // not in this function - unlike 'send_email' above, which is safe by
+    // construction because it never reads a recipient off the request.
+    case 'send_email_to_recipient': {
+      if (!request.to) throw new Error('send_email_to_recipient requires a "to" address.');
+      let attachmentPath = null;
+      if (request.attachment_base64) {
+        const safeName = String(request.attachment_filename || 'attachment.pdf')
+          .replace(/[^a-zA-Z0-9_.-]/g, '_')
+          .slice(-120);
+        attachmentPath = path.join(os.tmpdir(), `aura-${crypto.randomUUID()}-${safeName}`);
+        fs.writeFileSync(attachmentPath, Buffer.from(request.attachment_base64, 'base64'));
+      }
+      try {
+        return await mac.sendEmailToOwner(request.to, request.subject, request.body, attachmentPath);
+      } finally {
+        if (attachmentPath) fs.unlink(attachmentPath, () => {});
+      }
+    }
     default:
       throw new Error(`Unsupported Mac companion capability: ${capability}`);
   }

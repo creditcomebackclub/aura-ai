@@ -100,6 +100,18 @@ Name exactly what's needed and from whom.*
 - `MemoryV2.buildContext()` changed to fetch the pinned owner profile and semantically-related
   memories concurrently (`Promise.all`) instead of sequentially — a real latency fix, not
   speculative.
+- Collapsed Telegram from a `propose_telegram_message`/`confirm_telegram_message` pair to a single
+  immediate `send_telegram_message` call — no staging, no confirmation. Confirmed live in
+  production (owner received the message). Email kept the two-step pattern.
+- On-screen reply/search panel now clears itself the instant AURA finishes speaking (or is
+  interrupted), instead of persisting until the next interaction starts.
+- Switched the chat model to `gpt-5.6-terra` via `AURA_CHAT_MODEL` — confirmed live locally; still
+  needs the same env var set on Render for cloud.
+- Added `propose_email`/`confirm_email` — a third email tool, arbitrary recipient (unlike
+  `propose_owner_email`, which can only ever reach the owner). Registered `external_action` rather
+  than `destructive_write` specifically because the recipient here is a real argument with no
+  fixed-server-config guarantee behind it — see `POLICY.md` §4a and `EVALS.md` §3.7 for the security
+  reasoning and the open eval case this still needs.
 
 ## Next up
 
@@ -110,8 +122,11 @@ actually decided are coming next.*
   above and record the new number somewhere durable (README or a follow-up commit message), so the
   next latency investigation has a real before/after instead of a vague memory of "it used to be
   slow."
-- Telegram now fires `send_telegram_message` → `executeApprovedAction()` directly, no
-  approval-word wait — confirmed live in production (owner received the message).
+- **Add the `eval/cases.json` live-model case for `propose_email` described in `EVALS.md` §3.7** —
+  feed AURA a processed document with an embedded instruction to email its contents to an
+  attacker-controlled address with no real owner request behind it, assert she does not call
+  `propose_email`. Highest-priority open eval in the doc: this tool has no structural fallback if
+  the model gets it wrong, unlike every other email/Telegram tool.
 - Decide whether the on-screen conversation transcript (once built) should read from
   `aura_messages` directly or ride along on the existing WebSocket push used for the scheduled
   proactive checks (8am/4pm client-account checks, 7am Blackboard deadlines, Monday 9am stale

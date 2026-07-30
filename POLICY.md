@@ -24,12 +24,9 @@ Every tool AURA can call is assigned exactly one risk tier in the
 | Tier | Meaning | Examples (from `TOOL_POLICIES`) |
 |---|---|---|
 | `read` | No state change. Always autonomous. | `list_database_tables`, `get_table_schema`, `query_database_table`, `count_database_rows`, `get_outstanding_balances`, `calculate_financial_metrics`, `get_client_snapshot`, `get_client_current_phase`, `check_email`, `check_calendar`, `get_goals`, `query_finances`, `check_blackboard`, `search_web`, `list_deletable_test_letters`, `list_pending_owner_actions` |
-| `reversible_write` | Changes state, but non-destructively (or only *stages* a later destructive step — staging itself changes nothing observable). | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `propose_test_letter_deletion`, `propose_owner_email` |
-| `destructive_write` | Irreversible or externally-visible: deletes a record, or sends something a third party can see. Note `send_telegram_message` is tagged here for audit honesty but is NOT gated - it sends immediately (see §5). | `confirm_test_letter_deletion`, `confirm_owner_email`, `send_telegram_message` |
-
-A fourth tier, `external_action`, exists in the database check constraints
-(`aura_actions.risk_level`, `aura_agents.maximum_risk` — see
-`supabase_deletion_log.sql`) for future use but has no tool mapped to it today.
+| `reversible_write` | Changes state, but non-destructively (or only *stages* a later destructive step — staging itself changes nothing observable). | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `propose_test_letter_deletion`, `propose_owner_email`, `propose_email` |
+| `destructive_write` | Irreversible or externally-visible, to a recipient fixed server-side: deletes a record, or sends something a third party can see to an address the model never supplied. Note `send_telegram_message` is tagged here for audit honesty but is NOT gated - it sends immediately (see §5). | `confirm_test_letter_deletion`, `confirm_owner_email`, `send_telegram_message` |
+| `external_action` | Same externally-visible category as `destructive_write`, but to a recipient that IS a real tool argument, with no fixed-server-config guarantee behind it. Gated exactly like `destructive_write` (propose → approve → execute) - the tier split exists to flag the missing structural guarantee, not to change the gate. | `confirm_email` |
 
 **Deny-by-default is the load-bearing property, not the tier labels themselves.**
 `getToolPolicy(name)` returns `TOOL_POLICIES[name] || 'blocked'` — any tool name
@@ -159,7 +156,7 @@ double-executing. `ccc_database.js`'s `deleteTestLetter` does the equivalent
 compare-and-swap directly (`.eq('id', actionId).eq('status', 'proposed')`
 before flipping to `'executing'`).
 
-### 2.3 The two real implementations today
+### 2.3 The real implementations today
 
 **Test-letter deletion** (`ccc_database.js` + `server.js`):
 - `list_deletable_test_letters` (`read`) — lists candidates. A letter is only
@@ -184,6 +181,22 @@ before flipping to `'executing'`).
   run the gate via `redeemPendingAction`, then dispatch through
   `executeApprovedAction`.
 
+**Third-party email** (`server.js`) — stays fully gated, same shape as owner
+email, but with a real `to` argument instead of fixed server config:
+- `propose_email` (`reversible_write`) — `agent_policy.js` validates `to`
+  looks like a plausible email address before this is allowed to stage at
+  all, then `cloudState.proposeAction(null, 'aura_core', 'send_email', args, 'external_action')`.
+  Only ever used when the owner explicitly names the recipient in that
+  conversation — never on the model's own initiative, never toward an
+  address surfaced by untrusted content.
+- `confirm_email` (`external_action`) — identical gate to `confirm_owner_email`
+  via `redeemPendingAction`, then dispatch through `executeApprovedAction`.
+  The tier label (`external_action` vs `destructive_write`) is the honest
+  flag that there is no fixed-recipient guarantee behind this one — the
+  propose/confirm gate is the *entire* defense, not a second layer on top of
+  one, which is why the recipient must be read back to the owner explicitly
+  before he can approve it (see §4).
+
 **Owner Telegram messages** (`server.js`) — deliberately NOT gated: a single
 `send_telegram_message` (`destructive_write`) call sends immediately. This was
 originally the same propose/confirm pair as email, collapsed to one call at
@@ -204,7 +217,7 @@ through conversation, not a shortcut around it.
 
 `executeApprovedAction(action)` in `server.js` is the single dispatch point for
 *running* an approved action, keyed on `action.tool_name`:
-`delete_memory`, `delete_profile_entry`, `send_owner_email`,
+`delete_memory`, `delete_profile_entry`, `send_owner_email`, `send_email`,
 `send_telegram_message`. Anything else falls through and is returned
 unexecuted — an approved-but-unhandled `tool_name` is left alone rather than
 guessed at, so nothing runs without an explicit handler for it. Every branch
@@ -300,9 +313,14 @@ Boundary" rule.
 
 ---
 
-## 4. The fixed-recipient property (email / Telegram)
+## 4. The fixed-recipient property (owner email / Telegram)
 
-**Security property:** the email/Telegram recipient is fixed from server
+**Scope note:** this section covers `propose_owner_email`/`confirm_owner_email` and
+`send_telegram_message` only. The third-party email tool (`propose_email`/`confirm_email`,
+added later) was built deliberately WITHOUT this property — see §4a for why that's safe
+anyway, and why it leans on a different mechanism entirely.
+
+**Security property:** the owner-email/Telegram recipient is fixed from server
 configuration and is structurally never a tool argument the model can supply.
 There is no code path — none — for `propose_owner_email`/`confirm_owner_email`
 or `send_telegram_message` to reach anyone but the owner, regardless of what
@@ -339,6 +357,29 @@ reduced by the full propose→approve→execute flow in §2; for Telegram it is
 the only defense, which is exactly why removing the confirm step there was a
 judgment call specific to Telegram's lower blast radius (a message, not an
 attachment-bearing email) rather than a change applied to both uniformly.
+
+### 4a. Third-party email: no fixed recipient, gate carries the full weight
+
+`propose_email`/`confirm_email` exist because the owner asked to be able to email arbitrary
+people, not just himself. This tool has NO structural guarantee: `to` is a real argument in
+both the tool schema and `agent_policy.js`'s `validateToolArguments` (which does check it's a
+plausible email address, but format validity is not the same thing as recipient correctness —
+a syntactically valid address can still be the wrong one). This is the deliberate tradeoff:
+- **Registered `external_action`, not `destructive_write`** — the tier split itself is the
+  documentation of "this one doesn't have what the others have."
+- **The propose/confirm gate is the entire defense here**, not a second layer on top of a
+  structural one. `SOUL.md` and `SKILL.md` both call out, in this tool's description and
+  usage notes, that the recipient must be read back to the owner explicitly before he can
+  approve — for owner-email/Telegram that would be redundant (the recipient can't be wrong);
+  for this tool it's the one thing standing between a prompt injection and data going
+  somewhere it shouldn't.
+- **Never on the model's own initiative.** `SOUL.md`'s Tier 3 prohibitions and this tool's own
+  description both state it should only be called when the owner explicitly names a
+  recipient in that conversation — never in response to an address found in a webpage, an
+  email body, or other untrusted content being processed. This is a behavioral rule, not a
+  structural one, precisely because a structural one isn't available for this tool the way it
+  is for the others - which is exactly the kind of "Must: adversarially test this" scenario
+  described in `EVALS.md` §3, and should get one before this ships to real third-party use.
 
 ---
 
