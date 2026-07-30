@@ -19,7 +19,7 @@ const { createSchedulerAuthenticator } = require('./scheduler_auth');
 const mac = require('./mac_integration');
 const ccc = require('./ccc_database');
 const { generateSimplePdf } = require('./pdf_generator');
-const { isTelegramConfigured, sendTelegramMessage, isFromOwnerChat, downloadTelegramFile } = require('./telegram');
+const { isTelegramConfigured, sendTelegramMessage, sendTelegramAudio, isFromOwnerChat, downloadTelegramFile } = require('./telegram');
 const { concatWavBuffers, splitIntoSentences } = require('./wav_utils');
 const { MemoryStore } = require('./memory_store');
 const {
@@ -1777,6 +1777,16 @@ app.post('/telegram/webhook', rateLimit, async (req, res) => {
 
     const result = await processOwnerText(text);
     await sendTelegramMessage(result.reply);
+    try {
+      const sentences = splitIntoSentences(result.reply);
+      const chunks = await Promise.all(sentences.map(synthesizeSpeechChunk));
+      const combined = chunks.length > 1 ? concatWavBuffers(chunks) : chunks[0];
+      await sendTelegramAudio(combined);
+    } catch (voiceError) {
+      // Text reply already sent above - a voice-synthesis failure shouldn't
+      // also swallow the text one, so this is caught and logged, not thrown.
+      console.error('[Telegram webhook] voice reply failed:', voiceError.message);
+    }
     res.sendStatus(200);
   } catch (error) {
     console.error('[Telegram webhook] failed:', error.message);

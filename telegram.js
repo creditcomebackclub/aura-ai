@@ -27,6 +27,33 @@ async function sendTelegramMessage(text) {
   return true;
 }
 
+// Sends a synthesized voice reply as a Telegram audio attachment. Uses
+// sendAudio (a regular playable audio file) rather than sendVoice, which
+// requires OGG/Opus, MP3, or M4A specifically - Cartesia here produces WAV,
+// and there is no audio transcoder in this codebase's dependencies to
+// convert it. sendAudio's own docs likewise recommend MP3/M4A, so WAV
+// compatibility across Telegram clients is a real, currently-untested risk,
+// not a guarantee - worth confirming live rather than assuming.
+async function sendTelegramAudio(buffer, { filename = 'reply.wav', mimeType = 'audio/wav' } = {}) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) throw new Error('Telegram is not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).');
+
+  const form = new FormData();
+  form.append('chat_id', chatId);
+  form.append('audio', new Blob([buffer], { type: mimeType }), filename);
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
+    method: 'POST',
+    body: form
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Telegram sendAudio error: ${response.status} - ${errText}`);
+  }
+  return true;
+}
+
 // Inbound side of the same fixed-chat guarantee as sendTelegramMessage: a
 // message is only ever processed if it comes from TELEGRAM_CHAT_ID - this
 // function itself doesn't enforce that (the webhook route does, since it
@@ -57,4 +84,10 @@ async function downloadTelegramFile(fileId) {
   return { buffer, ext };
 }
 
-module.exports = { isTelegramConfigured, sendTelegramMessage, isFromOwnerChat, downloadTelegramFile };
+module.exports = {
+  isTelegramConfigured,
+  sendTelegramMessage,
+  sendTelegramAudio,
+  isFromOwnerChat,
+  downloadTelegramFile
+};
