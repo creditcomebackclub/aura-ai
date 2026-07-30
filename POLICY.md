@@ -24,8 +24,8 @@ Every tool AURA can call is assigned exactly one risk tier in the
 | Tier | Meaning | Examples (from `TOOL_POLICIES`) |
 |---|---|---|
 | `read` | No state change. Always autonomous. | `list_database_tables`, `get_table_schema`, `query_database_table`, `count_database_rows`, `get_outstanding_balances`, `calculate_financial_metrics`, `get_client_snapshot`, `get_client_current_phase`, `check_email`, `check_calendar`, `get_goals`, `query_finances`, `check_blackboard`, `search_web`, `list_deletable_test_letters`, `list_pending_owner_actions` |
-| `reversible_write` | Changes state, but non-destructively (or only *stages* a later destructive step — staging itself changes nothing observable). | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `propose_test_letter_deletion`, `propose_owner_email`, `propose_telegram_message` |
-| `destructive_write` | Irreversible or externally-visible: deletes a record, or sends something a third party can see. | `confirm_test_letter_deletion`, `confirm_owner_email`, `confirm_telegram_message` |
+| `reversible_write` | Changes state, but non-destructively (or only *stages* a later destructive step — staging itself changes nothing observable). | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `propose_test_letter_deletion`, `propose_owner_email` |
+| `destructive_write` | Irreversible or externally-visible: deletes a record, or sends something a third party can see. Note `send_telegram_message` is tagged here for audit honesty but is NOT gated - it sends immediately (see §5). | `confirm_test_letter_deletion`, `confirm_owner_email`, `send_telegram_message` |
 
 A fourth tier, `external_action`, exists in the database check constraints
 (`aura_actions.risk_level`, `aura_agents.maximum_risk` — see
@@ -174,15 +174,24 @@ before flipping to `'executing'`).
   row into the `aura_actions.result` column, deletes it, and returns an
   `auditId`.
 
-**Owner email / Telegram** (`server.js`):
+**Owner email** (`server.js`) — stays fully gated:
 - `list_pending_owner_actions` (`read`) — recovery path if the model loses
   track of an `action_id` (e.g. it only appeared in an earlier tool result,
   not in anything said aloud).
-- `propose_owner_email` / `propose_telegram_message` (`reversible_write`) —
-  stage via `cloudState.proposeAction(null, 'aura_core', toolName, args, 'destructive_write')`.
-- `confirm_owner_email` / `confirm_telegram_message` (`destructive_write`) —
+- `propose_owner_email` (`reversible_write`) —
+  stage via `cloudState.proposeAction(null, 'aura_core', 'send_owner_email', args, 'destructive_write')`.
+- `confirm_owner_email` (`destructive_write`) —
   run the gate via `redeemPendingAction`, then dispatch through
   `executeApprovedAction`.
+
+**Owner Telegram messages** (`server.js`) — deliberately NOT gated: a single
+`send_telegram_message` (`destructive_write`) call sends immediately. This was
+originally the same propose/confirm pair as email, collapsed to one call at
+the owner's request once he understood the guarantee below - it still calls
+`cloudState.proposeAction()` immediately followed by `executeApprovedAction()`
+in the same request when `cloudState` exists (so an audit row lands in
+`aura_actions`, `approved_by: null`, honestly reflecting no approval step
+occurred), or `telegram.js::sendTelegramMessage()` directly otherwise.
 
 **Also staged into this same queue, not executed immediately:** memory and
 profile deletion. `DELETE /api/memories/:id` and `DELETE /api/profile/:key`
@@ -296,9 +305,13 @@ Boundary" rule.
 **Security property:** the email/Telegram recipient is fixed from server
 configuration and is structurally never a tool argument the model can supply.
 There is no code path — none — for `propose_owner_email`/`confirm_owner_email`
-or `propose_telegram_message`/`confirm_telegram_message` to reach anyone but
-the owner, regardless of what an attacker gets injected into a subject, body,
-or message string.
+or `send_telegram_message` to reach anyone but the owner, regardless of what
+an attacker gets injected into a subject, body, or message string. This
+property holds independently of whether a confirmation step exists - it is
+*why* Telegram was safe to make a single immediate call (see §2): a
+confirmation step never protected against misdirection, only against sending
+content the owner hadn't seen, and misdirection was never structurally
+possible either way.
 
 Concretely:
 - Email: the recipient is `AURA_OWNER_EMAIL`, an environment variable read
@@ -313,15 +326,19 @@ Concretely:
   *"Chat id is fixed from config, never supplied by the model, for the same
   reason the email recipient is fixed: there is no path for this to reach
   anyone but the owner."* `TELEGRAM_CHAT_ID` and `TELEGRAM_BOT_TOKEN` are read
-  from `process.env` inside `sendTelegramMessage`; `propose_telegram_message`'s
-  schema only accepts `message`.
+  from `process.env` inside `sendTelegramMessage`; the `send_telegram_message`
+  tool schema only accepts `message` - there is no `to`/`recipient` field here
+  either.
 
-This means the worst outcome of a successful prompt injection against these
-two tools is an unwanted message *to the owner himself*, still gated by the
-full propose→approve→execute flow in §2 — never exfiltration to a third
-party. This is a structural guarantee (no field exists to carry a different
-recipient), not a validation check that could be bypassed by a sufficiently
-clever payload.
+This means the worst outcome of a successful prompt injection against either
+tool is an unwanted message *to the owner himself* — never exfiltration to a
+third party. This is a structural guarantee (no field exists to carry a
+different recipient), not a validation check that could be bypassed by a
+sufficiently clever payload. For email that unwanted-message risk is further
+reduced by the full propose→approve→execute flow in §2; for Telegram it is
+the only defense, which is exactly why removing the confirm step there was a
+judgment call specific to Telegram's lower blast radius (a message, not an
+attachment-bearing email) rather than a change applied to both uniformly.
 
 ---
 

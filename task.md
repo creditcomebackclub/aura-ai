@@ -69,14 +69,11 @@ whoever unblocks it knows what to do.
 *Waiting on something outside the codebase — a human decision, a credential, a permission grant.
 Name exactly what's needed and from whom.*
 
-- **Telegram bot token / chat ID not configured.** `telegram.js` and the `propose_telegram_message`
-  / `confirm_telegram_message` tools in `server.js` are implemented and wired into the
-  `aura_actions` approval queue, but `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are not set in the
-  environment (`telegram.js:8` gates on both being present; `server.js:1225` returns "Telegram is
-  not configured" and tells AURA to relay that to the owner). **Needs:** the owner (Chris) to
-  create a Telegram bot via BotFather, get the bot token, get his own chat ID, and set both env vars
-  (locally in `.env`, and on Render for cloud). Nothing further can be tested end-to-end on this
-  channel until that happens.
+- ~~**Telegram bot token / chat ID not configured.**~~ Resolved — bot created, token and chat ID set
+  locally and on Render, confirmed working end-to-end (owner received a live message). Telegram was
+  since simplified from a propose/confirm pair to a single immediate `send_telegram_message` call
+  (no staging — the recipient is fixed server-side either way, so confirmation protected against
+  nothing there); email keeps the propose/confirm pattern.
 - **Mac-companion permission grants.** `companion_worker.js` (running as the `com.aura.companion`
   launchd service) drives Apple Mail/Calendar via `mac_integration.js`'s AppleScript calls
   (`osascript`, `tell application "Mail"`). Some of these operations require macOS to have granted
@@ -113,11 +110,8 @@ actually decided are coming next.*
   above and record the new number somewhere durable (README or a follow-up commit message), so the
   next latency investigation has a real before/after instead of a vague memory of "it used to be
   slow."
-- After the Telegram token is configured (see Blocked), do a live end-to-end test of
-  `propose_telegram_message` → owner approval word → `confirm_telegram_message` →
-  `executeApprovedAction()` dispatch, the same way the test-letter-deletion path has presumably
-  already been exercised. This is the one owner-facing action-queue path that has never actually
-  fired in production.
+- Telegram now fires `send_telegram_message` → `executeApprovedAction()` directly, no
+  approval-word wait — confirmed live in production (owner received the message).
 - Decide whether the on-screen conversation transcript (once built) should read from
   `aura_messages` directly or ride along on the existing WebSocket push used for the scheduled
   proactive checks (8am/4pm client-account checks, 7am Blackboard deadlines, Monday 9am stale

@@ -189,57 +189,58 @@ model cannot skip the wait by trying harder.
 
 ## 4. Owner Email / Telegram, End to End
 
-Same propose → approve → execute shape as workflow 3, but generalized: it goes through the shared
-`aura_actions` approval queue (`cloudState.proposeAction` / `listPendingActions` /
-`decideAction` - the same queue backing the HTTP routes `GET /api/actions/pending`,
-`POST /api/actions/:id/approve`, `POST /api/actions/:id/reject`) instead of `ccc_database.js`'s
-bespoke letter-staging table logic. There are two independent tool pairs - email and Telegram - with
-identical mechanics.
+Email and Telegram share one structural safety property but differ deliberately in how much
+friction gates the actual send. Both were originally built as identical two-step propose/confirm
+pairs; Telegram was collapsed to a single call at the owner's explicit request once he'd seen the
+guarantee below in practice - email kept the two-step version because it can carry a generated PDF
+attachment and warrants more caution.
 
-1. **Check the destination is configured before proposing anything.** `propose_owner_email` requires
-   `AURA_OWNER_EMAIL` to be set server-side; `propose_telegram_message` requires
-   `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`. If either isn't configured, tell the owner it needs to be
-   set up - don't try to route around it.
+**The safety property both share, unconditionally:** the recipient is never an argument to either
+tool. `AURA_OWNER_EMAIL` and `TELEGRAM_CHAT_ID` come only from server configuration/env vars - there
+is no field in either tool's schema that could redirect where the message goes, regardless of what
+ends up in `subject`/`body`/`message`. This is *why* Telegram was safe to make single-step: a
+confirmation step only ever protected against staged content the owner hadn't seen yet, never
+against misdirection, since misdirection was never structurally possible to begin with.
 
-2. **Compose the content.**
-   - Email: `subject` + `body` (plain text). Optionally, `pdf_content` (plain text) auto-generates
-     and attaches a PDF - omit it for a plain email with no attachment.
-   - Telegram: a single plain-text `message`.
+### Telegram - one call, no staging
 
-3. **`propose_owner_email(subject, body, pdf_content?)` / `propose_telegram_message(message)` -
-   STEP 1, stages only, sends nothing.** Internally this calls `cloudState.proposeAction(null,
-   'aura_core', 'send_owner_email' | 'send_telegram_message', {...}, 'destructive_write')`, inserting
-   a `status: 'proposed'` row into `aura_actions` and returning an `action_id`.
+1. Check `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are configured - if not, tell the owner it needs to
+   be set up, don't try to route around it.
+2. Call **`send_telegram_message(message)`** as soon as the owner asks. It sends immediately - no
+   propose step, no waiting for a later turn, no confirmation needed.
+3. Internally: if `cloudState` exists, this calls `cloudState.proposeAction(...)` immediately
+   followed by `executeApprovedAction()` in the same request, so an audit row still lands in
+   `aura_actions` (with `approved_by: null`, honestly reflecting that no human approved it) - it just
+   never sits in a `proposed` state waiting on anything. Otherwise it calls
+   `telegram.js::sendTelegramMessage()` directly.
+4. Report the outcome: success is "Sent on Telegram."; failure includes the underlying error.
 
-4. **Describe the staged content back to the owner verbatim (subject/body, or the message text) and
-   ask them to confirm, then STOP and wait** - same as letter deletion.
+### Email - stays two-step
 
-5. **On a later turn, call `confirm_owner_email(action_id)` / `confirm_telegram_message(action_id)` -
-   STEP 2, actually sends.** `redeemPendingAction()` applies the identical gate as
-   `redeemStagedDeletion` in workflow 3: the action must exist, pending, matching the expected
-   `tool_name`; staged strictly before this request; within the 10-minute TTL; the owner's own words
-   fail the refusal pattern and pass the approval pattern. Only then is `cloudState.decideAction`
-   called to mark it approved, followed by `executeApprovedAction()`, which dispatches on `tool_name`
-   to actually send the email or Telegram message. It is always safe to *attempt* this call - it
-   verifies everything itself and fails harmlessly (with a reason) if any condition isn't met, so
-   don't withhold the call out of your own doubt about whether staging "really happened."
-
-6. **If you've lost the `action_id`** (e.g. it only appeared in a tool result you didn't repeat back
-   aloud, and has since scrolled out of context), call **`list_pending_owner_actions()`** first. It
-   returns every currently-staged `send_owner_email`/`send_telegram_message` action with its
-   `action_id`, a short `summary` (the subject line for email, or the first 80 characters of the
-   message for Telegram), and `staged_at`. Never guess an `action_id`, and never make the owner
-   repeat content they already gave you - recover it from this list instead.
-
-7. **Report the outcome** based on the executor's result: success reads back as "Sent. The owner will
-   receive it shortly." (email) or "Sent on Telegram." (Telegram); failure includes the underlying
-   error.
-
-8. **Structural safety property, worth knowing even though it changes nothing about how you call
-   these tools:** the recipient is never an argument to any of these tools. `AURA_OWNER_EMAIL` and
-   `TELEGRAM_CHAT_ID` come only from server configuration/env vars - there is no field in
-   `propose_owner_email`'s or `propose_telegram_message`'s schema that could redirect where the
-   message goes, regardless of what ends up in `subject`/`body`/`message`.
+1. Check `AURA_OWNER_EMAIL` is configured server-side before proposing anything.
+2. Compose `subject` + `body` (plain text). Optionally `pdf_content` (plain text) auto-generates and
+   attaches a PDF - omit it for a plain email with no attachment.
+3. **`propose_owner_email(subject, body, pdf_content?)` - STEP 1, stages only, sends nothing.**
+   Calls `cloudState.proposeAction(null, 'aura_core', 'send_owner_email', {...}, 'destructive_write')`,
+   inserting a `status: 'proposed'` row into `aura_actions` (the same generic approval queue backing
+   the HTTP routes `GET /api/actions/pending`, `POST /api/actions/:id/approve`,
+   `POST /api/actions/:id/reject`) and returning an `action_id`.
+4. Describe the staged subject/body back to the owner verbatim and ask them to confirm, then STOP and
+   wait - same as letter deletion.
+5. **On a later turn, call `confirm_owner_email(action_id)` - STEP 2, actually sends.**
+   `redeemPendingAction()` applies the identical gate as `redeemStagedDeletion` in workflow 3: the
+   action must exist, pending, matching `tool_name: 'send_owner_email'`; staged strictly before this
+   request; within the 10-minute TTL; the owner's own words fail the refusal pattern and pass the
+   approval pattern. Only then is `cloudState.decideAction` called to mark it approved, followed by
+   `executeApprovedAction()`, which actually sends the email. Always safe to *attempt* this call - it
+   verifies everything itself and fails harmlessly if any condition isn't met, so don't withhold the
+   call out of your own doubt about whether staging "really happened."
+6. **If you've lost the `action_id`**, call **`list_pending_owner_actions()`** first - it returns
+   every currently-staged email with its `action_id`, subject-line summary, and `staged_at`. Never
+   guess an `action_id`, and never make the owner repeat content they already gave you. (Telegram
+   never appears here, since it's never staged.)
+7. Report the outcome: success is "Sent. The owner will receive it shortly."; failure includes the
+   underlying error.
 
 ---
 

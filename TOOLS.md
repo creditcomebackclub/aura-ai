@@ -83,7 +83,14 @@ sees in the `tools` array; "underlying tables" are what the executor in
 | `save_semantic_memory` | Saves a fact/preference/event for long-term semantic recall. | `fact` | `aura_memories` (cloud) or local `MemoryStore`, via `MemoryV2.learnFromUserMessage()` |
 | `propose_test_letter_deletion` | **Step 1 of 2** for deleting a test letter. Re-validates eligibility and *stages* the deletion; deletes nothing. | `letter_id` | Inserts a `proposed` row into `aura_actions` (`tool_name: 'confirm_test_letter_deletion'`) |
 | `propose_owner_email` | **Step 1 of 2** for emailing the owner. Stages subject/body/optional PDF content; sends nothing. | `subject`, `body`, `pdf_content` (optional) | Inserts a `proposed` row into `aura_actions` (`tool_name: 'send_owner_email'`) via `cloudState.proposeAction()` |
-| `propose_telegram_message` | **Step 1 of 2** for sending the owner a Telegram message. Stages only. | `message` | Inserts a `proposed` row into `aura_actions` (`tool_name: 'send_telegram_message'`) |
+
+`send_telegram_message` is NOT a propose/confirm pair - see the `read`/single-call
+notes below. It was originally built as a two-step `propose_telegram_message`/
+`confirm_telegram_message` pattern identical to email, then deliberately
+collapsed to one immediate call at the owner's request: the recipient is fixed
+from config either way, so a confirmation step was protecting against nothing
+that Telegram-specific staging didn't already prevent by construction. Email
+kept the two-step version because it can carry a generated PDF attachment.
 
 Note the comment in `agent_policy.js`: staging a deletion or a message
 "changes nothing on its own" — it is registered `reversible_write` precisely
@@ -101,7 +108,7 @@ turn-passage, and the owner's own words before doing anything irreversible.
 |---|---|---|---|
 | `confirm_test_letter_deletion` | **Step 2.** Permanently deletes a staged test letter. | `letter_id` | `DELETE` from `letters` table; full row snapshot retained in `aura_actions.result` for reconstruction (`ccc_database.js::deleteTestLetter()`) |
 | `confirm_owner_email` | **Step 2.** Actually sends a staged email to the owner. | `action_id` | Dispatched by `executeApprovedAction()` → `companionClient.execute('send_email', …)` (cloud) or `mac.sendEmailToOwner()` (local) — see §5 |
-| `confirm_telegram_message` | **Step 2.** Actually sends a staged Telegram message. | `action_id` | `executeApprovedAction()` → `telegram.js::sendTelegramMessage()` |
+| `send_telegram_message` | Sends a Telegram message to the owner immediately - no propose/confirm pair, listed here only because it shares the `destructive_write` tier label for audit-honesty (an unsendable message is unrecoverable), not because it goes through the gate. Calls `cloudState.proposeAction()` immediately followed by `executeApprovedAction()` in the same request (so the audit row still lands in `aura_actions`, with `approved_by: null` - accurately reflecting that no human approval step occurred) when `cloudState` exists, or `telegram.js::sendTelegramMessage()` directly otherwise. | `message` | Sends immediately via `telegram.js::sendTelegramMessage()` |
 
 Two additional `destructive_write` actions exist in the **same** `aura_actions`
 approval queue but are staged from HTTP routes rather than chat tools (no
@@ -291,7 +298,7 @@ then direct `mac_integration.js` call.
 | Companion worker (on the Mac) | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `AURA_OWNER_ID`, `AURA_COMPANION_DEVICE`, `AURA_COMPANION_POLL_MS` (default 5000), `AURA_OWNER_EMAIL` (required specifically for `send_email`) | Throws at startup without `AURA_OWNER_ID`; `send_email` throws `"AURA_OWNER_EMAIL is not configured on the Mac companion."` |
 | Owner email (send) | `AURA_OWNER_EMAIL` — fixed recipient, **never** a tool argument the model can supply | `propose_owner_email` returns "Email is not configured" without ever staging anything |
 | Direct cloud email (bypasses Mac) | `EMAIL_PROVIDER=gmail\|outlook` plus matching OAuth vars: Gmail — `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`; Outlook — `OUTLOOK_TENANT_ID`, `OUTLOOK_CLIENT_ID`, `OUTLOOK_CLIENT_SECRET`, `OUTLOOK_REFRESH_TOKEN` | `isDirectEmailConfigured()` returns false; `check_email` falls through to the companion/mac path |
-| Telegram (send) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — fixed chat id, **never** a tool argument | `propose_telegram_message` returns "Telegram is not configured" without staging anything |
+| Telegram (send) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — fixed chat id, **never** a tool argument | `send_telegram_message` returns "Telegram is not configured" without sending anything |
 | Blackboard — cloud path | `BLACKBOARD_ICAL_URL` (an iCal/webcal feed URL, must resolve to `https://` or `webcal:`; treat as a secret — it is usually a bearer-token URL) | On cloud runtime with no iCal URL set, `check_blackboard` returns `BLACKBOARD_CALENDAR_ERROR: Blackboard calendar access is not configured on the cloud service.` |
 | Blackboard — local Mac path | None required beyond a previously-authenticated Puppeteer session (`.browser_data/`, established via `node login-blackboard.js`); optional `AURA_DEBUG_SCRAPES=true` dumps raw scraped text to `scraped_blackboard.txt` | Falls back to `BLACKBOARD_LOGIN_REQUIRED` if the saved session expired |
 | Scheduled proactive checks | `AURA_SCHEDULER_ENABLED` (default effectively true — disabled only by literal `'false'`), `AURA_TIMEZONE` (default `America/Phoenix`) | Cron jobs registered in-process are skipped entirely |
@@ -314,11 +321,15 @@ read:
 
 reversible_write:
   add_goal, update_goal_status, log_finance, save_semantic_memory,
-  propose_test_letter_deletion, propose_owner_email, propose_telegram_message
+  propose_test_letter_deletion, propose_owner_email
 
 destructive_write:
-  confirm_test_letter_deletion, confirm_owner_email, confirm_telegram_message
+  confirm_test_letter_deletion, confirm_owner_email, send_telegram_message
   (+ delete_memory, delete_profile_entry — staged via HTTP routes, not chat tools)
+  # send_telegram_message is tagged destructive_write for audit honesty (an
+  # unsendable message) but is NOT gated by the propose/confirm pattern -
+  # it sends immediately, since the fixed recipient makes a confirm step
+  # redundant. Every other destructive_write tool here IS gated.
 
 (anything else): blocked
 ```

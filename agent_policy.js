@@ -25,8 +25,9 @@ const TOOL_POLICIES = Object.freeze({
   // Same shape: staging an email changes nothing, only confirm sends it.
   propose_owner_email: 'reversible_write',
   confirm_owner_email: 'destructive_write',
-  propose_telegram_message: 'reversible_write',
-  confirm_telegram_message: 'destructive_write'
+  // No staging - the recipient is fixed to the owner's own chat regardless,
+  // so a confirmation step protects against nothing here (unlike email).
+  send_telegram_message: 'destructive_write'
 });
 
 const SEARCH_SECRET_PATTERNS = [
@@ -90,13 +91,13 @@ function validateToolArguments(name, args) {
     requireString('body', 8000);
     if (args.pdf_content !== undefined) requireString('pdf_content', 20000);
   }
-  if (name === 'confirm_owner_email' || name === 'confirm_telegram_message') {
+  if (name === 'confirm_owner_email') {
     requireString('action_id', 100);
     if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
       throw new Error(`Invalid action_id for ${name}.`);
     }
   }
-  if (name === 'propose_telegram_message') {
+  if (name === 'send_telegram_message') {
     requireString('message', 4000);
   }
   if (name === 'add_goal') requireString('description', 1000);

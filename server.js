@@ -828,7 +828,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'list_pending_owner_actions',
-      description: 'Lists staged-but-not-yet-approved emails and Telegram messages, with their action_id. Use this if you no longer know the action_id for something you already staged - never guess or ask the owner to repeat themselves.',
+      description: 'Lists staged-but-not-yet-approved emails, with their action_id (Telegram messages send immediately and are never staged, so they never appear here). Use this if you no longer know the action_id for an email you already staged - never guess or ask the owner to repeat themselves.',
       parameters: { type: 'object', properties: {} }
     }
   },
@@ -865,28 +865,14 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'propose_telegram_message',
-      description: 'STEP 1 of sending the owner a Telegram message - e.g. a conversation summary he asked to have sent there. Stages it only, sends nothing. Only ever reaches the owner\'s own configured chat - there is no way to send to anyone else. After calling it you MUST describe the message to the owner and ask them to confirm, then STOP and wait for their reply.',
+      name: 'send_telegram_message',
+      description: 'Sends the owner a Telegram message immediately - no staging, no confirmation needed, just call it whenever the owner asks to be messaged there. Safe to send right away, unlike email: the recipient is fixed to the owner\'s own configured chat, there is no way for this to reach anyone else, so there is nothing for a confirmation step to protect against here.',
       parameters: {
         type: 'object',
         properties: {
           message: { type: 'string', description: 'The plain-text message to send.' }
         },
         required: ['message']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'confirm_telegram_message',
-      description: 'STEP 2 - actually sends the staged Telegram message. Only call after the owner approves on a later turn. Always safe to attempt: verifies staging, turn-passage, and the owner\'s own words, refusing harmlessly otherwise.',
-      parameters: {
-        type: 'object',
-        properties: {
-          action_id: { type: 'string', description: 'The action_id returned by propose_telegram_message.' }
-        },
-        required: ['action_id']
       }
     }
   },
@@ -1168,18 +1154,18 @@ async function handleToolCall(toolCall, options = {}) {
       result = events;
       break;
     case 'list_pending_owner_actions': {
+      // Email only now - Telegram sends immediately with no staging step, so
+      // nothing of that kind is ever left pending here to recover.
       if (!cloudState) {
         result = 'The staged-approval queue is not available in this runtime.';
         break;
       }
       const pendingOwnerActions = (await cloudState.listPendingActions())
-        .filter(action => ['send_owner_email', 'send_telegram_message'].includes(action.tool_name))
+        .filter(action => action.tool_name === 'send_owner_email')
         .map(action => ({
           action_id: action.id,
-          type: action.tool_name === 'send_owner_email' ? 'email' : 'telegram_message',
-          summary: action.tool_name === 'send_owner_email'
-            ? `Subject: ${action.arguments?.subject}`
-            : action.arguments?.message?.slice(0, 80),
+          type: 'email',
+          summary: `Subject: ${action.arguments?.subject}`,
           staged_at: action.created_at
         }));
       result = JSON.stringify({ pending: pendingOwnerActions });
@@ -1221,36 +1207,35 @@ async function handleToolCall(toolCall, options = {}) {
         : `Email failed to send: ${executed.error || 'unknown error'}`;
       break;
     }
-    case 'propose_telegram_message': {
+    case 'send_telegram_message': {
       if (!isTelegramConfigured()) {
         result = 'Telegram is not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are not set). Tell the owner this needs to be configured before you can message him there.';
         break;
       }
-      if (!cloudState) {
-        result = 'The staged-approval queue is not available in this runtime, so Telegram cannot be staged safely here.';
-        break;
+      // No staging/confirmation: the recipient is fixed to the owner's own
+      // chat regardless, so there is nothing a confirmation step would be
+      // protecting against here (unlike email, which stays two-step). Still
+      // logged through the same aura_actions audit trail as everything else -
+      // proposeAction then immediately executeApprovedAction, rather than a
+      // bespoke insert, so this reuses the exact same audit code path as the
+      // gated actions. approved_by stays null in the resulting row, which
+      // honestly reflects that no approval step occurred.
+      if (cloudState) {
+        const telegramAction = await cloudState.proposeAction(
+          null, 'aura_core', 'send_telegram_message', { message: args.message }, 'destructive_write'
+        );
+        const telegramExecuted = await executeApprovedAction(telegramAction);
+        result = telegramExecuted.status === 'succeeded'
+          ? 'Sent on Telegram.'
+          : `Telegram send failed: ${telegramExecuted.error || 'unknown error'}`;
+      } else {
+        try {
+          await sendTelegramMessage(args.message);
+          result = 'Sent on Telegram.';
+        } catch (error) {
+          result = `Telegram send failed: ${error.message}`;
+        }
       }
-      const telegramAction = await cloudState.proposeAction(
-        null, 'aura_core', 'send_telegram_message', { message: args.message }, 'destructive_write'
-      );
-      result = [
-        'Staged. Nothing has been sent yet.',
-        `Message: ${args.message}`,
-        'Describe this to the owner and ask them to confirm, then STOP and wait for their reply.',
-        `On a later turn, once they approve, call confirm_telegram_message with action_id "${telegramAction.id}".`
-      ].join('\n');
-      break;
-    }
-    case 'confirm_telegram_message': {
-      const telegramRedemption = await redeemPendingAction(args.action_id, 'send_telegram_message', options.requestStartedAtMs ?? Date.now(), options.userInstruction);
-      if (!telegramRedemption.ok) {
-        result = `Telegram message not sent. ${telegramRedemption.reason}`;
-        break;
-      }
-      const telegramExecuted = await executeApprovedAction(telegramRedemption.action);
-      result = telegramExecuted.status === 'succeeded'
-        ? 'Sent on Telegram.'
-        : `Telegram send failed: ${telegramExecuted.error || 'unknown error'}`;
       break;
     }
     case 'list_database_tables':
