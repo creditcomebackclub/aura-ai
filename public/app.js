@@ -102,12 +102,26 @@ async function requestAccessToken() {
   authPromptOpen = true;
   const mode = await getAuthMode();
   if (mode === 'supabase') {
-    const email = window.prompt('Enter your email address and AURA will send you a secure sign-in link:');
-    if (email && email.trim()) {
+    const input = window.prompt(
+      'Enter your email address and AURA will send you a secure sign-in link.\n' +
+      'Or, if you already have an AURA access token, paste it here instead:'
+    );
+    const value = input && input.trim();
+    if (value && !value.includes('@')) {
+      // A Home Screen "Add to Home Screen" launch has its own isolated storage
+      // on iOS, so a device paired via Safari's magic-link flow won't show as
+      // signed in here. This lets an access token pair it directly, with no
+      // address bar (and thus no /?token= link) available in standalone mode.
+      localStorage.setItem('aura_access_token', value);
+      authPromptOpen = false;
+      window.location.reload();
+      return;
+    }
+    if (value) {
       const response = await fetch('/auth/request-link', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim() })
+        body: JSON.stringify({ email: value })
       });
       if (response.ok) {
         const result = await response.json();

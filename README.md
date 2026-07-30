@@ -195,6 +195,22 @@ the secret environment variables in the Render blueprint, set
 `AURA_PUBLIC_URL` to the deployed HTTPS origin, and add that exact origin to the
 Supabase Auth redirect allowlist.
 
+In the Supabase Dashboard, under Authentication -> Email Templates -> Magic
+Link, point the link at `/auth/confirm` instead of the default
+`{{ .ConfirmationURL }}`:
+
+```
+<a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=magiclink">Sign in to AURA</a>
+```
+
+The default template's link auto-verifies (and consumes) the one-time token
+on its very first load, with no user action required — so a mail client's
+in-app link preview, or any automated link scanner, silently burns the token
+before the user gets to click it, and the sign-in fails with
+`otp_expired`. `/auth/confirm` (`public/auth-confirm.html`) instead shows a
+button and only calls `/auth/verify-link` when the user taps it, so the
+token is spent by a deliberate action in the user's real browser.
+
 Render Free sleeps after 15 minutes without inbound HTTP or WebSocket traffic.
 Opening AURA wakes it, which can take about a minute. All durable state stays in
 Supabase, so sleeping and redeploying do not erase conversations, tasks,

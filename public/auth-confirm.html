@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Sign in to AURA</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: #050505;
+    color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+  }
+  main {
+    max-width: 360px;
+    text-align: center;
+  }
+  h1 {
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  p {
+    opacity: 0.75;
+    line-height: 1.5;
+  }
+  button {
+    margin-top: 20px;
+    font-size: 1.05rem;
+    padding: 14px 32px;
+    border-radius: 999px;
+    border: none;
+    background: #eee;
+    color: #050505;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>AURA</h1>
+  <p id="message">Tap below to finish signing in on this device.</p>
+  <button id="confirm-btn" type="button">Sign in to AURA</button>
+</main>
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const tokenHash = params.get('token_hash');
+  const type = params.get('type') || 'magiclink';
+  const btn = document.getElementById('confirm-btn');
+  const message = document.getElementById('message');
+
+  if (!tokenHash) {
+    message.textContent = 'This sign-in link is missing its token. Please request a new one from AURA.';
+    btn.disabled = true;
+  }
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    message.textContent = 'Signing in…';
+    try {
+      const verifyResponse = await fetch('/auth/verify-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token_hash: tokenHash, type })
+      });
+      if (!verifyResponse.ok) {
+        const body = await verifyResponse.json().catch(() => ({}));
+        message.textContent = body.error ||
+          'This sign-in link is invalid or has expired. Please request a new one from AURA.';
+        btn.disabled = false;
+        return;
+      }
+      const session = await verifyResponse.json();
+      localStorage.setItem('aura_session_token', session.access_token);
+      localStorage.setItem('aura_refresh_token', session.refresh_token);
+      localStorage.removeItem('aura_access_token');
+
+      await fetch('/auth/complete-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          access_token: session.access_token,
+          refresh_token: session.refresh_token
+        })
+      }).catch(() => {});
+
+      message.textContent = 'Signed in. You can return to your other AURA tab, or continue here.';
+      btn.textContent = 'Open AURA';
+      btn.disabled = false;
+      btn.onclick = () => { window.location.href = '/'; };
+    } catch (err) {
+      message.textContent = 'Something went wrong. Please try again.';
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

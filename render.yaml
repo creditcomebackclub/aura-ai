@@ -34,7 +34,9 @@ services:
       - key: AURA_STATE_BACKEND
         value: supabase
       - key: AURA_AUTH_MODE
-        value: supabase
+        value: hybrid
+      - key: AURA_ACCESS_TOKEN
+        sync: false
       - key: AURA_BIND_HOST
         value: 0.0.0.0
       - key: AURA_TIMEZONE

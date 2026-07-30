@@ -608,6 +608,30 @@ app.post('/auth/request-link', rateLimit, async (req, res) => {
   res.json({ sent: true, login_id: loginId });
 });
 
+// Exchanges a token_hash for a session only when explicitly called (i.e. a real
+// tap on the confirm page), not on mere page load. Mail apps and link scanners
+// that pre-fetch the raw Supabase verify link burn its single-use token before
+// the user ever clicks it, so the email template must point here instead of at
+// Supabase's auto-verifying {{ .ConfirmationURL }}.
+app.post('/auth/verify-link', rateLimit, async (req, res) => {
+  if (!['supabase', 'hybrid'].includes(authMode) || !authSupabase) {
+    return res.status(404).json({ error: 'Email authentication is not enabled.' });
+  }
+  const tokenHash = String(req.body?.token_hash || '');
+  const type = ['magiclink', 'email'].includes(req.body?.type) ? req.body.type : 'magiclink';
+  if (!tokenHash) {
+    return res.status(400).json({ error: 'This sign-in link is missing its token.' });
+  }
+  const { data, error } = await authSupabase.auth.verifyOtp({ token_hash: tokenHash, type });
+  if (error || !data.session || data.user?.id !== process.env.AURA_OWNER_ID) {
+    return res.status(401).json({ error: 'This sign-in link is invalid or has expired.' });
+  }
+  res.json({
+    access_token: data.session.access_token,
+    refresh_token: data.session.refresh_token
+  });
+});
+
 app.post('/auth/complete-link', rateLimit, async (req, res) => {
   cleanPendingAuthLinks();
   const loginId = String(req.body?.login_id || '');
