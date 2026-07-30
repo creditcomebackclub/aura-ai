@@ -601,9 +601,14 @@ class MemoryV2 {
   }
 
   async buildContext(query) {
-    const profile = await this.profileStore.getOwnerProfile();
+    // Neither fetch depends on the other's result - run concurrently instead
+    // of paying two sequential round trips (Supabase read + embedding/vector
+    // search) on every single chat turn.
+    const [profile, semantic] = await Promise.all([
+      this.profileStore.getOwnerProfile(),
+      this.semanticMemory.search(query, { limit: 6, threshold: 0.32 })
+    ]);
     const relatedProfile = findProfileMatches(profile, query);
-    const semantic = await this.semanticMemory.search(query, { limit: 6, threshold: 0.32 });
     const seen = new Set();
     const related = [];
 
