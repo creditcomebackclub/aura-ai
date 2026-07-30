@@ -19,7 +19,7 @@ const { createSchedulerAuthenticator } = require('./scheduler_auth');
 const mac = require('./mac_integration');
 const ccc = require('./ccc_database');
 const { generateSimplePdf } = require('./pdf_generator');
-const { isTelegramConfigured, sendTelegramMessage } = require('./telegram');
+const { isTelegramConfigured, sendTelegramMessage, isFromOwnerChat, downloadTelegramFile } = require('./telegram');
 const { concatWavBuffers, splitIntoSentences } = require('./wav_utils');
 const { MemoryStore } = require('./memory_store');
 const {
@@ -1407,24 +1407,31 @@ async function handleToolCall(toolCall, options = {}) {
 
 // --- API Routes --- //
 
+// Shared by /api/transcribe (browser mic upload) and the Telegram webhook
+// (voice notes) - both just need "a file on disk with the right extension
+// in, transcript text out."
+async function transcribeAudioFile(filePath) {
+  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for transcription.');
+  const transcription = await openaiAudio.audio.transcriptions.create({
+    file: fs.createReadStream(filePath),
+    model: 'whisper-1',
+  });
+  return transcription.text;
+}
+
 app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   try {
     if (!req.file) throw new Error('No audio file provided.');
-    
+
     // Multer strips file extensions. OpenAI requires an extension to process audio.
     const originalExt = path.extname(req.file.originalname) || '.webm';
     const newPath = req.file.path + originalExt;
     fs.renameSync(req.file.path, newPath);
-    
-    const audioFile = fs.createReadStream(newPath);
-    if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for transcription.');
-    const transcription = await openaiAudio.audio.transcriptions.create({
-      file: audioFile,
-      model: "whisper-1",
-    });
-    
+
+    const transcript = await transcribeAudioFile(newPath);
+
     fs.unlinkSync(newPath); // cleanup
-    res.json({ transcript: transcription.text });
+    res.json({ transcript });
   } catch (error) {
     console.error('Transcription error:', error);
     if (req.file) fs.unlinkSync(req.file.path);
@@ -1432,11 +1439,16 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   }
 });
 
-app.post('/api/chat', async (req, res) => {
-  try {
-    const { text } = req.body;
+// The full owner-message pipeline: memory commands, tool-calling loop,
+// conversation persistence, summary scheduling. Shared by every input
+// surface that ultimately produces a text message from the owner -
+// today that's /api/chat (browser) and the Telegram webhook (text and
+// transcribed voice notes). Throws on invalid input instead of writing an
+// HTTP response directly, so callers decide how to surface the error.
+async function processOwnerText(text) {
+  {
     if (typeof text !== 'string' || !text.trim() || text.length > 10000) {
-      return res.status(400).json({ error: 'Text must be between 1 and 10,000 characters.' });
+      throw new Error('Text must be between 1 and 10,000 characters.');
     }
     // One turn per owner message. A staged deletion can only be confirmed on a
     // later turn than it was proposed, which forces a real reply in between.
@@ -1493,13 +1505,13 @@ app.post('/api/chat', async (req, res) => {
         memory_command: memoryCommand.type
       });
       scheduleConversationSummary();
-      return res.json({
+      return {
         reply,
         evidence,
         sources: [],
         web_results: [],
         brain: { tier: 'deterministic_memory', model: backgroundModel }
-      });
+      };
     }
 
     const memoryJobPromise = memoryExtractionQueue
@@ -1689,8 +1701,9 @@ app.post('/api/chat', async (req, res) => {
         : { status: 'scheduled_local' }
     });
     scheduleConversationSummary();
-    
-    res.json({
+
+    memoryExtractionQueue?.kick();
+    return {
       reply,
       evidence,
       sources: webSources.slice(0, 12),
@@ -1700,11 +1713,82 @@ app.post('/api/chat', async (req, res) => {
         model: chatModel,
         reasoning_effort: reasoningEffort
       }
-    });
-    memoryExtractionQueue?.kick();
+    };
+  }
+}
+
+app.post('/api/chat', async (req, res) => {
+  try {
+    const result = await processOwnerText(req.body.text);
+    res.json(result);
   } catch (error) {
     console.error('Error in /api/chat:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Inbound side of Telegram: lets the owner talk to AURA from the Telegram
+// app itself (text or a voice note), not just receive messages from her.
+// Unauthenticated by definition (Telegram calls this, not a signed-in
+// owner session) - two independent checks stand in for the auth
+// middleware every other route gets: a shared-secret header only Telegram
+// knows (proves the request really came from Telegram, not a random
+// POST to a guessed URL), and the fixed TELEGRAM_CHAT_ID allowlist (proves
+// it's specifically the owner's chat, not some other user of the same
+// bot, or a group the bot got added to). Anything that fails either check
+// is silently ignored with a 200/401 and never reaches processOwnerText -
+// there is no code path from an unverified sender to a model call here.
+app.post('/telegram/webhook', rateLimit, async (req, res) => {
+  if (!isTelegramConfigured()) return res.sendStatus(200);
+
+  const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  const providedSecret = req.get('x-telegram-bot-api-secret-token');
+  if (!safeSecretEqual(expectedSecret, providedSecret)) {
+    return res.sendStatus(401);
+  }
+
+  const message = req.body?.message;
+  if (!message || !message.chat || !isFromOwnerChat(message.chat.id)) {
+    // Not a plain message (could be an edited_message, channel_post, a
+    // reaction, etc.), or not from the owner's chat - ignore either way.
+    // Always 200: a non-200 makes Telegram retry the same update repeatedly.
+    return res.sendStatus(200);
+  }
+
+  let voiceFilePath = null;
+  try {
+    let text;
+    if (typeof message.text === 'string' && message.text.trim()) {
+      text = message.text;
+    } else if (message.voice) {
+      const { buffer, ext } = await downloadTelegramFile(message.voice.file_id);
+      voiceFilePath = path.join(os.tmpdir(), `aura-telegram-${crypto.randomUUID()}${ext}`);
+      fs.writeFileSync(voiceFilePath, buffer);
+      text = await transcribeAudioFile(voiceFilePath);
+    } else {
+      await sendTelegramMessage('I can only handle text or voice messages right now.');
+      return res.sendStatus(200);
+    }
+
+    if (!text || !text.trim()) {
+      await sendTelegramMessage('I could not make out any words in that.');
+      return res.sendStatus(200);
+    }
+
+    const result = await processOwnerText(text);
+    await sendTelegramMessage(result.reply);
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('[Telegram webhook] failed:', error.message);
+    try {
+      await sendTelegramMessage(`Something went wrong on my end: ${error.message}`);
+    } catch {
+      // If even the error notice can't send, there's nothing further to do -
+      // still return 200 so Telegram doesn't retry this update forever.
+    }
+    res.sendStatus(200);
+  } finally {
+    if (voiceFilePath) fs.unlink(voiceFilePath, () => {});
   }
 });
 
