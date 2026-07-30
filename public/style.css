@@ -6,6 +6,21 @@
   --orb-glow-speak: rgba(255, 120, 0, 0.7);
   --orb-glow-think: rgba(180, 50, 255, 0.7);
   --orb-glow-error: rgba(255, 50, 50, 0.7);
+  /* Single source of truth for the wave's width. #source-panel derives its
+     position from this SAME variable rather than repeating the formula, so
+     the two can never drift out of sync the way they did once already
+     (shrinking the wave here without also updating a hardcoded copy in the
+     panel's own CSS would silently make the "never overlaps the wave"
+     guarantee stale). On narrow screens the wave is deliberately narrower -
+     a direct, disclosed tradeoff to give the side panel room to be legible
+     on a phone, since 82vw left it effectively invisible below ~984px. */
+  --wave-width: min(82vw, 560px);
+}
+
+@media (max-width: 700px) {
+  :root {
+    --wave-width: min(64vw, 560px);
+  }
 }
 
 * {
@@ -452,7 +467,7 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
 
 #voice-wave {
   display: block;
-  width: min(82vw, 560px);
+  width: var(--wave-width);
   height: 86px;
   margin-top: -44px;
   opacity: 0.52;
@@ -499,7 +514,7 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   position: fixed;
   top: max(18px, env(safe-area-inset-top));
   bottom: max(18px, env(safe-area-inset-bottom));
-  left: calc(50% + min(82vw, 560px) / 2 + 12px);
+  left: calc(50% + var(--wave-width) / 2 + 12px);
   right: max(14px, env(safe-area-inset-right));
   width: auto;
   max-width: 280px;

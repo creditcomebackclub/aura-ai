@@ -56,7 +56,15 @@ test('the search panel sits right of the wave, never over it, and syncs to speec
   // silently widened the box until it overlapped the wave by ~10px, caught
   // by measuring getBoundingClientRect in a live browser). Anchoring `left`
   // means any floor-driven overflow spills rightward off-screen instead.
-  assert.match(css, /#source-panel\s*\{[^}]*left:\s*calc\(50% \+ min\(82vw,\s*560px\)\s*\/\s*2/s);
+  assert.match(css, /#source-panel\s*\{[^}]*left:\s*calc\(50% \+ var\(--wave-width\)\s*\/\s*2/s);
+  // Both #voice-wave and #source-panel derive from ONE --wave-width custom
+  // property rather than each repeating the min(82vw, 560px) formula
+  // separately - shrinking the wave on narrow screens without also moving
+  // the panel's copy of the same formula is exactly how the overlap bug
+  // happened the first time; a single shared variable makes that class of
+  // drift structurally impossible rather than merely fixed once.
+  assert.match(css, /--wave-width:\s*min\(82vw,\s*560px\)/);
+  assert.match(css, /#voice-wave\s*\{[^}]*width:\s*var\(--wave-width\)/s);
   // Evidence must be shown at the point playback actually begins, not the
   // moment the reply text arrives - otherwise the panel appears during
   // "Generating Voice..." well before she starts talking. Assert the call
