@@ -1,6 +1,12 @@
 const { createClient } = require('@supabase/supabase-js');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
 const mac = require('./mac_integration');
 require('dotenv').config({ quiet: true });
+
+const ownerEmail = process.env.AURA_OWNER_EMAIL || null;
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const ownerId = process.env.AURA_OWNER_ID;
@@ -13,12 +19,30 @@ if (!ownerId) {
   throw new Error('AURA_OWNER_ID is required for the Mac companion.');
 }
 
-async function executeCapability(capability) {
+async function executeCapability(capability, request = {}) {
   switch (capability) {
     case 'check_email':
       return await mac.getUnreadEmails();
     case 'check_calendar':
       return await mac.getTodaysCalendar();
+    case 'send_email': {
+      if (!ownerEmail) throw new Error('AURA_OWNER_EMAIL is not configured on the Mac companion.');
+      let attachmentPath = null;
+      if (request.attachment_base64) {
+        // Written under a random name inside the OS temp dir and removed
+        // immediately after Mail has read it - never left sitting on disk.
+        const safeName = String(request.attachment_filename || 'attachment.pdf')
+          .replace(/[^a-zA-Z0-9_.-]/g, '_')
+          .slice(-120);
+        attachmentPath = path.join(os.tmpdir(), `aura-${crypto.randomUUID()}-${safeName}`);
+        fs.writeFileSync(attachmentPath, Buffer.from(request.attachment_base64, 'base64'));
+      }
+      try {
+        return await mac.sendEmailToOwner(ownerEmail, request.subject, request.body, attachmentPath);
+      } finally {
+        if (attachmentPath) fs.unlink(attachmentPath, () => {});
+      }
+    }
     default:
       throw new Error(`Unsupported Mac companion capability: ${capability}`);
   }
@@ -78,7 +102,7 @@ async function claimNextJob() {
 
 async function processJob(job) {
   try {
-    const result = await executeCapability(job.capability);
+    const result = await executeCapability(job.capability, job.request);
     const { error } = await supabase.from('aura_companion_jobs').update({
       status: 'succeeded',
       result: { text: result },

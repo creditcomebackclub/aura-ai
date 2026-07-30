@@ -12,11 +12,15 @@ const fs = require('fs');
 const compression = require('compression');
 const multer = require('multer');
 const crypto = require('crypto');
+const os = require('os');
 const scraper = require('./scraper');
 const { createBlackboardDeadlineCheck } = require('./blackboard_deadline_check');
 const { createSchedulerAuthenticator } = require('./scheduler_auth');
 const mac = require('./mac_integration');
 const ccc = require('./ccc_database');
+const { generateSimplePdf } = require('./pdf_generator');
+const { isTelegramConfigured, sendTelegramMessage } = require('./telegram');
+const { concatWavBuffers, splitIntoSentences } = require('./wav_utils');
 const { MemoryStore } = require('./memory_store');
 const {
   ConversationSummaryService,
@@ -55,6 +59,12 @@ const useSupabaseState = process.env.AURA_STATE_BACKEND === 'supabase';
 // with an undefined persona.
 const AURA_SOUL = fs.readFileSync(path.join(__dirname, 'SOUL.md'), 'utf8').trim();
 if (!AURA_SOUL) throw new Error('SOUL.md is empty - refusing to start with no persona.');
+
+// Fixed from config, never supplied by the model or taken from tool
+// arguments - this is the actual safety property of the email-send
+// capability. Even fully adversarial subject/body content can only ever
+// reach this one address, never a third party.
+const AURA_OWNER_EMAIL = process.env.AURA_OWNER_EMAIL || null;
 
 const app = express();
 app.set('trust proxy', 1);
@@ -817,6 +827,72 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'list_pending_owner_actions',
+      description: 'Lists staged-but-not-yet-approved emails and Telegram messages, with their action_id. Use this if you no longer know the action_id for something you already staged - never guess or ask the owner to repeat themselves.',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'propose_owner_email',
+      description: 'STEP 1 of emailing the owner. Stages an email TO THE OWNER HIMSELF ONLY - this tool has no way to send to anyone else, ever. Use for things like sending the owner a report, a summary, or a document he asked for. This does NOT send anything. After calling it you MUST describe the email to the owner and ask them to confirm, then STOP and wait for their reply.',
+      parameters: {
+        type: 'object',
+        properties: {
+          subject: { type: 'string', description: 'Email subject line.' },
+          body: { type: 'string', description: 'Plain-text email body.' },
+          pdf_content: { type: 'string', description: 'Optional. If the owner wants a PDF attached (e.g. a report), put its plain-text content here and a PDF will be generated and attached automatically. Omit for a plain email with no attachment.' }
+        },
+        required: ['subject', 'body']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'confirm_owner_email',
+      description: 'STEP 2 of emailing the owner - this ACTUALLY SENDS it. Only call this after the owner has replied approving it, on a later turn than you proposed it. Calling this is always safe to attempt: it independently verifies the email was staged, that a turn has passed, and that the owner approved in their own words, and refuses harmlessly otherwise. Never refuse to call it out of your own doubt, and never ask the owner to repeat their approval instead of just calling it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action_id: { type: 'string', description: 'The action_id returned by propose_owner_email.' }
+        },
+        required: ['action_id']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'propose_telegram_message',
+      description: 'STEP 1 of sending the owner a Telegram message - e.g. a conversation summary he asked to have sent there. Stages it only, sends nothing. Only ever reaches the owner\'s own configured chat - there is no way to send to anyone else. After calling it you MUST describe the message to the owner and ask them to confirm, then STOP and wait for their reply.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: 'The plain-text message to send.' }
+        },
+        required: ['message']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'confirm_telegram_message',
+      description: 'STEP 2 - actually sends the staged Telegram message. Only call after the owner approves on a later turn. Always safe to attempt: verifies staging, turn-passage, and the owner\'s own words, refusing harmlessly otherwise.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action_id: { type: 'string', description: 'The action_id returned by propose_telegram_message.' }
+        },
+        required: ['action_id']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'add_goal',
       description: 'Add a new goal to the users goal tracker.',
       parameters: {
@@ -937,8 +1013,8 @@ let conversationTurn = 0;
 // The owner's own words are the gate. These are checked against the raw message
 // text, not against anything the model produced, so an assistant that convinces
 // itself approval was given still cannot delete.
-const DELETION_APPROVAL_PATTERN = /\b(yes|yeah|yep|yup|confirm|confirmed|confirming|approve|approved|go ahead|do it|delete it|proceed|permission granted)\b/i;
-const DELETION_REFUSAL_PATTERN = /\b(no|nope|don'?t|do not|cancel|stop|wait|hold off|never ?mind|not yet)\b/i;
+const OWNER_APPROVAL_PATTERN = /\b(yes|yeah|yep|yup|confirm|confirmed|confirming|approve|approved|go ahead|do it|delete it|proceed|permission granted)\b/i;
+const OWNER_REFUSAL_PATTERN = /\b(no|nope|don'?t|do not|cancel|stop|wait|hold off|never ?mind|not yet)\b/i;
 
 // Proposals live in the database, so the only in-process signal needed is when
 // THIS request began. A proposal created during this same request is newer than
@@ -970,11 +1046,11 @@ async function redeemStagedDeletion(letterId, requestStartedAtMs, ownerMessage) 
   }
 
   const message = typeof ownerMessage === 'string' ? ownerMessage : '';
-  if (DELETION_REFUSAL_PATTERN.test(message)) {
+  if (OWNER_REFUSAL_PATTERN.test(message)) {
     await ccc.discardStagedDeletion(staged.id);
     return { ok: false, reason: 'The owner did not approve this. The staged deletion has been discarded.' };
   }
-  if (!DELETION_APPROVAL_PATTERN.test(message)) {
+  if (!OWNER_APPROVAL_PATTERN.test(message)) {
     return {
       ok: false,
       reason: 'The owner has not clearly approved this yet. Ask them to confirm in their own words before trying again.'
@@ -982,6 +1058,50 @@ async function redeemStagedDeletion(letterId, requestStartedAtMs, ownerMessage) 
   }
 
   return { ok: true, actionId: staged.id };
+}
+
+// Same owner-consent gate as letter deletion (later turn + the owner's own
+// words, not the model's say-so), generalized to any tool staged through the
+// aura_actions approval queue rather than ccc_database's bespoke letter
+// staging. Reuses listPendingActions/decideAction, which already exist for
+// the HTTP /api/actions approval routes - this just adds the voice-turn gate
+// in front of them so a chat-driven confirmation is exactly as safe as
+// clicking approve, not a shortcut around it.
+async function redeemPendingAction(actionId, expectedToolName, requestStartedAtMs, ownerMessage) {
+  if (!cloudState) return { ok: false, reason: 'The approval queue is not enabled in this runtime.' };
+
+  const pending = (await cloudState.listPendingActions())
+    .find(action => action.id === actionId && action.tool_name === expectedToolName);
+  if (!pending) {
+    return { ok: false, reason: `No pending "${expectedToolName}" action with that id. Propose it again.` };
+  }
+
+  const proposedAtMs = Date.parse(pending.created_at);
+  if (proposedAtMs >= requestStartedAtMs) {
+    return {
+      ok: false,
+      reason: 'The owner has not replied yet. Present the details, wait for their answer, then confirm on a later turn.'
+    };
+  }
+  if (Date.now() - proposedAtMs > DELETION_CONFIRMATION_TTL_MS) {
+    await cloudState.decideAction(actionId, false);
+    return { ok: false, reason: 'That staged action expired. Stage it again and ask the owner to confirm.' };
+  }
+
+  const message = typeof ownerMessage === 'string' ? ownerMessage : '';
+  if (OWNER_REFUSAL_PATTERN.test(message)) {
+    await cloudState.decideAction(actionId, false);
+    return { ok: false, reason: 'The owner did not approve this. The staged action has been discarded.' };
+  }
+  if (!OWNER_APPROVAL_PATTERN.test(message)) {
+    return {
+      ok: false,
+      reason: 'The owner has not clearly approved this yet. Ask them to confirm in their own words before trying again.'
+    };
+  }
+
+  const approved = await cloudState.decideAction(actionId, true);
+  return { ok: true, action: approved };
 }
 
 async function handleToolCall(toolCall, options = {}) {
@@ -1047,6 +1167,92 @@ async function handleToolCall(toolCall, options = {}) {
         : await mac.getTodaysCalendar();
       result = events;
       break;
+    case 'list_pending_owner_actions': {
+      if (!cloudState) {
+        result = 'The staged-approval queue is not available in this runtime.';
+        break;
+      }
+      const pendingOwnerActions = (await cloudState.listPendingActions())
+        .filter(action => ['send_owner_email', 'send_telegram_message'].includes(action.tool_name))
+        .map(action => ({
+          action_id: action.id,
+          type: action.tool_name === 'send_owner_email' ? 'email' : 'telegram_message',
+          summary: action.tool_name === 'send_owner_email'
+            ? `Subject: ${action.arguments?.subject}`
+            : action.arguments?.message?.slice(0, 80),
+          staged_at: action.created_at
+        }));
+      result = JSON.stringify({ pending: pendingOwnerActions });
+      break;
+    }
+    case 'propose_owner_email': {
+      if (!AURA_OWNER_EMAIL) {
+        result = 'Email is not configured - AURA_OWNER_EMAIL is not set. Tell the owner this needs to be configured before you can email him.';
+        break;
+      }
+      if (!cloudState) {
+        result = 'The staged-approval queue is not available in this runtime, so email cannot be staged safely here.';
+        break;
+      }
+      const emailAction = await cloudState.proposeAction(
+        null, 'aura_core', 'send_owner_email',
+        { subject: args.subject, body: args.body, pdf_content: args.pdf_content || null },
+        'destructive_write'
+      );
+      result = [
+        'Staged. Nothing has been sent yet.',
+        `Subject: ${args.subject}`,
+        `Body: ${args.body}`,
+        args.pdf_content ? 'A PDF will be attached.' : '',
+        'Describe this to the owner and ask them to confirm, then STOP and wait for their reply.',
+        `On a later turn, once they approve, call confirm_owner_email with action_id "${emailAction.id}".`
+      ].filter(Boolean).join('\n');
+      break;
+    }
+    case 'confirm_owner_email': {
+      const emailRedemption = await redeemPendingAction(args.action_id, 'send_owner_email', options.requestStartedAtMs ?? Date.now(), options.userInstruction);
+      if (!emailRedemption.ok) {
+        result = `Email not sent. ${emailRedemption.reason}`;
+        break;
+      }
+      const executed = await executeApprovedAction(emailRedemption.action);
+      result = executed.status === 'succeeded'
+        ? 'Sent. The owner will receive it shortly.'
+        : `Email failed to send: ${executed.error || 'unknown error'}`;
+      break;
+    }
+    case 'propose_telegram_message': {
+      if (!isTelegramConfigured()) {
+        result = 'Telegram is not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are not set). Tell the owner this needs to be configured before you can message him there.';
+        break;
+      }
+      if (!cloudState) {
+        result = 'The staged-approval queue is not available in this runtime, so Telegram cannot be staged safely here.';
+        break;
+      }
+      const telegramAction = await cloudState.proposeAction(
+        null, 'aura_core', 'send_telegram_message', { message: args.message }, 'destructive_write'
+      );
+      result = [
+        'Staged. Nothing has been sent yet.',
+        `Message: ${args.message}`,
+        'Describe this to the owner and ask them to confirm, then STOP and wait for their reply.',
+        `On a later turn, once they approve, call confirm_telegram_message with action_id "${telegramAction.id}".`
+      ].join('\n');
+      break;
+    }
+    case 'confirm_telegram_message': {
+      const telegramRedemption = await redeemPendingAction(args.action_id, 'send_telegram_message', options.requestStartedAtMs ?? Date.now(), options.userInstruction);
+      if (!telegramRedemption.ok) {
+        result = `Telegram message not sent. ${telegramRedemption.reason}`;
+        break;
+      }
+      const telegramExecuted = await executeApprovedAction(telegramRedemption.action);
+      result = telegramExecuted.status === 'succeeded'
+        ? 'Sent on Telegram.'
+        : `Telegram send failed: ${telegramExecuted.error || 'unknown error'}`;
+      break;
+    }
     case 'list_database_tables':
       result = await ccc.listTables();
       break;
@@ -1566,6 +1772,31 @@ async function executeApprovedAction(action) {
       if (entry?.memory_id) await activeMemory.forget(entry.memory_id);
       await profileStore.removeOwnerProfileEntries([args.profile_key]);
       result = { forgotten: Boolean(entry) };
+    } else if (action.tool_name === 'send_owner_email') {
+      if (!AURA_OWNER_EMAIL) throw new Error('AURA_OWNER_EMAIL is not configured.');
+      let attachment = null;
+      if (args.pdf_content) {
+        const pdfBuffer = await generateSimplePdf(args.subject || 'AURA Report', args.pdf_content);
+        attachment = { attachment_base64: pdfBuffer.toString('base64'), attachment_filename: 'report.pdf' };
+      }
+      if (companionClient) {
+        await companionClient.execute('send_email', { subject: args.subject, body: args.body, ...attachment });
+      } else {
+        let attachmentPath = null;
+        if (attachment) {
+          attachmentPath = path.join(os.tmpdir(), `aura-${crypto.randomUUID()}-report.pdf`);
+          fs.writeFileSync(attachmentPath, Buffer.from(attachment.attachment_base64, 'base64'));
+        }
+        try {
+          await mac.sendEmailToOwner(AURA_OWNER_EMAIL, args.subject, args.body, attachmentPath);
+        } finally {
+          if (attachmentPath) fs.unlink(attachmentPath, () => {});
+        }
+      }
+      result = { sent: true };
+    } else if (action.tool_name === 'send_telegram_message') {
+      await sendTelegramMessage(args.message);
+      result = { sent: true };
     } else {
       return action;
     }
@@ -1589,35 +1820,49 @@ app.post('/api/actions/:id/reject', async (req, res) => {
   res.json({ action });
 });
 
+// One Cartesia call for one chunk of text. Pulled out of the route so it can
+// be fired multiple times concurrently below.
+async function synthesizeSpeechChunk(text) {
+  const response = await fetch('https://api.cartesia.ai/tts/bytes', {
+    method: 'POST',
+    headers: {
+      'Cartesia-Version': '2024-06-10',
+      'X-API-Key': process.env.CARTESIA_API_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model_id: 'sonic-3.5',
+      transcript: text,
+      voice: { mode: 'id', id: 'e8e5fffb-252c-436d-b842-8879b84445b6' },
+      output_format: { container: 'wav', encoding: 'pcm_s16le', sample_rate: 44100 }
+    })
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Cartesia API error: ${response.status} - ${errText}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
 app.post('/api/tts', async (req, res) => {
   try {
     const { text } = req.body;
     if (typeof text !== 'string' || !text.trim() || text.length > 12000) {
       return res.status(400).json({ error: 'TTS text must be between 1 and 12,000 characters.' });
     }
-    const response = await fetch('https://api.cartesia.ai/tts/bytes', {
-      method: 'POST',
-      headers: {
-        'Cartesia-Version': '2024-06-10',
-        'X-API-Key': process.env.CARTESIA_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model_id: 'sonic-3.5',
-        transcript: text,
-        voice: { mode: 'id', id: 'e8e5fffb-252c-436d-b842-8879b84445b6' },
-        output_format: { container: 'wav', encoding: 'pcm_s16le', sample_rate: 44100 }
-      })
-    });
-    
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Cartesia API error: ${response.status} - ${errText}`);
-    }
-    
-    const arrayBuffer = await response.arrayBuffer();
+    // Synthesize sentence-by-sentence, concurrently, instead of one call for
+    // the whole reply - real latency win on multi-sentence replies (Cartesia
+    // time roughly scales with text length, so N parallel shorter calls
+    // finish sooner than one long serial one), with zero client-visible
+    // change: still one WAV blob in, played exactly as before. A one-sentence
+    // reply is a single Cartesia call either way, identical to the prior
+    // behavior - this only does extra work when there's real parallelism to
+    // gain from.
+    const sentences = splitIntoSentences(text);
+    const chunks = await Promise.all(sentences.map(synthesizeSpeechChunk));
+    const combined = chunks.length > 1 ? concatWavBuffers(chunks) : chunks[0];
     res.set('Content-Type', 'audio/wav');
-    res.send(Buffer.from(arrayBuffer));
+    res.send(combined);
   } catch (error) {
     console.error('Error in /api/tts:', error);
     res.status(500).json({ error: error.message });

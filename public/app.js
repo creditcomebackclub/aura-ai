@@ -211,6 +211,7 @@ const socket = io({
 const orb = document.getElementById('orb');
 const statusText = document.getElementById('status-text');
 const sourcePanel = document.getElementById('source-panel');
+const sourceLabel = document.getElementById('source-label');
 const webAnswer = document.getElementById('web-answer');
 const sourceLinks = document.getElementById('source-links');
 const voiceWave = document.getElementById('voice-wave');
@@ -440,15 +441,27 @@ function appendCitedBlock(block) {
   webAnswer.appendChild(paragraph);
 }
 
-function showSearchEvidence(webResults = [], sources = []) {
+// Shows AURA's last answer as on-screen text in the side panel. When the
+// turn included a live web search, that takes priority (citations/sources
+// are the more useful thing to show); otherwise falls back to her plain
+// reply text, so every answer is readable on screen, not just search ones.
+function showSearchEvidence(webResults = [], sources = [], replyText = '') {
   webAnswer.replaceChildren();
   sourceLinks.replaceChildren();
   const latestResult = webResults[webResults.length - 1];
+  let isSearchResult = false;
+
   if (latestResult?.citation_blocks?.length) {
     for (const block of latestResult.citation_blocks) appendCitedBlock(block);
+    isSearchResult = true;
   } else if (latestResult?.answer) {
     const paragraph = document.createElement('p');
     paragraph.textContent = latestResult.answer;
+    webAnswer.appendChild(paragraph);
+    isSearchResult = true;
+  } else if (replyText.trim()) {
+    const paragraph = document.createElement('p');
+    paragraph.textContent = replyText.trim();
     webAnswer.appendChild(paragraph);
   }
 
@@ -464,8 +477,10 @@ function showSearchEvidence(webResults = [], sources = []) {
       : url.hostname;
     sourceLinks.appendChild(link);
   }
-  // Non-persistent by design: only ever made visible when a search actually
-  // returned content, and hidden again as soon as it doesn't - opacity/
+  sourceLabel.textContent = isSearchResult ? 'Live web result' : 'AURA said';
+
+  // Non-persistent by design: only ever made visible when there's actually
+  // something to show, and hidden again as soon as there isn't - opacity/
   // transform driven (see CSS) rather than the `hidden` attribute, so it can
   // fade in/out instead of snapping.
   const hasContent = webAnswer.childElementCount > 0 || sourceLinks.childElementCount > 0;
@@ -691,7 +706,6 @@ async function processAudio(audioBlob) {
     if (!chatRes.ok) throw new Error('Chat API failed');
     const { reply, sources = [], web_results: webResults = [] } = await chatRes.json();
     console.log('AURA:', reply);
-    showSearchEvidence(webResults, sources);
 
     // 3. Fetch TTS from Cartesia proxy
     setOrbState('thinking', 'Generating Voice...');
@@ -703,8 +717,11 @@ async function processAudio(audioBlob) {
 
     if (!ttsRes.ok) throw new Error('TTS API failed');
 
-    // 4. Play audio
+    // 4. Play audio. Evidence is shown right as playback starts, not the
+    // moment the reply text arrives - otherwise the panel appears during
+    // "Generating Voice..." well before she actually starts talking.
     const blob = await ttsRes.blob();
+    showSearchEvidence(webResults, sources, reply);
     playAudioBlob(blob);
   } catch (err) {
     console.error(err);

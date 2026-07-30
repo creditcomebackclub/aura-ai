@@ -14,13 +14,19 @@ const TOOL_POLICIES = Object.freeze({
   check_blackboard: 'read',
   search_web: 'read',
   list_deletable_test_letters: 'read',
+  list_pending_owner_actions: 'read',
   add_goal: 'reversible_write',
   update_goal_status: 'reversible_write',
   log_finance: 'reversible_write',
   save_semantic_memory: 'reversible_write',
   // Staging a deletion changes nothing on its own; only the confirm step destroys data.
   propose_test_letter_deletion: 'reversible_write',
-  confirm_test_letter_deletion: 'destructive_write'
+  confirm_test_letter_deletion: 'destructive_write',
+  // Same shape: staging an email changes nothing, only confirm sends it.
+  propose_owner_email: 'reversible_write',
+  confirm_owner_email: 'destructive_write',
+  propose_telegram_message: 'reversible_write',
+  confirm_telegram_message: 'destructive_write'
 });
 
 const SEARCH_SECRET_PATTERNS = [
@@ -78,6 +84,20 @@ function validateToolArguments(name, args) {
   }
   if (name === 'propose_test_letter_deletion' || name === 'confirm_test_letter_deletion') {
     requireString('letter_id', 300);
+  }
+  if (name === 'propose_owner_email') {
+    requireString('subject', 300);
+    requireString('body', 8000);
+    if (args.pdf_content !== undefined) requireString('pdf_content', 20000);
+  }
+  if (name === 'confirm_owner_email' || name === 'confirm_telegram_message') {
+    requireString('action_id', 100);
+    if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
+      throw new Error(`Invalid action_id for ${name}.`);
+    }
+  }
+  if (name === 'propose_telegram_message') {
+    requireString('message', 4000);
   }
   if (name === 'add_goal') requireString('description', 1000);
   if (name === 'save_semantic_memory') requireString('fact', 2000);

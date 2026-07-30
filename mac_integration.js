@@ -112,7 +112,59 @@ async function getTodaysCalendar() {
   }
 }
 
+// Escapes a string for safe interpolation into an AppleScript double-quoted
+// literal. AppleScript has no parameterized-query equivalent, so this is the
+// only thing standing between owner-approved email content and a broken (or
+// injected) script - escape backslashes first, then quotes, then strip
+// characters AppleScript string literals cannot represent directly.
+function escapeAppleScriptString(value) {
+  return String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r\n/g, '\n')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+}
+
+// Sends an email FROM the Mac's own Mail app. The recipient is always the
+// caller-supplied ownerEmail - this function has no path for sending to any
+// other address, which is the actual safety property here: even a fully
+// compromised subject/body can only ever reach the owner's own inbox, never
+// exfiltrate data to a third party.
+async function sendEmailToOwner(ownerEmail, subject, body, attachmentPath = null) {
+  if (!ownerEmail) throw new Error('An owner email address is required to send mail.');
+  const safeSubject = escapeAppleScriptString(subject);
+  const safeBody = escapeAppleScriptString(body);
+  const safeRecipient = escapeAppleScriptString(ownerEmail);
+  const attachmentClause = attachmentPath
+    ? `\n          tell newMessage to make new attachment with properties {file name:(POSIX file "${escapeAppleScriptString(attachmentPath)}")} at after the last paragraph`
+    : '';
+  const script = `
+    try
+      with timeout of 60 seconds
+        tell application "Mail"
+          set newMessage to make new outgoing message with properties {subject:"${safeSubject}", content:"${safeBody}", visible:false}
+          tell newMessage to make new to recipient with properties {address:"${safeRecipient}"}${attachmentClause}
+          send newMessage
+        end tell
+      end timeout
+      return "sent"
+    on error errMsg number errNum
+      if errNum is -1712 then
+        error "Apple Mail did not finish sending within 60 seconds."
+      else
+        error "Error sending mail: " & errMsg
+      end if
+    end try
+  `;
+  try {
+    return await runAppleScript(script);
+  } catch (error) {
+    throw new Error(`Apple Mail could not send the message: ${error.message}`);
+  }
+}
+
 module.exports = {
   getUnreadEmails,
-  getTodaysCalendar
+  getTodaysCalendar,
+  sendEmailToOwner
 };

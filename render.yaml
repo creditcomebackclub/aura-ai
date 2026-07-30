@@ -53,3 +53,9 @@ services:
         value: chriss-macbook-pro
       - key: BLACKBOARD_ICAL_URL
         sync: false
+      - key: AURA_OWNER_EMAIL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

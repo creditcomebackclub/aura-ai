@@ -480,15 +480,32 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
    opacity/transform (not display:none, so it can transition) and only made
    visible by app.js adding .visible - which it does exactly when a search
    actually returned content, and removes again on the next turn if not. */
+/* Right-side rail, top to bottom. LEFT edge is DERIVED from the exact same
+   formula that sizes #voice-wave (min(82vw, 560px), centered), pinned at the
+   wave's right edge plus a gutter - so the two can never overlap at any
+   viewport size, mathematically, not just "usually enough margin".
+   Deliberately anchored via left+right (not right+width): if the panel's
+   padding/border floor ever needs more room than is available, CSS's own
+   over-constraint resolution keeps `left` fixed and lets the box extend
+   past `right` instead - i.e. any excess spills off the right edge of the
+   (overflow-hidden) viewport, invisibly, rather than growing leftward into
+   the wave. A width-based approach was tried first and failed exactly this
+   way: on a 375px phone the padding floor silently widened the box until it
+   actually overlapped the wave by ~10px, verified by measuring
+   getBoundingClientRect in a live browser, not just eyeballing it.
+   On a phone the wave already claims most of the width, so this necessarily
+   renders as a narrow strip there; on a wider screen it has real room. */
 #source-panel {
-  position: absolute;
-  left: 50%;
-  bottom: max(28px, env(safe-area-inset-bottom));
-  width: min(90vw, 620px);
-  max-height: 32vh;
+  position: fixed;
+  top: max(18px, env(safe-area-inset-top));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  left: calc(50% + min(82vw, 560px) / 2 + 12px);
+  right: max(14px, env(safe-area-inset-right));
+  width: auto;
+  max-width: 280px;
   overflow-y: auto;
-  transform: translate(-50%, 14px);
-  padding: 16px 18px 12px;
+  transform: translateX(24px);
+  padding: 16px 14px 12px;
   border: 1px solid rgba(0, 170, 255, 0.4);
   border-radius: 16px;
   background: rgba(6, 10, 16, 0.86);
@@ -508,7 +525,7 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
 
 #source-panel.visible {
   opacity: 1;
-  transform: translate(-50%, 0);
+  transform: translateX(0);
   pointer-events: auto;
 }
 
