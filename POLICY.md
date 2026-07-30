@@ -137,7 +137,7 @@ set of checks, in the same order:
    checked against what the owner actually typed or said, never against
    anything the model produced or claims:**
    ```js
-   const OWNER_APPROVAL_PATTERN = /\b(yes|yeah|yep|yup|confirm|confirmed|confirming|approve|approved|go ahead|do it|delete it|proceed|permission granted)\b/i;
+   const OWNER_APPROVAL_PATTERN = /\b(yes|yeah|yep|yup|confirm|confirmed|confirming|approve|approved|go ahead|do it|delete it|send|send it|proceed|permission granted)\b/i;
    const OWNER_REFUSAL_PATTERN  = /\b(no|nope|don'?t|do not|cancel|stop|wait|hold off|never ?mind|not yet)\b/i;
    ```
    Refusal is checked first and, if matched, discards the proposal outright.

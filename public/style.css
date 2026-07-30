@@ -626,6 +626,31 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   }
 }
 
+/* On a phone, the right-side rail above is too narrow to read - it's a
+   sliver next to the wave rather than a real panel. Below the orb/wave
+   instead of beside them: full-width bottom sheet, still non-overlapping
+   by construction (the orb/wave stack is vertically centered by `body`'s
+   flex layout above, so a bottom-pinned panel sits in the space below it
+   rather than needing to share horizontal room with the wave the way the
+   desktop rail does). Same breakpoint as --wave-width's own mobile
+   adjustment above, so both changes land together. */
+@media (max-width: 700px) {
+  #source-panel {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: max(18px, env(safe-area-inset-bottom));
+    width: auto;
+    max-width: none;
+    max-height: 32vh;
+    transform: translateY(24px);
+  }
+
+  #source-panel.visible {
+    transform: translateY(0);
+  }
+}
+
 /* Hover effects for premium feel */
 @media (hover: hover) {
   #orb-container:hover #orb.idle {

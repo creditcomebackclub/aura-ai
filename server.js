@@ -1056,7 +1056,7 @@ let conversationTurn = 0;
 // The owner's own words are the gate. These are checked against the raw message
 // text, not against anything the model produced, so an assistant that convinces
 // itself approval was given still cannot delete.
-const OWNER_APPROVAL_PATTERN = /\b(yes|yeah|yep|yup|confirm|confirmed|confirming|approve|approved|go ahead|do it|delete it|proceed|permission granted)\b/i;
+const OWNER_APPROVAL_PATTERN = /\b(yes|yeah|yep|yup|confirm|confirmed|confirming|approve|approved|go ahead|do it|delete it|send|send it|proceed|permission granted)\b/i;
 const OWNER_REFUSAL_PATTERN = /\b(no|nope|don'?t|do not|cancel|stop|wait|hold off|never ?mind|not yet)\b/i;
 
 // Proposals live in the database, so the only in-process signal needed is when

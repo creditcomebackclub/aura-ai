@@ -84,6 +84,20 @@ test('the search panel sits right of the wave, never over it, and syncs to speec
   assert.ok(evidenceIndex < playIndex, 'evidence must show at/just before playback starts, not after');
 });
 
+test('on a phone the panel docks below the orb/wave instead of beside them', () => {
+  // The desktop side-rail is unreadably narrow on a phone - a real
+  // breakpoint override, not just a smaller version of the same rail.
+  const mobileBlock = css.slice(css.indexOf('@media (max-width: 700px) {\n  #source-panel'));
+  assert.match(mobileBlock, /#source-panel\s*\{[^}]*top:\s*auto/s);
+  assert.match(mobileBlock, /#source-panel\s*\{[^}]*bottom:/s);
+  assert.match(mobileBlock, /#source-panel\s*\{[^}]*max-width:\s*none/s);
+  assert.match(mobileBlock, /#source-panel\s*\{[^}]*transform:\s*translateY\(/s);
+  // Reveal transform on mobile must match the mobile hide transform's axis -
+  // sliding in on Y, not the desktop rail's X, or .visible would snap
+  // instead of animate on a phone.
+  assert.match(mobileBlock, /#source-panel\.visible\s*\{[^}]*transform:\s*translateY\(0\)/s);
+});
+
 test('waveform is driven by the actual AURA audio element', () => {
   assert.match(app, /createMediaElementSource\(audioPlayer\)/);
   assert.match(app, /getByteTimeDomainData\(waveformSamples\)/);
