@@ -30,8 +30,14 @@ test('the search-results panel is non-persistent and appears only with content',
   assert.match(css, /#source-panel\.visible\s*\{[^}]*opacity:\s*1;/s);
   assert.match(app, /sourcePanel\.classList\.toggle\('visible',\s*hasContent\)/);
   assert.match(app, /sourcePanel\.setAttribute\('aria-hidden'/);
-  // Cleared at the start of every new listen and on error, not just set once.
+  // Cleared at the start of every new listen, on error, and now also right
+  // when she finishes speaking (onended) / is interrupted (stopSpeaking) -
+  // so old text doesn't linger on screen until the next interaction starts.
   assert.match(app, /showSearchEvidence\(\[\],\s*\[\]\)/);
+  const onended = app.slice(app.indexOf('audioPlayer.onended = () => {'), app.indexOf('audioPlayer.onerror'));
+  assert.match(onended, /showSearchEvidence\(\[\],\s*\[\]\)/);
+  const stopSpeakingFn = app.slice(app.indexOf('function stopSpeaking()'), app.indexOf('function releaseAudioUrl'));
+  assert.match(stopSpeakingFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
 });
 
 test('the panel shows plain reply text on screen when there is no search result', () => {

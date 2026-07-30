@@ -497,6 +497,7 @@ function stopSpeaking() {
   isSpeaking = false;
   stopVoiceWave();
   setOrbState('idle', 'Tap to talk to AURA');
+  showSearchEvidence([], []);
 }
 
 function releaseAudioUrl() {
@@ -523,12 +524,14 @@ function playAudioBlob(blob) {
     stopVoiceWave();
     releaseAudioUrl();
     setOrbState('idle', 'Tap to talk to AURA');
+    showSearchEvidence([], []);
   };
   audioPlayer.onerror = () => {
     isSpeaking = false;
     stopVoiceWave();
     releaseAudioUrl();
     setOrbState('error', 'Voice playback failed');
+    showSearchEvidence([], []);
   };
 
   ensureAudioGraph()
