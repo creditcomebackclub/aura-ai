@@ -40,14 +40,44 @@ function createDailyWebSearchLimiter({
     : 25;
   let queue = Promise.resolve();
 
-  function consume() {
-    const operation = queue.then(async () => {
+  // Every mutation goes through the one queue, so concurrent searches can
+  // never read-modify-write the same daily counter and lose an increment.
+  function enqueue(task) {
+    const operation = queue.then(task);
+    queue = operation.catch(() => {});
+    return operation;
+  }
+
+  // Counts only carry within a day: anything stamped with an older date is
+  // yesterday's usage and reads as zero.
+  function readCount(previous, date) {
+    return previous?.date === date && Number.isFinite(Number(previous?.count))
+      ? Number(previous.count)
+      : 0;
+  }
+
+  async function write(date, count, timestamp) {
+    const usage = {
+      date,
+      count,
+      limit: effectiveLimit,
+      updated_at: timestamp.toISOString()
+    };
+    await setState(stateKey, usage);
+    return usage;
+  }
+
+  // Reserve budget before a search runs. What gets reserved is a floor, not
+  // the final charge - a single search_web can make OpenAI issue several
+  // billable web searches - so callers correct it with settle() once the
+  // provider reports what it actually ran.
+  function consume(units = 1) {
+    const parsedUnits = Number(units);
+    const requested = Number.isFinite(parsedUnits) ? Math.max(1, Math.trunc(parsedUnits)) : 1;
+    return enqueue(async () => {
       const timestamp = now();
       const date = dateInTimeZone(timestamp, timeZone);
-      const previous = await getState(stateKey);
-      const count = previous?.date === date && Number.isFinite(Number(previous?.count))
-        ? Number(previous.count)
-        : 0;
+      const count = readCount(await getState(stateKey), date);
 
       if (count >= effectiveLimit) {
         throw new WebSearchError(
@@ -56,21 +86,30 @@ function createDailyWebSearchLimiter({
         );
       }
 
-      const usage = {
-        date,
-        count: count + 1,
-        limit: effectiveLimit,
-        updated_at: timestamp.toISOString()
-      };
-      await setState(stateKey, usage);
-      return usage;
+      return write(date, count + requested, timestamp);
     });
-
-    queue = operation.catch(() => {});
-    return operation;
   }
 
-  return { consume, limit: effectiveLimit };
+  // Correct an already-reserved unit once the real billable count is known:
+  // negative to refund a search that never billed, positive when one
+  // search_web made OpenAI run several searches. This never rejects on the
+  // limit - the recorded count has to match what was actually billed even
+  // when that ends the day slightly over budget, because an accurate count
+  // is what makes the fuse trustworthy tomorrow.
+  function settle(delta) {
+    const parsedDelta = Number(delta);
+    const adjustment = Number.isFinite(parsedDelta) ? Math.trunc(parsedDelta) : 0;
+    return enqueue(async () => {
+      const timestamp = now();
+      const date = dateInTimeZone(timestamp, timeZone);
+      const count = readCount(await getState(stateKey), date);
+      // Clamping at zero also keeps a refund that lands after the timezone
+      // reset from crediting the new day for yesterday's search.
+      return write(date, Math.max(0, count + adjustment), timestamp);
+    });
+  }
+
+  return { consume, settle, limit: effectiveLimit };
 }
 
 function addSource(target, seen, source) {
@@ -154,10 +193,14 @@ function extractWebSearchMetadata(response) {
   const sources = [];
   const seenSources = new Map();
   const queries = [];
+  let attemptedSearches = 0;
   let completedSearches = 0;
 
   for (const item of response?.output || []) {
     if (item?.type === 'web_search_call') {
+      // OpenAI bills per web_search call it issues, whatever that call
+      // returned, so attempted - not completed - is the billable count.
+      attemptedSearches += 1;
       if (item.status === 'completed') completedSearches += 1;
 
       const actionQueries = item.action?.queries ||
@@ -185,11 +228,21 @@ function extractWebSearchMetadata(response) {
   }
 
   return {
+    attemptedSearches,
     citationBlocks: extractCitationBlocks(response),
     completedSearches,
     queries,
     sources: sources.slice(0, 12)
   };
+}
+
+// Tags an error with how many billable OpenAI searches it cost, so the
+// daily limiter can settle its reservation against reality. A count of 0
+// means the failure cost nothing; null means we never found out and the
+// caller should assume the reservation was real spend.
+function withBillableSearches(error, billableSearches) {
+  error.billableSearches = billableSearches;
+  return error;
 }
 
 function normalizeTimeout(value) {
@@ -218,15 +271,18 @@ function createOpenAIWebSearch({
 
   async function search(query) {
     if (!effectiveClient) {
-      throw new WebSearchError(
+      throw withBillableSearches(new WebSearchError(
         'Live web search is not configured.',
         'WEB_SEARCH_NOT_CONFIGURED'
-      );
+      ), 0);
     }
 
     const normalizedQuery = typeof query === 'string' ? query.trim() : '';
     if (!normalizedQuery) {
-      throw new WebSearchError('A search query is required.', 'WEB_SEARCH_INVALID_QUERY');
+      throw withBillableSearches(
+        new WebSearchError('A search query is required.', 'WEB_SEARCH_INVALID_QUERY'),
+        0
+      );
     }
 
     const abortController = new AbortController();
@@ -234,10 +290,12 @@ function createOpenAIWebSearch({
     const timeout = new Promise((_, reject) => {
       timeoutHandle = setTimeout(() => {
         abortController.abort();
-        reject(new WebSearchError(
+        // We aborted without ever seeing a response, so OpenAI may well
+        // have run (and billed) searches we can't count. Unknown, not zero.
+        reject(withBillableSearches(new WebSearchError(
           'Live web search timed out. Please try again.',
           'WEB_SEARCH_TIMEOUT'
-        ));
+        ), null));
       }, effectiveTimeout);
     });
 
@@ -272,24 +330,28 @@ function createOpenAIWebSearch({
       const response = await Promise.race([request, timeout]);
       const answer = String(response?.output_text || '').trim();
       const metadata = extractWebSearchMetadata(response);
+      // max_tool_calls lets one search_web make OpenAI run several billable
+      // searches, and the rejections below happen after those searches have
+      // already run, so every exit from here reports what it cost.
+      const billableSearches = metadata.attemptedSearches;
 
       if (response?.status !== 'completed' || response?.incomplete_details) {
-        throw new WebSearchError(
+        throw withBillableSearches(new WebSearchError(
           'The live web provider returned an incomplete answer. Please try again.',
           'WEB_SEARCH_INCOMPLETE_RESPONSE'
-        );
+        ), billableSearches);
       }
       if (metadata.completedSearches < 1) {
-        throw new WebSearchError(
+        throw withBillableSearches(new WebSearchError(
           'The live web provider did not complete a search. Please try again.',
           'WEB_SEARCH_NOT_PERFORMED'
-        );
+        ), billableSearches);
       }
       if (!answer) {
-        throw new WebSearchError(
+        throw withBillableSearches(new WebSearchError(
           'The live web provider returned no answer. Please try again.',
           'WEB_SEARCH_EMPTY_RESPONSE'
-        );
+        ), billableSearches);
       }
 
       return {
@@ -297,6 +359,7 @@ function createOpenAIWebSearch({
         model,
         query: normalizedQuery,
         answer: answer.slice(0, 12000),
+        billable_searches: billableSearches,
         citation_blocks: metadata.citationBlocks,
         sources: metadata.sources,
         citation_status: metadata.sources.length > 0
@@ -307,11 +370,15 @@ function createOpenAIWebSearch({
       };
     } catch (error) {
       if (error instanceof WebSearchError) throw error;
-      throw new WebSearchError(
+      // The request itself failed (429, 5xx, transport), so no web_search
+      // tool call ever completed and nothing should be billed. If OpenAI
+      // does bill a partially-run request anyway, we undercount here rather
+      // than charge the day's budget for a search that returned nothing.
+      throw withBillableSearches(new WebSearchError(
         'Live web search is temporarily unavailable. Please try again.',
         'WEB_SEARCH_PROVIDER_ERROR',
         error
-      );
+      ), 0);
     } finally {
       clearTimeout(timeoutHandle);
     }

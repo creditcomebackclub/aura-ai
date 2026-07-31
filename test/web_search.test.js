@@ -245,3 +245,173 @@ test('daily web search limiter serializes concurrent usage checks', async () => 
     error => error.code === 'WEB_SEARCH_DAILY_LIMIT'
   );
 });
+
+function slowLimiter({ limit = 10, savedState = null } = {}) {
+  const state = { value: savedState };
+  const limiter = createDailyWebSearchLimiter({
+    getState: async () => {
+      // Yield between read and write so an unserialized implementation
+      // would lose increments.
+      await new Promise(resolve => setImmediate(resolve));
+      return state.value;
+    },
+    setState: async (_key, value) => { state.value = value; },
+    limit,
+    now: () => new Date('2026-07-29T12:00:00Z')
+  });
+  return { limiter, state };
+}
+
+test('daily web search limiter charges the real number of provider searches', async () => {
+  const { limiter, state } = slowLimiter({ limit: 5 });
+
+  assert.equal((await limiter.consume(3)).count, 3);
+  // A reservation is allowed whenever budget remains, even when the units
+  // it charges overshoot the limit - the count has to match what was billed.
+  assert.equal((await limiter.consume(3)).count, 6);
+  await assert.rejects(
+    () => limiter.consume(),
+    error => error.code === 'WEB_SEARCH_DAILY_LIMIT'
+  );
+  assert.equal(state.value.count, 6);
+});
+
+test('daily web search limiter settles reservations up and down', async () => {
+  const { limiter, state } = slowLimiter({ limit: 10 });
+
+  await limiter.consume();
+  // One search_web that made OpenAI run three searches.
+  assert.equal((await limiter.settle(2)).count, 3);
+  // A search that failed before billing anything.
+  await limiter.consume();
+  assert.equal((await limiter.settle(-1)).count, 3);
+  assert.equal(state.value.count, 3);
+});
+
+test('daily web search limiter never refunds below zero', async () => {
+  const { limiter } = slowLimiter({ limit: 10 });
+
+  assert.equal((await limiter.settle(-5)).count, 0);
+  assert.equal((await limiter.consume()).count, 1);
+});
+
+test('daily web search refunds do not credit the day after a timezone reset', async () => {
+  let currentTime = new Date('2026-07-30T06:59:00Z');
+  let savedState = null;
+  const limiter = createDailyWebSearchLimiter({
+    getState: async () => savedState,
+    setState: async (_key, value) => { savedState = value; },
+    limit: 5,
+    timeZone: 'America/Phoenix',
+    now: () => currentTime
+  });
+
+  await limiter.consume();
+  assert.equal(savedState.date, '2026-07-29');
+
+  // The search was reserved yesterday and failed after midnight in Phoenix.
+  currentTime = new Date('2026-07-30T07:01:00Z');
+  const refunded = await limiter.settle(-1);
+  assert.equal(refunded.date, '2026-07-30');
+  assert.equal(refunded.count, 0);
+  assert.equal((await limiter.consume()).count, 1);
+});
+
+test('daily web search limiter serializes settlements against concurrent reservations', async () => {
+  const { limiter, state } = slowLimiter({ limit: 10 });
+
+  const results = await Promise.all([
+    limiter.consume(),
+    limiter.settle(-1),
+    limiter.consume(),
+    limiter.settle(2)
+  ]);
+
+  assert.deepEqual(results.map(result => result.count), [1, 0, 1, 3]);
+  assert.equal(state.value.count, 3);
+});
+
+test('web search reports how many billable provider searches it ran', async () => {
+  const response = successfulResponse();
+  response.output.unshift({
+    type: 'web_search_call',
+    status: 'completed',
+    action: { type: 'search', query: 'Sebastian Florida forecast' }
+  });
+  // An incomplete call still cost a billable web_search invocation.
+  response.output.unshift({ type: 'web_search_call', status: 'incomplete', action: {} });
+
+  const search = createOpenAIWebSearch({
+    client: { responses: { create: async () => response } }
+  });
+
+  const result = await search.search('weather in Sebastian, Florida');
+  assert.equal(result.billable_searches, 3);
+  assert.equal(extractWebSearchMetadata(response).completedSearches, 2);
+});
+
+test('web search failures report what they billed so the reservation can settle', async () => {
+  async function billingFor(client) {
+    const search = createOpenAIWebSearch({ client, timeoutMs: 100 });
+    try {
+      await search.search('latest news');
+      throw new Error('expected the search to reject');
+    } catch (error) {
+      return { code: error.code, billableSearches: error.billableSearches };
+    }
+  }
+
+  // Nothing reached the provider: fully refundable.
+  assert.deepEqual(
+    await billingFor({ responses: { create: async () => { throw new Error('429'); } } }),
+    { code: 'WEB_SEARCH_PROVIDER_ERROR', billableSearches: 0 }
+  );
+  assert.deepEqual(
+    await billingFor({
+      responses: {
+        create: async () => ({ status: 'completed', output_text: 'guess', output: [] })
+      }
+    }),
+    { code: 'WEB_SEARCH_NOT_PERFORMED', billableSearches: 0 }
+  );
+
+  // The provider searched before the response turned out to be unusable.
+  assert.deepEqual(
+    await billingFor({
+      responses: {
+        create: async () => ({
+          status: 'completed',
+          output_text: '',
+          output: [{ type: 'web_search_call', status: 'completed', action: {} }]
+        })
+      }
+    }),
+    { code: 'WEB_SEARCH_EMPTY_RESPONSE', billableSearches: 1 }
+  );
+
+  const incomplete = successfulResponse();
+  incomplete.status = 'incomplete';
+  incomplete.incomplete_details = { reason: 'max_output_tokens' };
+  incomplete.output.unshift({
+    type: 'web_search_call',
+    status: 'completed',
+    action: { type: 'search', query: 'second search' }
+  });
+  assert.deepEqual(
+    await billingFor({ responses: { create: async () => incomplete } }),
+    { code: 'WEB_SEARCH_INCOMPLETE_RESPONSE', billableSearches: 2 }
+  );
+
+  // A timeout aborts without ever seeing the response, so the cost is
+  // unknown rather than zero and the reserved unit has to stand.
+  assert.deepEqual(
+    await billingFor({ responses: { create: async () => new Promise(() => {}) } }),
+    { code: 'WEB_SEARCH_TIMEOUT', billableSearches: null }
+  );
+
+  const unconfigured = createOpenAIWebSearch({ apiKey: '' });
+  await assert.rejects(
+    () => unconfigured.search('latest news'),
+    error => error.code === 'WEB_SEARCH_NOT_CONFIGURED' && error.billableSearches === 0
+  );
+});
