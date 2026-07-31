@@ -253,6 +253,19 @@ let waveformEnergy = 0;
 let mediaRecorder = null;
 let audioChunks = [];
 
+// True from the moment a recording is handed off to processAudio() until
+// its reply (or error) is fully resolved. Guards against a second tap
+// during a slow request (e.g. a cold Render boot) starting an overlapping
+// turn - without this, two concurrent processAudio() calls race to write
+// the same orb/audio-queue state, and whichever's slow backend response
+// resolves last wins the display, regardless of which question it answers.
+let isProcessing = false;
+// Bumped at the start of every processAudio() call. A turn only applies
+// its own UI writes while its token still matches - if a newer turn started
+// (or the run was superseded) while this one's fetch was in flight, its
+// stale result is discarded instead of overwriting the newer exchange.
+let currentTurn = 0;
+
 // Tracks the clip currently loaded so it can be torn down on interrupt.
 let currentAudioUrl = null;
 // Set when the user interrupts, so a reply whose audio is still being
@@ -688,6 +701,13 @@ document.getElementById('orb-container').addEventListener('click', async () => {
     return;
   }
 
+  // A request is already in flight (transcribing or waiting on the chat
+  // backend) - ignore the tap instead of starting a second, overlapping
+  // turn. Without this, an impatient re-tap during a slow response (cold
+  // boot, etc.) races two replies against each other and whichever
+  // resolves last gets shown/spoken, even if it's the stale one.
+  if (isProcessing) return;
+
   if (isListening) {
     // Tap to STOP listening
     stopListening();
@@ -757,6 +777,12 @@ function stopListening() {
 }
 
 async function processAudio(audioBlob) {
+  isProcessing = true;
+  const myTurn = ++currentTurn;
+  // True once this turn has been superseded (a newer tap started, or this
+  // one errored out) - any UI write after that point is a stale reply and
+  // must be dropped instead of displayed/spoken.
+  const stale = () => myTurn !== currentTurn;
   try {
     // 1. Send Audio to Whisper for Transcription
     const formData = new FormData();
@@ -794,6 +820,7 @@ async function processAudio(audioBlob) {
     });
 
     if (!chatRes.ok) throw new Error('Chat API failed');
+    if (stale()) return;
 
     resetVoiceQueue();
     const reader = chatRes.body.getReader();
@@ -813,6 +840,7 @@ async function processAudio(audioBlob) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
         if (event.type === 'sentence') {
+          if (stale()) continue;
           sentenceCount += 1;
           enqueueSentenceAudio(event.text, sentenceCount === 1);
         } else if (event.type === 'done') {
@@ -824,6 +852,7 @@ async function processAudio(audioBlob) {
     }
 
     if (!finalResult) throw new Error('Chat stream ended without a result.');
+    if (stale()) return;
     const { reply, sources = [], web_results: webResults = [] } = finalResult;
     console.log('AURA:', reply);
 
@@ -852,5 +881,7 @@ async function processAudio(audioBlob) {
     setOrbState('error', 'Error occurred. Tap to retry.');
     isSpeaking = false;
     setTimeout(() => setOrbState('idle', 'Tap to talk to AURA'), 3000);
+  } finally {
+    isProcessing = false;
   }
 }
