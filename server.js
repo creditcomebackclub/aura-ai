@@ -1838,9 +1838,15 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       });
     }
 
+    // The current turn's own message must be committed before we read recent
+    // history back out, or conversationContext can be built without it - the
+    // model then answers as if this turn never arrived, replying to
+    // whatever came before instead. Wait for the write first; only the reads
+    // that don't touch aura_messages (memory job status, semantic memory)
+    // stay parallelized alongside it.
+    await userMessagePromise;
     const contextBuildStartedAtMs = Date.now();
-    const [, memoryJob, memoryContext, conversationContext] = await Promise.all([
-      userMessagePromise,
+    const [memoryJob, memoryContext, conversationContext] = await Promise.all([
       memoryJobPromise,
       memoryV2.buildContext(text),
       cloudState
