@@ -35,7 +35,7 @@ const {
 const { CompanionClient } = require('./companion_client');
 const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
-const { isDirectEmailConfigured, getDirectUnreadEmails } = require('./email_provider');
+const { isDirectEmailConfigured, isDirectSendConfigured, sendGmailMessage, getDirectUnreadEmails } = require('./email_provider');
 const { brainRequestOptions, resolveModelConfig } = require('./model_router');
 const {
   WebSearchError,
@@ -1987,9 +1987,11 @@ app.post('/telegram/webhook', rateLimit, async (req, res) => {
   let voiceFilePath = null;
   try {
     let text;
+    let isVoiceInput = false;
     if (typeof message.text === 'string' && message.text.trim()) {
       text = message.text;
     } else if (message.voice) {
+      isVoiceInput = true;
       const { buffer, ext } = await downloadTelegramFile(message.voice.file_id);
       voiceFilePath = path.join(os.tmpdir(), `aura-telegram-${crypto.randomUUID()}${ext}`);
       fs.writeFileSync(voiceFilePath, buffer);
@@ -2005,16 +2007,22 @@ app.post('/telegram/webhook', rateLimit, async (req, res) => {
     }
 
     const result = await processOwnerText(text);
-    await sendTelegramMessage(result.reply);
+    // Voice-in defaults to voice-out only, since that's the medium the owner
+    // chose - text goes too only when he typed instead, or explicitly asked
+    // for the text alongside the voice reply.
+    const wantsTextToo = !isVoiceInput || /\btext\b/i.test(text);
+    if (wantsTextToo) await sendTelegramMessage(result.reply);
     try {
       const sentences = splitIntoSentences(result.reply);
       const chunks = await Promise.all(sentences.map(synthesizeSpeechChunk));
       const combined = chunks.length > 1 ? concatWavBuffers(chunks) : chunks[0];
       await sendTelegramAudio(combined);
     } catch (voiceError) {
-      // Text reply already sent above - a voice-synthesis failure shouldn't
-      // also swallow the text one, so this is caught and logged, not thrown.
+      // If voice-out was the only reply planned, a synthesis failure would
+      // otherwise leave the owner with nothing - fall back to text so this
+      // failure mode is never total silence.
       console.error('[Telegram webhook] voice reply failed:', voiceError.message);
+      if (!wantsTextToo) await sendTelegramMessage(result.reply);
     }
     res.sendStatus(200);
   } catch (error) {
@@ -2155,7 +2163,10 @@ async function executeApprovedAction(action) {
         const pdfBuffer = await generateSimplePdf(args.subject || 'AURA Report', args.pdf_content);
         attachment = { attachment_base64: pdfBuffer.toString('base64'), attachment_filename: 'report.pdf' };
       }
-      if (companionClient) {
+      if (isDirectSendConfigured()) {
+        await sendGmailMessage(AURA_OWNER_EMAIL, args.subject, args.body,
+          attachment ? { base64: attachment.attachment_base64, filename: attachment.attachment_filename } : null);
+      } else if (companionClient) {
         await companionClient.execute('send_email', { subject: args.subject, body: args.body, ...attachment });
       } else {
         let attachmentPath = null;
@@ -2177,7 +2188,10 @@ async function executeApprovedAction(action) {
         const pdfBuffer = await generateSimplePdf(args.subject || 'AURA Email', args.pdf_content);
         thirdPartyAttachment = { attachment_base64: pdfBuffer.toString('base64'), attachment_filename: 'attachment.pdf' };
       }
-      if (companionClient) {
+      if (isDirectSendConfigured()) {
+        await sendGmailMessage(args.to, args.subject, args.body,
+          thirdPartyAttachment ? { base64: thirdPartyAttachment.attachment_base64, filename: thirdPartyAttachment.attachment_filename } : null);
+      } else if (companionClient) {
         await companionClient.execute('send_email_to_recipient', { to: args.to, subject: args.subject, body: args.body, ...thirdPartyAttachment });
       } else {
         let thirdPartyAttachmentPath = null;

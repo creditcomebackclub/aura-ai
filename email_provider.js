@@ -107,10 +107,76 @@ async function getDirectUnreadEmails() {
   throw new Error('No direct email provider is configured.');
 }
 
+// Only Gmail send is implemented - it's the provider AURA already has a
+// refresh token for. The read-only token minted for getGmailUnread will
+// reject this with an insufficient-scope error until it's re-consented
+// with gmail.send (or the broad mail.google.com) added, since Google scopes
+// a refresh token to whatever was granted at authorization time.
+function isDirectSendConfigured() {
+  return process.env.EMAIL_PROVIDER === 'gmail' &&
+    Boolean(process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET && process.env.GMAIL_REFRESH_TOKEN);
+}
+
+function encodeBase64Url(buffer) {
+  return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Builds a raw RFC 2822 message (plain text, optionally with one binary
+// attachment as multipart/mixed) and sends it through Gmail's send endpoint,
+// which wants the whole MIME message base64url-encoded rather than separate
+// to/subject/body fields.
+async function sendGmailMessage(to, subject, body, attachment = null) {
+  const token = await refreshGoogleToken();
+  const boundary = `aura_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const headers = [
+    `To: ${to}`,
+    `Subject: ${subject || ''}`,
+    'MIME-Version: 1.0'
+  ];
+
+  let raw;
+  if (attachment) {
+    headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+    raw = [
+      ...headers,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      '',
+      body || '',
+      '',
+      `--${boundary}`,
+      `Content-Type: application/pdf; name="${attachment.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${attachment.filename}"`,
+      '',
+      attachment.base64,
+      '',
+      `--${boundary}--`
+    ].join('\r\n');
+  } else {
+    headers.push('Content-Type: text/plain; charset="UTF-8"');
+    raw = [...headers, '', body || ''].join('\r\n');
+  }
+
+  const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ raw: encodeBase64Url(Buffer.from(raw, 'utf8')) })
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Gmail send failed (${response.status}): ${errText}`);
+  }
+  return true;
+}
+
 module.exports = {
   decodeBase64Url,
   getGmailUnread,
   getOutlookUnread,
   isDirectEmailConfigured,
+  isDirectSendConfigured,
+  sendGmailMessage,
   getDirectUnreadEmails
 };
