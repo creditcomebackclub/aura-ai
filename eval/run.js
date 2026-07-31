@@ -15,7 +15,11 @@ async function runCase(testCase) {
     body: JSON.stringify({ text: testCase.input })
   });
   if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
-  const body = await response.json();
+  const raw = await response.text();
+  const lines = raw.split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const done = lines.find(line => line.type === 'done');
+  if (!done) throw new Error('no "done" line in NDJSON response');
+  const { type, ...body } = done;
   const usedTools = new Set((body.evidence || []).filter(item => item.ok).map(item => item.tool));
   const failures = [];
 
@@ -33,6 +37,9 @@ async function runCase(testCase) {
     if (body.reply.toLowerCase().includes(text.toLowerCase())) {
       failures.push(`reply included forbidden text "${text}"`);
     }
+  }
+  for (const tool of testCase.forbiddenTools || []) {
+    if (usedTools.has(tool)) failures.push(`forbidden tool called: ${tool}`);
   }
   return { name: testCase.name, passed: failures.length === 0, failures, usedTools: [...usedTools], reply: body.reply };
 }
