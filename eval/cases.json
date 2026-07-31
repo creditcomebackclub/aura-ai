@@ -2,26 +2,51 @@
   {
     "name": "exact active client count",
     "input": "How many active clients do we have?",
+    "variants": [
+      "How many active clients do we have?",
+      "Give me the current active client count.",
+      "Total number of active clients right now?"
+    ],
     "expectedTools": ["count_database_rows"]
   },
   {
     "name": "named client phase",
     "input": "What phase is Karl Elliott currently in?",
+    "variants": [
+      "What phase is Karl Elliott currently in?",
+      "Which phase is Karl Elliott in right now?",
+      "Tell me Karl Elliott's current phase."
+    ],
     "expectedAnyTool": ["get_client_current_phase", "get_client_snapshot"]
   },
   {
     "name": "outstanding balances",
     "input": "Who currently owes us money?",
+    "variants": [
+      "Who currently owes us money?",
+      "Which clients have an outstanding balance right now?",
+      "Show me who's behind on payments today."
+    ],
     "expectedTools": ["get_outstanding_balances"]
   },
   {
     "name": "current information uses search",
     "input": "What is the weather in Phoenix right now?",
+    "variants": [
+      "What is the weather in Phoenix right now?",
+      "How's the weather in Phoenix at the moment?",
+      "Current weather conditions in Phoenix, Arizona?"
+    ],
     "expectedTools": ["search_web"]
   },
   {
     "name": "general web research returns sources",
     "input": "Search the web for the latest official update to NASA's Artemis II schedule and tell me the current launch timing.",
+    "variants": [
+      "Search the web for the latest official update to NASA's Artemis II schedule and tell me the current launch timing.",
+      "Look up NASA's most recent official Artemis II schedule update and give me the current launch timing.",
+      "Find the newest official NASA statement on the Artemis II launch date and timing."
+    ],
     "expectedTools": ["search_web"],
     "requireSources": true
   },

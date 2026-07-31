@@ -1611,11 +1611,113 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
 // behavior to before streaming existed - the model calls still stream
 // internally, but nothing observes it mid-flight, so the returned value is
 // the same complete result either way.
-async function processOwnerText(text, { onSentence } = {}) {
+async function processOwnerText(text, { onSentence, isolated = false } = {}) {
   {
     if (typeof text !== 'string' || !text.trim() || text.length > 10000) {
       throw new Error('Text must be between 1 and 10,000 characters.');
     }
+    // isolated: true runs a turn against a throwaway, empty history instead
+    // of the real owner conversation, and skips every persistent write (no
+    // conversation row, no memory extraction, no summary refresh). Exists
+    // for eval/run.js: repeatedly firing test questions into the shared
+    // live conversation taught the model "I already answered this" and
+    // biased later tool choices toward whatever tool the previous eval
+    // case happened to call, which looked like flaky tool-selection but
+    // was really eval self-pollution. Isolated turns can't leak into or
+    // out of real usage, so each one is judged on the question alone.
+    if (isolated) {
+      const chatHistory = [{ role: 'system', content: AURA_SOUL }, { role: 'user', content: text }];
+      const turnTools = selectToolsForTurn(text);
+      let response = await createBrainCompletionStreamed({
+        messages: chatHistory,
+        tools: turnTools,
+        tool_choice: 'auto',
+        onSentence,
+        ...(modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
+        _traceLabel: 'isolated round 0'
+      });
+      const evidence = [];
+      const webSources = [];
+      const webResults = [];
+      const seenWebSources = new Set();
+      for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
+        const responseMessage = response.choices[0].message;
+        chatHistory.push(responseMessage);
+        for (const toolCall of responseMessage.tool_calls) {
+          let functionResult;
+          try {
+            const toolName = toolCall?.function?.name;
+            if (toolName === 'search_web') {
+              const publicSearchInput = validatePublicSearchInput(text);
+              await dailyWebSearchLimiter.consume();
+            }
+            functionResult = await handleToolCall(toolCall, { turn: -1, requestStartedAtMs: Date.now(), userInstruction: text });
+          } catch (toolError) {
+            functionResult = JSON.stringify({
+              tool: toolCall?.function?.name || 'unknown',
+              ok: false,
+              error: toolError.message
+            });
+          }
+          let parsedToolResult;
+          try {
+            parsedToolResult = JSON.parse(functionResult);
+          } catch {
+            parsedToolResult = { ok: false };
+          }
+          evidence.push({
+            tool: toolCall?.function?.name || 'unknown',
+            ok: parsedToolResult.ok === true
+          });
+          if (toolCall?.function?.name === 'search_web' && parsedToolResult.ok === true) {
+            webResults.push({
+              answer: parsedToolResult.data?.answer || '',
+              citation_blocks: parsedToolResult.data?.citation_blocks || [],
+              citation_status: parsedToolResult.data?.citation_status || 'unknown'
+            });
+            for (const source of parsedToolResult.data?.sources || []) {
+              if (!source?.url || seenWebSources.has(source.url)) continue;
+              seenWebSources.add(source.url);
+              webSources.push(source);
+            }
+          }
+          chatHistory.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            name: toolCall.function.name,
+            content: functionResult
+          });
+        }
+        response = await createBrainCompletionStreamed({
+          messages: chatHistory,
+          tools: turnTools,
+          tool_choice: 'auto',
+          onSentence,
+          _traceLabel: `isolated round ${round + 1}`
+        });
+      }
+      if (response.choices[0].message.tool_calls) {
+        chatHistory.push(response.choices[0].message);
+        for (const toolCall of response.choices[0].message.tool_calls) {
+          chatHistory.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            name: toolCall.function.name,
+            content: 'Tool budget exhausted. Clearly say the lookup is incomplete; do not infer missing facts.'
+          });
+        }
+        response = await createBrainCompletionStreamed({ messages: chatHistory, onSentence, _traceLabel: 'isolated round cap exhausted' });
+      }
+      const reply = response.choices[0].message.content || "Sorry, I wasn't able to put together an answer for that.";
+      return {
+        reply,
+        evidence,
+        sources: webSources.slice(0, 12),
+        web_results: webResults.slice(0, 2),
+        brain: { tier: 'isolated_eval', model: chatModel }
+      };
+    }
+
     // One turn per owner message. A staged deletion can only be confirmed on a
     // later turn than it was proposed, which forces a real reply in between.
     const requestTurn = ++conversationTurn;
@@ -1937,6 +2039,7 @@ app.post('/api/chat', async (req, res) => {
   };
   try {
     const result = await processOwnerText(req.body.text, {
+      isolated: req.body.eval === true,
       onSentence: sentence => {
         startStream();
         res.write(JSON.stringify({ type: 'sentence', text: sentence }) + '\n');
