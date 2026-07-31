@@ -1624,7 +1624,14 @@ async function processOwnerText(text, { onSentence } = {}) {
     const priorMessages = memoryCommand
       ? await recentConversationMessages(20)
       : [];
-    const userMessage = await addConversationMessage('user', text, {
+    // Not awaited here - this Supabase write has nothing to do with building
+    // context below, so blocking on it first just serializes a network round
+    // trip in front of another one for no reason. It gets folded into the
+    // same Promise.all as the context build further down (ordinary path), or
+    // awaited directly right here (memoryCommand path) - either way it's
+    // guaranteed to have landed before the matching assistant reply is
+    // written, which is the only ordering guarantee that actually matters.
+    const userMessagePromise = addConversationMessage('user', text, {
       memory_mode: memoryCommand ? 'explicit_sync' : 'automatic',
       memory_command: memoryCommand?.type || null
     });
@@ -1632,6 +1639,7 @@ async function processOwnerText(text, { onSentence } = {}) {
     // Explicit memory commands are deterministic. They should not depend on a
     // model deciding whether to call a memory tool.
     if (memoryCommand) {
+      await userMessagePromise;
       let reply;
       let commandResult;
       if (memoryCommand.type === 'forget') {
@@ -1681,7 +1689,7 @@ async function processOwnerText(text, { onSentence } = {}) {
     }
 
     const memoryJobPromise = memoryExtractionQueue
-      ? memoryExtractionQueue.enqueueMessage(userMessage.id)
+      ? userMessagePromise.then(userMessage => memoryExtractionQueue.enqueueMessage(userMessage.id))
       : Promise.resolve(null);
     if (!memoryExtractionQueue) {
       setImmediate(() => {
@@ -1692,7 +1700,8 @@ async function processOwnerText(text, { onSentence } = {}) {
     }
 
     const contextBuildStartedAtMs = Date.now();
-    const [memoryJob, memoryContext, conversationContext] = await Promise.all([
+    const [, memoryJob, memoryContext, conversationContext] = await Promise.all([
+      userMessagePromise,
       memoryJobPromise,
       memoryV2.buildContext(text),
       cloudState
@@ -1733,6 +1742,7 @@ async function processOwnerText(text, { onSentence } = {}) {
       tools: turnTools,
       tool_choice: 'auto',
       onSentence,
+      ...(modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
       _traceLabel: 'round 0'
     });
 

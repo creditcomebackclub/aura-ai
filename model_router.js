@@ -12,6 +12,12 @@ function resolveModelConfig(env = process.env) {
   const primaryModel = env.AURA_CHAT_MODEL ||
     (provider === 'deepseek' ? 'deepseek-chat' : 'gpt-5.6-sol');
   const memoryModel = env.AURA_MEMORY_MODEL || 'gpt-5.6-luna';
+  // Opt-in only: unset means the tool-routing round uses primaryModel same
+  // as before. When set, it's used ONLY for the first (tool-decision) round
+  // of a turn - if that round doesn't end up calling a tool, its own text
+  // becomes the final reply (faster, but voiced by the router model instead
+  // of primaryModel). Any round after a tool call still uses primaryModel.
+  const routerModel = env.AURA_ROUTER_MODEL || null;
   const requestedEffort = env.AURA_REASONING_EFFORT || 'medium';
   const reasoningEffort = OPENAI_REASONING_EFFORTS.has(requestedEffort)
     ? requestedEffort
@@ -20,6 +26,7 @@ function resolveModelConfig(env = process.env) {
     provider,
     primaryModel,
     memoryModel,
+    routerModel,
     reasoningEffort
   };
 }
