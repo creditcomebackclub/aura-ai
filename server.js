@@ -30,7 +30,7 @@ const {
 } = require('./memory_v2');
 const {
   parseAndAuthorizeToolCall,
-  validatePublicSearchInput
+  resolveOwnerSearchInput
 } = require('./agent_policy');
 const { CompanionClient } = require('./companion_client');
 const { SupabaseStateStore } = require('./supabase_state_store');
@@ -1648,7 +1648,12 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
           try {
             const toolName = toolCall?.function?.name;
             if (toolName === 'search_web') {
-              const publicSearchInput = validatePublicSearchInput(text);
+              // Screen-only here: this path deliberately does not thread the
+              // owner's text into handleToolCall, so the model's own validated
+              // query stands as the search input either way. The call is kept
+              // for its credential screen, which must gate an isolated turn
+              // exactly as it gates a live one.
+              resolveOwnerSearchInput(text);
               await dailyWebSearchLimiter.consume();
             }
             functionResult = await handleToolCall(toolCall, { turn: -1, requestStartedAtMs: Date.now(), userInstruction: text });
@@ -1895,7 +1900,23 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
               );
             }
             webSearchAttempts += 1;
-            const publicSearchInput = validatePublicSearchInput(text);
+            // Null here means the owner's message is too long to serve as the
+            // search input itself; handleToolCall then falls back to the
+            // model's own `query` argument, which agent_policy validates
+            // independently (500-character cap plus the same secret screen).
+            // Only a credential in the message throws - and it throws before
+            // consume(), so a refused search never burns daily quota.
+            let publicSearchInput;
+            try {
+              publicSearchInput = resolveOwnerSearchInput(text);
+            } catch (inputError) {
+              forceToolFreeAnswer = true;
+              throw new WebSearchError(
+                inputError.message,
+                inputError.code || 'WEB_SEARCH_INVALID_INPUT',
+                inputError
+              );
+            }
             await dailyWebSearchLimiter.consume();
             const toolStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
             functionResult = await handleToolCall(toolCall, { publicSearchInput, turn: requestTurn, requestStartedAtMs });

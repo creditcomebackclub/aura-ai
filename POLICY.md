@@ -66,6 +66,31 @@ phrases, long hex blobs) so a credential can't leak out through a public search
 query. This validation happens *before* any tool executor runs, so a malformed
 or dangerous call never reaches `ccc_database.js`, Supabase, or an external API.
 
+**What actually gets searched.** AURA prefers the owner's own literal message
+over anything the model composes as the live-search input, so a public query is
+normally the owner's words rather than model-generated text. `server.js` resolves
+this through `resolveOwnerSearchInput`, which enforces two separate rules:
+
+- **Credential screen, at any length.** If the owner's message matches
+  `SEARCH_SECRET_PATTERNS`, the search is refused outright with
+  `WEB_SEARCH_SECRET_IN_INPUT` and a forced tool-free answer. This is checked
+  *before* `dailyWebSearchLimiter.consume()`, so a refused search never spends
+  quota.
+- **Length fallback, not failure.** `processOwnerText` accepts messages up to
+  10,000 characters, but the search input becomes the prompt for a web-enabled
+  sub-model, so an unbounded paste is both a token cost and a prompt-injection
+  surface. Past 1,000 characters the owner's message stops being usable *as* the
+  query and `handleToolCall` falls back to the model's own `query` argument —
+  which `validateToolArguments` independently caps at 500 characters and screens
+  with the same secret patterns. Either way, nothing longer than the owner's
+  1,000-character bound reaches the provider.
+
+The fallback matters because the alternative was a silent failure: a message
+between 1,001 and 10,000 characters was accepted by the conversation and then
+failed every web search in that turn. Note that the public-query context
+isolation described in §3 is what keeps private data out of a search; this
+resolution step is about credential leakage and input bounds, not that boundary.
+
 **Where to look, mechanically:** `agent_policy.js` is intentionally small
 (~170 lines) and has no dependency on Supabase, OpenAI, or Express — it is pure
 policy logic, which is what makes it independently testable (see

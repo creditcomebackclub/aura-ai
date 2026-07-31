@@ -45,6 +45,12 @@ const SEARCH_SECRET_PATTERNS = [
   /\b[a-f0-9]{48,}\b/i
 ];
 
+const OWNER_SEARCH_INPUT_MAX_LENGTH = 1000;
+
+function containsSearchSecret(value) {
+  return SEARCH_SECRET_PATTERNS.some(pattern => pattern.test(value));
+}
+
 function validatePublicSearchInput(value, maxLength = 1000) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('A public web search request is required.');
@@ -53,10 +59,41 @@ function validatePublicSearchInput(value, maxLength = 1000) {
   if (normalized.length > maxLength) {
     throw new Error(`Public web search requests must be ${maxLength} characters or fewer.`);
   }
-  if (SEARCH_SECRET_PATTERNS.some(pattern => pattern.test(normalized))) {
+  if (containsSearchSecret(normalized)) {
     throw new Error('Search query appears to contain a credential or secret.');
   }
   return normalized;
+}
+
+// Decides whether the owner's own message can stand in as the live-search
+// input. AURA prefers the owner's literal words over anything the model
+// composes, but processOwnerText accepts messages up to 10,000 characters
+// while a usable search input is far shorter - and that input becomes the
+// prompt for a web-enabled sub-model, so an unbounded paste is both a token
+// cost and a prompt-injection surface. Past maxLength this returns null, and
+// the caller falls back to the model's own `query` argument, which
+// validateToolArguments already caps at 500 characters and screens with the
+// same secret patterns. Returning null rather than throwing is the entire
+// point: pasting an article or a long error log alongside a short question
+// used to fail the search outright, with nothing explaining why.
+//
+// The credential screen is deliberately NOT length-gated. A pasted secret
+// must block the public search at any message length, so this throws instead
+// of falling back - the model's query could paraphrase the secret's context
+// even though the secret itself would be screened out of args.query.
+function resolveOwnerSearchInput(value, maxLength = OWNER_SEARCH_INPUT_MAX_LENGTH) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('A public web search request is required.');
+  }
+  const normalized = value.trim();
+  if (containsSearchSecret(normalized)) {
+    const error = new Error(
+      'That message looks like it contains a credential or secret, so it was not sent to a public web search.'
+    );
+    error.code = 'WEB_SEARCH_SECRET_IN_INPUT';
+    throw error;
+  }
+  return normalized.length > maxLength ? null : normalized;
 }
 
 function getToolPolicy(name) {
@@ -185,9 +222,12 @@ function parseAndAuthorizeToolCall(toolCall) {
 }
 
 module.exports = {
+  OWNER_SEARCH_INPUT_MAX_LENGTH,
   TOOL_POLICIES,
+  containsSearchSecret,
   getToolPolicy,
   parseAndAuthorizeToolCall,
+  resolveOwnerSearchInput,
   validatePublicSearchInput,
   validateToolArguments
 };

@@ -14,8 +14,10 @@ const {
 } = require('../memory_v2');
 const { brainRequestOptions, resolveModelConfig } = require('../model_router');
 const {
+  OWNER_SEARCH_INPUT_MAX_LENGTH,
   getToolPolicy,
   parseAndAuthorizeToolCall,
+  resolveOwnerSearchInput,
   validatePublicSearchInput
 } = require('../agent_policy');
 const {
@@ -127,6 +129,65 @@ test('public search input is isolated, bounded, and credential-safe', () => {
     () => validatePublicSearchInput(`my token is ${'a'.repeat(64)}`),
     /credential or secret/
   );
+});
+
+// processOwnerText accepts messages up to 10,000 characters, but the owner's
+// message can only stand in AS the search input while it is short enough to be
+// one. It used to be validated against the 1,000-character default instead, so
+// every message in between was accepted by the conversation and then failed
+// every web search in that turn - length-dependent, so it looked random.
+test('an over-long owner message falls back to the model query instead of failing the search', () => {
+  const shortMessage = 'what is the weather in Sebastian Florida';
+  assert.equal(resolveOwnerSearchInput(shortMessage), shortMessage);
+
+  // Exactly at the cap the owner's own words are still used verbatim.
+  // Filler is deliberately non-hex: a long [a-f0-9] run is itself one of the
+  // secret patterns, and this test is about length alone.
+  const atCap = 'z'.repeat(OWNER_SEARCH_INPUT_MAX_LENGTH);
+  assert.equal(resolveOwnerSearchInput(atCap), atCap);
+
+  // One character past it, and everywhere across the 1,001-10,000 range that
+  // processOwnerText accepts, resolution yields null rather than throwing.
+  // null is what makes handleToolCall's `options.publicSearchInput ||
+  // args.query` fall through to the model's own distilled query.
+  for (const length of [OWNER_SEARCH_INPUT_MAX_LENGTH + 1, 2500, 9999, 10000]) {
+    assert.equal(
+      resolveOwnerSearchInput('z'.repeat(length)),
+      null,
+      `expected a ${length}-character message to fall back, not throw`
+    );
+  }
+
+  // The realistic shape: a pasted article with a short question in it. The
+  // question is what the model puts in args.query; the paste no longer kills
+  // the search on its way there.
+  const pastedArticle = `${'lorem ipsum dolor sit amet '.repeat(200)}\n\nIs any of this still accurate?`;
+  assert.ok(pastedArticle.length > OWNER_SEARCH_INPUT_MAX_LENGTH);
+  assert.ok(pastedArticle.length <= 10000);
+  assert.equal(resolveOwnerSearchInput(pastedArticle), null);
+
+  // Falling back is not a hole: the model's query is independently bounded.
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('search_web', { query: 'z'.repeat(501) })),
+    /query is too long/
+  );
+});
+
+test('a pasted credential blocks a public search at any owner message length', () => {
+  const secret = `my api_key = ${'a'.repeat(48)}`;
+  const longMessageWithSecret = `${'context. '.repeat(400)}${secret}`;
+  assert.ok(longMessageWithSecret.length > OWNER_SEARCH_INPUT_MAX_LENGTH);
+
+  // Length no longer short-circuits the credential screen - previously this
+  // threw the length error first, so the more serious reason was never named.
+  for (const value of [secret, longMessageWithSecret]) {
+    assert.throws(
+      () => resolveOwnerSearchInput(value),
+      error => error.code === 'WEB_SEARCH_SECRET_IN_INPUT' && /credential or secret/.test(error.message)
+    );
+  }
+
+  assert.throws(() => resolveOwnerSearchInput('   '), /public web search request is required/);
 });
 
 test('memory deduplicates, retrieves relevant facts, and forgets', async () => {
