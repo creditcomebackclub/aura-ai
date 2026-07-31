@@ -1143,6 +1143,43 @@ const PRIVATE_CONTEXT_TOOLS = new Set(
   tools.map(tool => tool.function.name).filter(name => name !== 'search_web')
 );
 
+// The CCC business-intelligence/database tools (and the test-letter-deletion
+// tools that live next to them) make up nearly half of the tool-schema bytes
+// sent to the model on every single turn, including plain chit-chat that
+// could never need them. Drop them from the schema unless the turn's text
+// actually looks business/database-related - cuts prompt-processing latency
+// on the common case without touching what the model can do once it's
+// relevant. False negatives just mean the tool shows up on a later turn once
+// the owner's wording trips the match, same as a human assistant asking
+// "wait, which client?" before pulling up the ledger.
+const BUSINESS_INTEL_TOOL_NAMES = new Set([
+  'list_database_tables',
+  'get_table_schema',
+  'query_database_table',
+  'get_outstanding_balances',
+  'list_deletable_test_letters',
+  'propose_test_letter_deletion',
+  'confirm_test_letter_deletion',
+  'get_client_snapshot',
+  'get_client_current_phase',
+  'count_database_rows'
+]);
+const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
+  '\\b(' + [
+    'client', 'clients', 'customer', 'customers', 'balance', 'balances', 'owe', 'owes',
+    'owing', 'invoice', 'invoices', 'payment', 'payments', 'paid', 'unpaid', 'delinquent',
+    'overdue', 'database', 'table', 'tables', 'row', 'rows', 'letter', 'letters',
+    'furnisher', 'furnishers', 'phase', 'dispute', 'disputes', 'ledger', 'finance',
+    'financial', 'revenue', 'mailed', 'scratch', 'ccc', 'credit comeback', 'how many'
+  ].join('|') + ')\\b',
+  'i'
+);
+
+function selectToolsForTurn(text) {
+  if (BUSINESS_INTEL_KEYWORD_PATTERN.test(text || '')) return tools;
+  return tools.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
+}
+
 // Tool Executors
 // Deletion requires the user to actually say yes. A proposal is stamped with the
 // turn it was made in, and the matching confirmation is only honoured on a LATER
@@ -1689,10 +1726,11 @@ async function processOwnerText(text, { onSentence } = {}) {
     };
 
     const chatHistory = [systemPrompt, ...messages];
+    const turnTools = selectToolsForTurn(text);
 
     let response = await createBrainCompletionStreamed({
       messages: chatHistory,
-      tools: tools,
+      tools: turnTools,
       tool_choice: 'auto',
       onSentence,
       _traceLabel: 'round 0'
@@ -1815,7 +1853,7 @@ async function processOwnerText(text, { onSentence } = {}) {
           })
         : await createBrainCompletionStreamed({
             messages: chatHistory,
-            tools: tools,
+            tools: turnTools,
             tool_choice: 'auto',
             onSentence,
             _traceLabel: `round ${round + 1}`
