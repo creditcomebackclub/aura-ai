@@ -1203,8 +1203,22 @@ const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
   'i'
 );
 
-function selectToolsForTurn(text) {
-  if (BUSINESS_INTEL_KEYWORD_PATTERN.test(text || '')) return tools;
+// A short follow-up ("What about for his wife, Mary?", "Is her POA signed?")
+// carries no business keyword of its own - it leans entirely on the client
+// already established a turn or two earlier. Checking `text` alone drops
+// every business tool for that turn, and the model has no way to tell the
+// difference between "these tools don't exist" and "not offered this turn" -
+// it reports the former, which reads as a false capability claim. Checking
+// the tail of recent history too means a follow-up inherits its parent
+// turn's relevance instead of needing its own trigger word.
+const BUSINESS_INTEL_HISTORY_LOOKBACK = 6;
+
+function selectToolsForTurn(text, recentMessages = []) {
+  const recentText = recentMessages
+    .slice(-BUSINESS_INTEL_HISTORY_LOOKBACK)
+    .map(message => (typeof message.content === 'string' ? message.content : ''))
+    .join(' ');
+  if (BUSINESS_INTEL_KEYWORD_PATTERN.test(`${recentText} ${text || ''}`)) return tools;
   return tools.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
 }
 
@@ -1880,7 +1894,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     };
 
     const chatHistory = [systemPrompt, ...messages];
-    const turnTools = selectToolsForTurn(text);
+    const turnTools = selectToolsForTurn(text, messages);
 
     let response = await createBrainCompletionStreamed({
       messages: chatHistory,
