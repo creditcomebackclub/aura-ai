@@ -521,43 +521,109 @@ function releaseAudioUrl() {
   }
 }
 
-// Loads and plays a reply, unless the user interrupted while it was generating.
-function playAudioBlob(blob) {
-  if (playbackCancelled) return;
+// Chained playback queue for streamed replies: each reply is now spoken as
+// a sequence of per-sentence audio clips instead of one blob, so she can
+// start talking as soon as the first sentence is ready rather than waiting
+// for the whole reply to finish generating. voiceQueueTail is a running
+// promise chain - each call appends "wait for this clip's TTS, then play
+// it and wait for it to finish" as a new link, which guarantees clips play
+// in order even though their TTS fetches all fire concurrently (sentence 2
+// starts synthesizing while sentence 1 is still playing, so it's usually
+// ready the instant sentence 1 ends).
+let voiceQueueTail = Promise.resolve();
 
-  releaseAudioUrl();
-  currentAudioUrl = URL.createObjectURL(blob);
-  audioPlayer.src = currentAudioUrl;
+function resetVoiceQueue() {
+  voiceQueueTail = Promise.resolve();
+}
 
-  setOrbState('speaking', 'Speaking... Tap to stop');
-  isSpeaking = true;
+// Plays one clip and resolves once it's done - on natural end, on error, or
+// on interruption (stopSpeaking() calls audioPlayer.pause(), which fires a
+// 'pause' event; since pause() alone never fires 'ended', that event is the
+// only way this promise would otherwise hang forever after an interrupt).
+function playBlobAndWait(blob) {
+  return new Promise(resolve => {
+    if (playbackCancelled) {
+      resolve();
+      return;
+    }
+    releaseAudioUrl();
+    currentAudioUrl = URL.createObjectURL(blob);
+    audioPlayer.src = currentAudioUrl;
 
-  audioPlayer.onplay = startVoiceWave;
-  audioPlayer.onended = () => {
+    const finish = () => {
+      audioPlayer.removeEventListener('ended', finish);
+      audioPlayer.removeEventListener('error', finish);
+      audioPlayer.removeEventListener('pause', onPause);
+      resolve();
+    };
+    const onPause = () => {
+      if (playbackCancelled) finish();
+    };
+    audioPlayer.addEventListener('ended', finish);
+    audioPlayer.addEventListener('error', finish);
+    audioPlayer.addEventListener('pause', onPause);
+
+    ensureAudioGraph()
+      .catch(() => false)
+      .finally(() => {
+        if (playbackCancelled) {
+          finish();
+          return;
+        }
+        audioPlayer.play().catch(error => {
+          console.error('Audio playback error:', error);
+          finish();
+        });
+      });
+  });
+}
+
+// Fetches TTS for one sentence immediately (so synthesis overlaps with
+// whatever's currently playing) and appends its playback as the next link
+// in the queue. isFirst puts the orb into "speaking" state right away,
+// matching the old single-blob behavior of setting state before playback
+// starts rather than waiting for audio to actually begin.
+function enqueueSentenceAudio(text, isFirst) {
+  if (isFirst) {
+    setOrbState('speaking', 'Speaking... Tap to stop');
+    isSpeaking = true;
+    audioPlayer.onplay = startVoiceWave;
+  }
+  const ttsPromise = authenticatedFetch('/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text })
+  }).then(res => {
+    if (!res.ok) throw new Error('TTS API failed');
+    return res.blob();
+  });
+
+  voiceQueueTail = voiceQueueTail.then(async () => {
+    if (playbackCancelled) return;
+    let blob;
+    try {
+      blob = await ttsPromise;
+    } catch (error) {
+      console.error('TTS error:', error);
+      return;
+    }
+    if (playbackCancelled) return;
+    await playBlobAndWait(blob);
+  });
+}
+
+// Called once the whole reply is known to be fully queued (the stream's
+// 'done' event arrived) - the actual "return to idle" only happens once
+// every queued clip has finished playing, not the moment this is called.
+function finishVoiceQueue() {
+  voiceQueueTail = voiceQueueTail.then(() => {
+    if (playbackCancelled) return;
     isSpeaking = false;
     stopVoiceWave();
     releaseAudioUrl();
     setOrbState('idle', 'Tap to talk to AURA');
     showSearchEvidence([], []);
-  };
-  audioPlayer.onerror = () => {
-    isSpeaking = false;
-    stopVoiceWave();
-    releaseAudioUrl();
-    setOrbState('error', 'Voice playback failed');
-    showSearchEvidence([], []);
-  };
-
-  ensureAudioGraph()
-    .catch(() => false)
-    .finally(() => {
-      audioPlayer.play().catch(error => {
-        console.error('Audio playback error:', error);
-        isSpeaking = false;
-        stopVoiceWave();
-        setOrbState('error', 'Tap to enable voice');
-      });
-    });
+  });
 }
 
 // WebSocket Reconnection Handling
@@ -713,7 +779,14 @@ async function processAudio(audioBlob) {
 
     setOrbState('thinking', 'Thinking...');
 
-    // 2. Send text to the chat backend
+    // 2. Send text to the chat backend. The response is newline-delimited
+    // JSON, not one object - a `sentence` event per completed sentence of
+    // the reply (as soon as the model has generated it, before the rest of
+    // the reply even exists), then one final `done` event carrying
+    // everything a single JSON response used to carry. Each sentence is
+    // queued for TTS/playback as it arrives (see enqueueSentenceAudio) so
+    // she starts speaking the first sentence while later ones are still
+    // being generated, instead of waiting for the whole reply.
     const chatRes = await authenticatedFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -721,27 +794,60 @@ async function processAudio(audioBlob) {
     });
 
     if (!chatRes.ok) throw new Error('Chat API failed');
-    const { reply, sources = [], web_results: webResults = [] } = await chatRes.json();
+
+    resetVoiceQueue();
+    const reader = chatRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sentenceCount = 0;
+    let finalResult = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex;
+      while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === 'sentence') {
+          sentenceCount += 1;
+          enqueueSentenceAudio(event.text, sentenceCount === 1);
+        } else if (event.type === 'done') {
+          finalResult = event;
+        } else if (event.type === 'error') {
+          throw new Error(event.error);
+        }
+      }
+    }
+
+    if (!finalResult) throw new Error('Chat stream ended without a result.');
+    const { reply, sources = [], web_results: webResults = [] } = finalResult;
     console.log('AURA:', reply);
 
-    // 3. Fetch TTS from Cartesia proxy
-    setOrbState('thinking', 'Generating Voice...');
-    const ttsRes = await authenticatedFetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: reply })
-    });
+    // Fallback for the rare case nothing streamed as sentences (e.g. an
+    // empty reply) - still speak the full reply as one clip rather than
+    // silently saying nothing.
+    if (sentenceCount === 0 && reply) {
+      enqueueSentenceAudio(reply, true);
+    }
 
-    if (!ttsRes.ok) throw new Error('TTS API failed');
-
-    // 4. Play audio. Evidence is shown right as playback starts, not the
-    // moment the reply text arrives - otherwise the panel appears during
-    // "Generating Voice..." well before she actually starts talking.
-    const blob = await ttsRes.blob();
+    // Evidence is shown once the reply is fully known, which lands close to
+    // when the last sentence starts playing rather than the first - sources
+    // and evidence are only fully resolved once the whole tool loop
+    // finishes, so this is the earliest point they can be shown accurately.
     showSearchEvidence(webResults, sources, reply);
-    playAudioBlob(blob);
+    finishVoiceQueue();
   } catch (err) {
     console.error(err);
+    // Halts any sentences already queued/playing from this same turn before
+    // the error - startListening() resets this back to false at the start
+    // of the next turn, same as a manual interrupt.
+    playbackCancelled = true;
+    audioPlayer.pause();
+    releaseAudioUrl();
     showSearchEvidence([], []);
     setOrbState('error', 'Error occurred. Tap to retry.');
     isSpeaking = false;

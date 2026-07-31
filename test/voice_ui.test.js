@@ -31,11 +31,12 @@ test('the search-results panel is non-persistent and appears only with content',
   assert.match(app, /sourcePanel\.classList\.toggle\('visible',\s*hasContent\)/);
   assert.match(app, /sourcePanel\.setAttribute\('aria-hidden'/);
   // Cleared at the start of every new listen, on error, and now also right
-  // when she finishes speaking (onended) / is interrupted (stopSpeaking) -
-  // so old text doesn't linger on screen until the next interaction starts.
+  // when she finishes speaking the whole queued reply (finishVoiceQueue) /
+  // is interrupted (stopSpeaking) - so old text doesn't linger on screen
+  // until the next interaction starts.
   assert.match(app, /showSearchEvidence\(\[\],\s*\[\]\)/);
-  const onended = app.slice(app.indexOf('audioPlayer.onended = () => {'), app.indexOf('audioPlayer.onerror'));
-  assert.match(onended, /showSearchEvidence\(\[\],\s*\[\]\)/);
+  const finishVoiceQueueFn = app.slice(app.indexOf('function finishVoiceQueue()'), app.indexOf('function finishVoiceQueue()') + 400);
+  assert.match(finishVoiceQueueFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
   const stopSpeakingFn = app.slice(app.indexOf('function stopSpeaking()'), app.indexOf('function releaseAudioUrl'));
   assert.match(stopSpeakingFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
 });
@@ -71,17 +72,18 @@ test('the search panel sits right of the wave, never over it, and syncs to speec
   // drift structurally impossible rather than merely fixed once.
   assert.match(css, /--wave-width:\s*min\(82vw,\s*560px\)/);
   assert.match(css, /#voice-wave\s*\{[^}]*width:\s*var\(--wave-width\)/s);
-  // Evidence must be shown at the point playback actually begins, not the
-  // moment the reply text arrives - otherwise the panel appears during
-  // "Generating Voice..." well before she starts talking. Assert the call
-  // sits after the TTS fetch resolves and immediately alongside playAudioBlob.
+  // Evidence must be shown once the full reply/sources are known (the
+  // stream's `done` event), not the moment the first sentence starts
+  // playing - sources/evidence aren't fully resolved until the tool loop
+  // finishes. Assert it's shown after the streaming read loop and before
+  // the queue is told no more sentences are coming (finishVoiceQueue).
   const processAudio = app.slice(app.indexOf('async function processAudio'));
-  const ttsIndex = processAudio.indexOf("await authenticatedFetch('/api/tts'");
+  const streamLoopIndex = processAudio.indexOf('reader.read()');
   const evidenceIndex = processAudio.indexOf('showSearchEvidence(webResults, sources, reply)');
-  const playIndex = processAudio.indexOf('playAudioBlob(blob)');
-  assert.ok(ttsIndex > -1 && evidenceIndex > -1 && playIndex > -1, 'expected all three calls to be present');
-  assert.ok(evidenceIndex > ttsIndex, 'evidence must show after the TTS fetch, not right after the chat reply');
-  assert.ok(evidenceIndex < playIndex, 'evidence must show at/just before playback starts, not after');
+  const finishIndex = processAudio.indexOf('finishVoiceQueue()');
+  assert.ok(streamLoopIndex > -1 && evidenceIndex > -1 && finishIndex > -1, 'expected all three to be present');
+  assert.ok(evidenceIndex > streamLoopIndex, 'evidence must show after the stream is fully read');
+  assert.ok(evidenceIndex < finishIndex, 'evidence must show before the queue is marked finished');
 });
 
 test('on a phone the panel docks below the orb/wave instead of beside them', () => {
@@ -102,7 +104,11 @@ test('waveform is driven by the actual AURA audio element', () => {
   assert.match(app, /createMediaElementSource\(audioPlayer\)/);
   assert.match(app, /getByteTimeDomainData\(waveformSamples\)/);
   assert.match(app, /audioPlayer\.onplay\s*=\s*startVoiceWave/);
-  assert.match(app, /audioPlayer\.onended\s*=/);
+  // Each queued sentence clip listens for its own end via addEventListener
+  // (not a single audioPlayer.onended= assignment) - playBlobAndWait needs
+  // to add/remove listeners per clip since the same <audio> element is
+  // reused sequentially for every sentence in a reply.
+  assert.match(app, /addEventListener\('ended',\s*finish\)/);
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)/);
 });
 
