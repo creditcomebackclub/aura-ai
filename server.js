@@ -297,6 +297,34 @@ const dailyWebSearchLimiter = createDailyWebSearchLimiter({
   timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
 });
 
+// The daily limit is a fuse on real OpenAI spend, and OpenAI bills per
+// web_search tool call it issues - not per search_web tool call AURA makes.
+// One search_web can run up to max_tool_calls provider searches, and several
+// failure modes still bill for searches that already ran. So each search_web
+// reserves one unit before it runs (a runaway loop can't outspend the fuse
+// while a call is in flight) and then settles the difference here against
+// what the provider reports: 0 billable refunds the reservation, 3 billable
+// tops it up by 2. A null/undefined count means we never found out - a timed
+// out request may have run searches server-side - so the reservation stands.
+// Tradeoff on the refund path: OpenAI may still bill a request we treat as
+// free (a partially-run request that errored). We accept undercounting there
+// rather than burning the owner's whole day on a flaky provider, which is
+// what charging up front and never refunding used to do.
+async function settleWebSearchUsage(billableSearches) {
+  const billed = Number(billableSearches);
+  if (!Number.isFinite(billed)) return;
+  const delta = Math.max(0, Math.trunc(billed)) - 1;
+  if (delta === 0) return;
+  try {
+    await dailyWebSearchLimiter.settle(delta);
+  } catch (error) {
+    console.error('[web_search] daily usage settlement failed', {
+      code: error?.code || 'WEB_SEARCH_SETTLE_ERROR',
+      delta
+    });
+  }
+}
+
 let localProfileWrite = Promise.resolve();
 const localProfileStore = {
   async getOwnerProfile() {
@@ -1645,14 +1673,17 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         chatHistory.push(responseMessage);
         for (const toolCall of responseMessage.tool_calls) {
           let functionResult;
+          let webSearchUnitReserved = false;
           try {
             const toolName = toolCall?.function?.name;
             if (toolName === 'search_web') {
               const publicSearchInput = validatePublicSearchInput(text);
               await dailyWebSearchLimiter.consume();
+              webSearchUnitReserved = true;
             }
             functionResult = await handleToolCall(toolCall, { turn: -1, requestStartedAtMs: Date.now(), userInstruction: text });
           } catch (toolError) {
+            if (webSearchUnitReserved) await settleWebSearchUsage(toolError?.billableSearches);
             functionResult = JSON.stringify({
               tool: toolCall?.function?.name || 'unknown',
               ok: false,
@@ -1670,6 +1701,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             ok: parsedToolResult.ok === true
           });
           if (toolCall?.function?.name === 'search_web' && parsedToolResult.ok === true) {
+            await settleWebSearchUsage(parsedToolResult.data?.billable_searches);
             webResults.push({
               answer: parsedToolResult.data?.answer || '',
               citation_blocks: parsedToolResult.data?.citation_blocks || [],
@@ -1856,6 +1888,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     const seenWebSources = new Set();
     let privateContextToolCompleted = false;
     let webSearchAttempts = 0;
+    let webSearchBilledSearches = 0;
     let webSearchSucceeded = false;
     for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
       const responseMessage = response.choices[0].message;
@@ -1870,6 +1903,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
 
       for (const toolCall of responseMessage.tool_calls) {
         let functionResult;
+        let webSearchUnitReserved = false;
         try {
           const toolName = toolCall?.function?.name;
           if (toolName === 'search_web') {
@@ -1887,7 +1921,12 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
                 'WEB_SEARCH_PRIVATE_DATA_BOUNDARY'
               );
             }
-            if (webSearchAttempts >= 2) {
+            // One retry, but only after an attempt that cost nothing (a
+            // provider error before any search ran). Retrying a failure that
+            // already billed searches would double this question's spend -
+            // and with up to max_tool_calls searches per attempt, that's how
+            // one question ends up costing six billable searches.
+            if (webSearchAttempts >= 2 || webSearchBilledSearches > 0) {
               forceToolFreeAnswer = true;
               throw new WebSearchError(
                 'The live-search attempt limit for this request has been reached.',
@@ -1897,6 +1936,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             webSearchAttempts += 1;
             const publicSearchInput = validatePublicSearchInput(text);
             await dailyWebSearchLimiter.consume();
+            webSearchUnitReserved = true;
             const toolStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
             functionResult = await handleToolCall(toolCall, { publicSearchInput, turn: requestTurn, requestStartedAtMs });
             if (process.env.AURA_TIMING_TRACE) {
@@ -1913,6 +1953,12 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             }
           }
         } catch (toolError) {
+          if (webSearchUnitReserved) {
+            const billed = Number(toolError?.billableSearches);
+            // Unknown (a timeout) counts as the one unit we reserved.
+            webSearchBilledSearches += Number.isFinite(billed) ? Math.max(0, Math.trunc(billed)) : 1;
+            await settleWebSearchUsage(toolError?.billableSearches);
+          }
           console.error(`[Tool ${toolCall?.function?.name || 'unknown'}]`, {
             code: toolError.code || 'TOOL_ERROR',
             status: toolError.status || toolError.cause?.status || null,
@@ -1935,6 +1981,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
           ok: parsedToolResult.ok === true
         });
         if (toolCall?.function?.name === 'search_web' && parsedToolResult.ok === true) {
+          await settleWebSearchUsage(parsedToolResult.data?.billable_searches);
           webSearchSucceeded = true;
           forceToolFreeAnswer = true;
           webResults.push({
@@ -1956,7 +2003,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         });
       }
 
-      if (webSearchAttempts >= 2) forceToolFreeAnswer = true;
+      if (webSearchAttempts >= 2 || webSearchBilledSearches > 0) forceToolFreeAnswer = true;
       response = forceToolFreeAnswer
         ? await createBrainCompletionStreamed({
             messages: chatHistory,
