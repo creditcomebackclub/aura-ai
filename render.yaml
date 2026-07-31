@@ -2,8 +2,8 @@ services:
   - type: web
     name: aura-brain
     runtime: docker
-    plan: free
-    branch: codex/aura-cloud-brain
+    plan: starter
+    branch: main
     healthCheckPath: /healthz
     autoDeployTrigger: commit
     envVars:
@@ -46,7 +46,7 @@ services:
       - key: AURA_WEB_SEARCH_TIMEOUT_MS
         value: "45000"
       - key: AURA_WEB_SEARCH_DAILY_LIMIT
-        value: "25"
+        value: "500"
       - key: AURA_SCHEDULER_ENABLED
         value: "true"
       - key: AURA_CRON_SECRET
