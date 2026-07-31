@@ -46,7 +46,7 @@ services:
       - key: AURA_WEB_SEARCH_TIMEOUT_MS
         value: "45000"
       - key: AURA_WEB_SEARCH_DAILY_LIMIT
-        value: "500"
+        value: "60"
       - key: AURA_SCHEDULER_ENABLED
         value: "true"
       - key: AURA_CRON_SECRET
