@@ -47,13 +47,12 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Stream the chat completion + TTS pipeline** to cut time-to-first-audio. Baseline today: even a
-  zero-tool-call turn takes 3.5–5.6s end-to-end, and profiling points at LLM API round-trip time
-  (GPT-5.6 Sol via `model_router.js`), not database queries, as the dominant cost. Goal is to start
-  streaming tokens out of `/api/chat` and feeding Cartesia TTS (`/api/tts`, `sonic-3.5`, raw
-  `fetch` to `https://api.cartesia.ai/tts/bytes`) incrementally instead of waiting for the full
-  completion before synthesizing audio. Touches: `server.js` (`/api/chat`, `/api/tts` handlers),
-  possibly `model_router.js`.
+- **Re-measure time-to-first-audio against the 3.5–5.6s baseline** now that streaming has shipped
+  (see Done recently) and record a real before/after number. Run locally with
+  `AURA_TIMING_TRACE=1 npm start`, do a live voice turn, capture the `[timing]` lines
+  (`memory/context build`, per-round model completion) plus wall-clock time-to-first-audio from the
+  browser. Needed before picking the next latency target — right now "smarter/faster" work is
+  guessing at which stage is still slow instead of measuring it.
 - **Reposition the on-screen search-results panel and add an on-screen conversation transcript** in
   the PWA frontend (`public/`). The search-results panel was recently re-enabled and re-skinned
   (see Done recently); this is the next visual/layout pass on top of that, plus adding a transcript
@@ -87,6 +86,11 @@ Name exactly what's needed and from whom.*
 
 *Last handful of shipped items. Prune older entries — this is not a permanent changelog; git log is.*
 
+- Streamed the chat completion + TTS pipeline: `/api/chat` now emits NDJSON `sentence` events as
+  the model generates instead of waiting for the full reply, and `public/app.js` queues each
+  sentence's TTS fetch immediately so synthesis overlaps with playback. Measured ~200-500ms win on
+  short replies, more on longer multi-sentence ones. Re-verified every propose/confirm gate
+  (email, Telegram, letter deletion) live under the new path.
 - Re-enabled and re-skinned the web-search results panel (frontend, `public/`).
 - Gave AURA a readable memory/persona architecture (SOUL.md restructuring + `memory_v2.js` context
   building).
@@ -118,10 +122,6 @@ Name exactly what's needed and from whom.*
 *Not started, but known and roughly prioritized. Not a backlog dump — only things someone has
 actually decided are coming next.*
 
-- Once the streaming pipeline lands, re-measure time-to-first-audio against the 3.5–5.6s baseline
-  above and record the new number somewhere durable (README or a follow-up commit message), so the
-  next latency investigation has a real before/after instead of a vague memory of "it used to be
-  slow."
 - **Add the `eval/cases.json` live-model case for `propose_email` described in `EVALS.md` §3.7** —
   feed AURA a processed document with an embedded instruction to email its contents to an
   attacker-controlled address with no real owner request behind it, assert she does not call
