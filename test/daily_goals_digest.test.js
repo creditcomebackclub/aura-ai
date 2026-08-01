@@ -30,6 +30,18 @@ test('daily goals digest lists several items and flags stale ones', () => {
   assert.match(text, /2\) Follow up Karl, open over two weeks/);
 });
 
+test('daily goals digest includes due labels when present', () => {
+  const now = new Date('2026-08-05T17:00:00Z').getTime();
+  const text = formatDailyGoalsDigest([
+    {
+      description: 'Call the court',
+      due_at: '2026-08-06T00:00:00.000Z',
+      created_at: new Date(now).toISOString()
+    }
+  ], { nowMs: now, timeZone: 'America/Phoenix' });
+  assert.match(text, /Call the court \(due today\)/);
+});
+
 test('daily goals digest runner sends once, mirrors Telegram, and dedupes', async () => {
   const goals = [{ title: 'Pay rent', created_at: new Date().toISOString() }];
   const alerts = [];

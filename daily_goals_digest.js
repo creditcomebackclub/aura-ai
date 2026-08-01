@@ -1,5 +1,7 @@
-// Morning open-goals push. Pure formatting lives here so tests don't boot
-// Express; the runner is injected with list/send deps from server.js.
+// Open-goals formatting helpers. The morning push itself lives in
+// morning_brief.js (goals + calendar + Blackboard).
+
+const { formatDueLabel } = require('./due_date');
 
 const STALE_MS = 14 * 86400000;
 
@@ -14,20 +16,26 @@ function isStaleGoal(goal, nowMs = Date.now()) {
 
 // Spoken + Telegram-friendly prose. Returns null when there's nothing to push
 // so empty mornings stay quiet.
-function formatDailyGoalsDigest(goals, { nowMs = Date.now() } = {}) {
+function formatDailyGoalsDigest(goals, { nowMs = Date.now(), timeZone = 'America/Phoenix' } = {}) {
   const open = (Array.isArray(goals) ? goals : [])
     .filter(goal => goal && goalTitle(goal));
   if (!open.length) return null;
 
   const items = open.map((goal, index) => {
     const title = goalTitle(goal);
-    const stale = isStaleGoal(goal, nowMs) ? ', open over two weeks' : '';
-    return `${index + 1}) ${title}${stale}`;
+    const dueLabel = formatDueLabel(goal.due_at, { timeZone, now: new Date(nowMs) });
+    const stale = isStaleGoal(goal, nowMs) ? 'open over two weeks' : null;
+    const tags = [dueLabel, stale].filter(Boolean);
+    const suffix = tags.length ? `, ${tags.join(', ')}` : '';
+    return `${index + 1}) ${title}${suffix}`;
   });
 
   if (open.length === 1) {
-    const stale = isStaleGoal(open[0], nowMs) ? " It's been open over two weeks." : '';
-    return `Morning — you've got one thing on your list: ${goalTitle(open[0])}.${stale} Ask me anytime if you want to update or knock it out.`;
+    const dueLabel = formatDueLabel(open[0].due_at, { timeZone, now: new Date(nowMs) });
+    const stale = isStaleGoal(open[0], nowMs);
+    const extras = [dueLabel, stale ? 'been over two weeks' : null].filter(Boolean);
+    const extraBit = extras.length ? ` (${extras.join(', ')})` : '';
+    return `Morning — you've got one thing on your list: ${goalTitle(open[0])}${extraBit}. Ask me anytime if you want to update or knock it out.`;
   }
 
   return `Morning — you've got ${open.length} things on your list: ${items.join('; ')}. Ask me anytime if you want to update or knock any out.`;
@@ -67,6 +75,8 @@ async function runDailyGoalsDigest({
     return { status: 'deduplicated', sent: false, count: goals.length, dedupeKey };
   }
 
+  // Telegram mirroring is owned by sendProactiveAlert when wired that way.
+  // Keep an opt-in path for callers that pass sendTelegram explicitly.
   let telegram = { attempted: false, sent: false };
   if (telegramConfigured && typeof sendTelegram === 'function') {
     telegram.attempted = true;

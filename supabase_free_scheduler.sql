@@ -85,8 +85,11 @@ select cron.schedule(
   $job$
 );
 
--- Morning open-goals digest at 7:30 AM Phoenix (14:30 UTC). Retries a few
--- minutes later so a sleeping Render Free instance still gets woken.
+-- Morning brief at 7:30 AM Phoenix (14:30 UTC): open goals (with due dates),
+-- today's calendar, and near-term Blackboard deadlines. Retries a few minutes
+-- later so a sleeping Render Free instance still gets woken. The route
+-- /internal/scheduled/daily-goals still works (alias); /morning-brief is the
+-- explicit name.
 select cron.unschedule(jobid)
 from cron.job
 where jobname = 'aura-daily-goals-730am-phoenix';
@@ -103,7 +106,7 @@ select cron.schedule(
           where name = 'aura_deadline_origin'
         ),
         '/'
-      ) || '/internal/scheduled/daily-goals',
+      ) || '/internal/scheduled/morning-brief',
       headers := jsonb_build_object(
         'Content-Type', 'application/json',
         'Accept', 'application/json',

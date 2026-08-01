@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check memory_v2.js && node --check memory_extraction_queue.js && node --check model_router.js && node --check web_search.js && node --check agent_policy.js && node --check owner_approval.js && node --check reply_stream.js && node --check blackboard_deadline_check.js && node --check scheduler_auth.js && node --check daily_goals_digest.js && node --check ccc_database.js && node --check scraper.js && node --check mac_integration.js && node --check companion_client.js && node --check companion_worker.js && node --check telegram.js && node --check pdf_generator.js && node --check wav_utils.js && node --check public/app.js",
+    "check": "node --check server.js && node --check memory_v2.js && node --check memory_extraction_queue.js && node --check model_router.js && node --check web_search.js && node --check agent_policy.js && node --check owner_approval.js && node --check reply_stream.js && node --check blackboard_deadline_check.js && node --check scheduler_auth.js && node --check daily_goals_digest.js && node --check due_date.js && node --check morning_brief.js && node --check ccc_database.js && node --check scraper.js && node --check mac_integration.js && node --check companion_client.js && node --check companion_worker.js && node --check telegram.js && node --check pdf_generator.js && node --check wav_utils.js && node --check public/app.js",
     "eval": "node eval/run.js",
     "eval:compare": "node eval/compare_models.js",
     "migrate:supabase": "node scripts/migrate-local-state.js",
