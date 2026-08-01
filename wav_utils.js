@@ -100,4 +100,53 @@ function splitIntoSentences(text) {
     .filter(Boolean);
 }
 
-module.exports = { parseWav, buildWavHeader, concatWavBuffers, splitIntoSentences };
+// Early first-audio helper: if the model hasn't finished a sentence yet, still
+// peel off a leading clause (comma/dash) or a ~6-word breath once more text
+// has arrived after it. Same "keep the last piece" contract as
+// splitIntoSentences — caller only emits parts.slice(0, -1).
+function splitLeadingClause(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return [];
+
+  // Non-greedy to the first clause mark. Require whitespace after the mark so
+  // thousands separators like "$1,000" stay intact. Short openers ("Yeah,")
+  // are intentionally allowed — they're the whole point of early first audio.
+  const clause = trimmed.match(/^([\s\S]{2,}?[,;:—–])\s+(\S[\s\S]*)$/);
+  if (clause) return [clause[1].trim(), clause[2]];
+
+  // Breath group: at least six words, then more text still arriving.
+  const breath = trimmed.match(/^((?:\S+\s+){5,}\S+)\s+(\S[\s\S]*)$/);
+  if (breath && breath[1].length >= 36) {
+    return [breath[1].trim(), breath[2]];
+  }
+  return [trimmed];
+}
+
+function splitSpeakable(text, { earlyClause = false } = {}) {
+  const sentences = splitIntoSentences(text);
+  if (!earlyClause || sentences.length !== 1) return sentences;
+  return splitLeadingClause(sentences[0]);
+}
+
+// After emitting `chunk` from `full` starting at `start`, return the index
+// just past the chunk (and any following whitespace) so the next drain can
+// resume cleanly even when the first clip was a clause, not a sentence.
+function advancePastEmitted(full, start, chunk) {
+  const from = String(full || '').slice(start);
+  const target = String(chunk || '');
+  if (!target) return start;
+  const idx = from.indexOf(target);
+  let end = start + (idx >= 0 ? idx + target.length : target.length);
+  while (end < full.length && /\s/.test(full[end])) end += 1;
+  return end;
+}
+
+module.exports = {
+  parseWav,
+  buildWavHeader,
+  concatWavBuffers,
+  splitIntoSentences,
+  splitSpeakable,
+  splitLeadingClause,
+  advancePastEmitted
+};
