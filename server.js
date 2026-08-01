@@ -38,6 +38,10 @@ const {
   isClearOwnerApproval,
   isClearOwnerRefusal
 } = require('./owner_approval');
+const {
+  createSentenceGate,
+  emitToolWorkingBeat
+} = require('./reply_stream');
 const { CompanionClient } = require('./companion_client');
 const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
@@ -1251,34 +1255,6 @@ function selectToolsForTurn(text, recentMessages = []) {
   return tools.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
 }
 
-// Buffers streamed sentences until release(), so a false capability denial
-// can be discarded before any audio/NDJSON sentence reaches the client.
-function createSentenceGate(onSentence) {
-  const pending = [];
-  let released = false;
-  return {
-    onSentence: typeof onSentence === 'function'
-      ? (sentence) => {
-          if (released) onSentence(sentence);
-          else pending.push(sentence);
-        }
-      : undefined,
-    discard() {
-      pending.length = 0;
-    },
-    release() {
-      if (released) return;
-      released = true;
-      if (typeof onSentence !== 'function') {
-        pending.length = 0;
-        return;
-      }
-      for (const sentence of pending) onSentence(sentence);
-      pending.length = 0;
-    }
-  };
-}
-
 // search_web is policy-read but budgeted; correction must never call it
 // without the consume/settle gate used in the main tool loop.
 const CAPABILITY_CORRECTION_BLOCKED_TOOLS = new Set(['search_web']);
@@ -1292,8 +1268,8 @@ function isCapabilityCorrectionToolAllowed(name) {
 // If the model verbally denies a capability whose tool was offered this turn,
 // force one correction pass against the actual turnTools list before the
 // reply is persisted / spoken further. Returns the (possibly replaced) reply.
-// When sentenceGate is provided, false-denial sentences are discarded and only
-// the correction (or the original reply, if clean) is released to onSentence.
+// The sentence gate streams clean replies immediately; a denying sentence is
+// suppressed mid-stream and beginCorrection() re-opens the pipe for the fix.
 async function correctFalseCapabilityDenial({
   reply,
   chatHistory,
@@ -1303,7 +1279,9 @@ async function correctFalseCapabilityDenial({
   sentenceGate = null
 }) {
   const availableToolNames = (turnTools || []).map(tool => tool?.function?.name).filter(Boolean);
-  const denial = findFalseCapabilityDenial(reply, availableToolNames);
+  const denial = findFalseCapabilityDenial(reply, availableToolNames) ||
+    sentenceGate?.getDenial?.() ||
+    null;
   if (!denial) {
     sentenceGate?.release();
     return reply;
@@ -1314,9 +1292,14 @@ async function correctFalseCapabilityDenial({
     tools: denial.tools
   });
 
-  // Drop any already-buffered false denial, then let the correction stream.
-  sentenceGate?.discard();
-  sentenceGate?.release();
+  // Re-open streaming for the correction. The denying sentence was never
+  // emitted; any clean prefix before it may already have been spoken.
+  if (typeof sentenceGate?.beginCorrection === 'function') {
+    sentenceGate.beginCorrection();
+  } else {
+    sentenceGate?.discard();
+    sentenceGate?.release();
+  }
   const streamSentence = sentenceGate?.onSentence || onSentence;
 
   // Read-only, non-budgeted tools only: no mail, delete, or search_web.
@@ -1850,10 +1833,11 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       // Same turn-start timestamp as the live path so propose+confirm inside
       // one isolated exchange still fails the later-turn gate.
       const requestStartedAtMs = Date.now();
-      const sentenceGate = createSentenceGate(onSentence);
-      const streamSentence = sentenceGate.onSentence;
       const chatHistory = [{ role: 'system', content: AURA_SOUL }, { role: 'user', content: text }];
       const turnTools = selectToolsForTurn(text);
+      const availableToolNames = turnTools.map(tool => tool.function.name);
+      const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
+      const streamSentence = sentenceGate.onSentence;
       let response = await createBrainCompletionStreamed({
         messages: chatHistory,
         tools: turnTools,
@@ -1866,9 +1850,16 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       const webSources = [];
       const webResults = [];
       const seenWebSources = new Set();
+      let workingBeatEmitted = false;
       for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
         const responseMessage = response.choices[0].message;
         chatHistory.push(responseMessage);
+        if (!workingBeatEmitted) {
+          workingBeatEmitted = emitToolWorkingBeat(
+            streamSentence,
+            responseMessage.tool_calls.map(call => call?.function?.name).filter(Boolean)
+          );
+        }
         for (const toolCall of responseMessage.tool_calls) {
           let functionResult;
           let webSearchUnitReserved = false;
@@ -2106,7 +2097,8 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
 
     const chatHistory = [systemPrompt, ...messages];
     const turnTools = selectToolsForTurn(text, messages);
-    const sentenceGate = createSentenceGate(onSentence);
+    const availableToolNames = turnTools.map(tool => tool.function.name);
+    const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
     const streamSentence = sentenceGate.onSentence;
 
     let response = await createBrainCompletionStreamed({
@@ -2128,12 +2120,19 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     let webSearchAttempts = 0;
     let webSearchBilledSearches = 0;
     let webSearchSucceeded = false;
+    let workingBeatEmitted = false;
     for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
       const responseMessage = response.choices[0].message;
       chatHistory.push(responseMessage);
       const roundToolNames = new Set(
         responseMessage.tool_calls.map(call => call?.function?.name).filter(Boolean)
       );
+      // Fill the silence before the first tool round so voice doesn't hang
+      // while lookups run. Emitted only via onSentence (TTS/NDJSON), never
+      // written into the persisted assistant reply.
+      if (!workingBeatEmitted) {
+        workingBeatEmitted = emitToolWorkingBeat(streamSentence, roundToolNames);
+      }
       const roundMixesSearchAndPrivateData =
         roundToolNames.has('search_web') &&
         [...roundToolNames].some(name => PRIVATE_CONTEXT_TOOLS.has(name));
