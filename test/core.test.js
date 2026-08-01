@@ -760,6 +760,7 @@ test('renderMemoryDocument groups profile entries, excludes linked memories, and
 
 test('model routing defaults to Sol with Luna for memory work', () => {
   const config = resolveModelConfig({});
+  assert.equal(config.provider, 'openai');
   assert.equal(config.primaryModel, 'gpt-5.6-sol');
   assert.equal(config.memoryModel, 'gpt-5.6-luna');
   assert.equal(config.reasoningEffort, 'medium');
@@ -781,6 +782,25 @@ test('model routing defaults to Sol with Luna for memory work', () => {
       tools: [{ type: 'function', function: { name: 'lookup' } }],
       model: 'gpt-5.6-sol',
       reasoning_effort: 'none'
+    }
+  );
+});
+
+test('xAI chat defaults to Grok while memory stays on Luna', () => {
+  const config = resolveModelConfig({ AI_PROVIDER: 'xai' });
+  assert.equal(config.provider, 'xai');
+  assert.equal(config.primaryModel, 'grok-4.5');
+  assert.equal(config.memoryModel, 'gpt-5.6-luna');
+  // Grok does not get OpenAI reasoning_effort injected.
+  assert.deepEqual(
+    brainRequestOptions(config, {
+      messages: [],
+      tools: [{ type: 'function', function: { name: 'lookup' } }]
+    }),
+    {
+      messages: [],
+      tools: [{ type: 'function', function: { name: 'lookup' } }],
+      model: 'grok-4.5'
     }
   );
 });

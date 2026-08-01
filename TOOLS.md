@@ -292,7 +292,8 @@ then direct `mac_integration.js` call.
 
 | Capability | Required env vars | Behavior if missing |
 |---|---|---|
-| Chat brain | `OPENAI_API_KEY` (or `DEEPSEEK_API_KEY` + `AI_PROVIDER=deepseek`), `AURA_CHAT_MODEL` (default `gpt-5.6-sol`), `AURA_REASONING_EFFORT` (default `medium`; forced to `none` automatically whenever function tools are present — `model_router.js`) | Falls back to a dummy key placeholder; requests fail at the provider |
+| Chat brain | `AI_PROVIDER` (`openai` / `xai` / `deepseek`) + matching key (`OPENAI_API_KEY` / `XAI_API_KEY` / `DEEPSEEK_API_KEY`), `AURA_CHAT_MODEL` (default `grok-4.5` for xai, else `gpt-5.6-sol`), `AURA_REASONING_EFFORT` (OpenAI gpt-5.6 only; forced to `none` when function tools are present — `model_router.js`) | Falls back to a dummy key placeholder; requests fail at the provider |
+| Vector memory | `OPENAI_API_KEY` (`text-embedding-3-small`), `AURA_MEMORY_MODEL` (default `gpt-5.6-luna` for extraction/summaries) — always OpenAI, even when chat is xAI/Grok | Semantic recall and Luna extraction unavailable without OpenAI |
 | Memory extraction / summarization | `AURA_MEMORY_MODEL` (default `gpt-5.6-luna`), `AURA_SUMMARY_MESSAGE_THRESHOLD` (default 40) | Summaries never regenerate below the threshold |
 | Embeddings (memory search) | `OPENAI_API_KEY` | `getEmbedding()` throws; semantic memory falls back to non-embedded storage |
 | Voice transcription | `OPENAI_API_KEY` (Whisper `whisper-1`, `/api/transcribe`) | Throws `"OPENAI_API_KEY is required for transcription."` |

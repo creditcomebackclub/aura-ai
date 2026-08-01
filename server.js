@@ -101,7 +101,10 @@ app.get('/healthz', (req, res) => {
     brain: {
       provider: aiProvider,
       model: chatModel,
-      reasoning_effort: reasoningEffort || null
+      reasoning_effort: reasoningEffort || null,
+      memory_model: backgroundModel,
+      // Vector recall is always OpenAI embeddings, independent of chat provider.
+      embeddings: process.env.OPENAI_API_KEY ? 'openai:text-embedding-3-small' : null
     },
     timestamp: new Date().toISOString()
   });
@@ -155,6 +158,9 @@ if (db) {
 }
 
 // AI Setup
+// Chat brain (`openai` / `chatModel`) can be OpenAI, xAI/Grok, or DeepSeek.
+// Vector memory, Luna extraction, Whisper, and live web search stay on a
+// dedicated OpenAI client below — switching AI_PROVIDER must not break recall.
 const modelConfig = resolveModelConfig(process.env);
 const aiProvider = modelConfig.provider;
 
@@ -167,6 +173,12 @@ if (aiProvider === 'deepseek') {
     apiKey: process.env.DEEPSEEK_API_KEY || 'dummy_key'
   });
   chatModel = modelConfig.primaryModel;
+} else if (aiProvider === 'xai') {
+  openai = new OpenAI({
+    baseURL: 'https://api.x.ai/v1',
+    apiKey: process.env.XAI_API_KEY || 'dummy_key'
+  });
+  chatModel = modelConfig.primaryModel;
 } else {
   openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY || 'dummy_key'
@@ -177,6 +189,8 @@ if (aiProvider === 'deepseek') {
 const backgroundModel = modelConfig.memoryModel;
 const reasoningEffort = modelConfig.reasoningEffort;
 
+// Always OpenAI: embeddings (vector memory), memory extraction/summaries,
+// Whisper transcription, and Responses-based live web search.
 const openaiEmbeddings = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy_openai_key'
 });
