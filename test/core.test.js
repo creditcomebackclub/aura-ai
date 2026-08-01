@@ -13,7 +13,12 @@ const {
   parseMemoryCommand,
   renderMemoryDocument
 } = require('../memory_v2');
-const { brainRequestOptions, resolveModelConfig, resolveTranscribeModel } = require('../model_router');
+const {
+  brainRequestOptions,
+  resolveModelConfig,
+  resolveTranscribeModel,
+  resolveXaiReasoningEffort
+} = require('../model_router');
 const {
   OWNER_SEARCH_INPUT_MAX_LENGTH,
   containsSearchSecret,
@@ -803,7 +808,8 @@ test('xAI chat defaults to Grok while memory stays on Luna', () => {
   assert.equal(config.provider, 'xai');
   assert.equal(config.primaryModel, 'grok-4.5');
   assert.equal(config.memoryModel, 'gpt-5.6-luna');
-  // Grok does not get OpenAI reasoning_effort injected.
+  assert.equal(config.reasoningEffort, 'low');
+  // Omitting effort defaults Grok to high — always send low/medium/high.
   assert.deepEqual(
     brainRequestOptions(config, {
       messages: [],
@@ -812,8 +818,23 @@ test('xAI chat defaults to Grok while memory stays on Luna', () => {
     {
       messages: [],
       tools: [{ type: 'function', function: { name: 'lookup' } }],
-      model: 'grok-4.5'
+      model: 'grok-4.5',
+      reasoning_effort: 'low'
     }
+  );
+});
+
+test('xAI reasoning_effort coerces none to low and honors medium/high', () => {
+  assert.equal(resolveXaiReasoningEffort('none'), 'low');
+  assert.equal(resolveXaiReasoningEffort('medium'), 'medium');
+  assert.equal(resolveXaiReasoningEffort('high'), 'high');
+  const medium = resolveModelConfig({
+    AI_PROVIDER: 'xai',
+    AURA_REASONING_EFFORT: 'medium'
+  });
+  assert.equal(
+    brainRequestOptions(medium, { messages: [] }).reasoning_effort,
+    'medium'
   );
 });
 

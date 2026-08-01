@@ -423,7 +423,20 @@ async function correctOwnerTextClientNames(text) {
   return correctTranscriptClientNames(text, directory.data);
 }
 
+// Client directory barely changes turn-to-turn; cache it so every voice turn
+// doesn't pay a serial Supabase RTT before the model can even start.
+let cachedClientDirectory = null;
+let cachedClientDirectoryAtMs = 0;
+const CLIENT_DIRECTORY_TTL_MS = 60_000;
+
 async function loadClientDirectory() {
+  const now = Date.now();
+  if (
+    cachedClientDirectory &&
+    now - cachedClientDirectoryAtMs < CLIENT_DIRECTORY_TTL_MS
+  ) {
+    return cachedClientDirectory;
+  }
   const db = initSupabase();
   if (!db) return { error: 'Database connection not configured.' };
   const { data, error } = await db
@@ -431,7 +444,14 @@ async function loadClientDirectory() {
     .select('id, name, status, billing_status, billing_tier, ledger')
     .limit(1000);
   if (error) return { error: error.message };
-  return { data: data || [] };
+  cachedClientDirectory = { data: data || [] };
+  cachedClientDirectoryAtMs = now;
+  return cachedClientDirectory;
+}
+
+function clearClientDirectoryCache() {
+  cachedClientDirectory = null;
+  cachedClientDirectoryAtMs = 0;
 }
 
 async function findClientsByName(name) {
@@ -895,6 +915,7 @@ module.exports = {
   suggestClientMatches,
   correctTranscriptClientNames,
   correctOwnerTextClientNames,
+  clearClientDirectoryCache,
   getClientCurrentPhase,
   normalizePhaseLabel,
   isOutstanding,
