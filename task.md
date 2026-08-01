@@ -47,12 +47,12 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Re-measure time-to-first-audio against the 3.5–5.6s baseline** now that streaming has shipped
-  (see Done recently) and record a real before/after number. Run locally with
-  `AURA_TIMING_TRACE=1 npm start`, do a live voice turn, capture the `[timing]` lines
-  (`memory/context build`, per-round model completion) plus wall-clock time-to-first-audio from the
-  browser. Needed before picking the next latency target — right now "smarter/faster" work is
-  guessing at which stage is still slow instead of measuring it.
+- **Capture a live TTFA number now that the harness shipped.** Browser console logs
+  `[timing] TTFA …ms (whisper …, first_sentence …, tts …)` on every voice turn. Server adds
+  `[timing] whisper / user message write / memory/context / first sentence / tts` when
+  `AURA_TIMING_TRACE=1`. Optional headless text-path probe:
+  `AURA_ACCESS_TOKEN=… node scripts/measure-voice-latency.js`. Compare against the old
+  3.5–5.6s baseline, then pick the next cut from the largest slice.
 - **Reposition the on-screen search-results panel and add an on-screen conversation transcript** in
   the PWA frontend (`public/`). The search-results panel was recently re-enabled and re-skinned
   (see Done recently); this is the next visual/layout pass on top of that, plus adding a transcript
