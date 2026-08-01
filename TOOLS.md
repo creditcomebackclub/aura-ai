@@ -297,7 +297,7 @@ then direct `mac_integration.js` call.
 | Memory extraction / summarization | `AURA_MEMORY_MODEL` (default `gpt-5.6-luna`), `AURA_SUMMARY_MESSAGE_THRESHOLD` (default 40) | Summaries never regenerate below the threshold |
 | Embeddings (memory search) | `OPENAI_API_KEY` | `getEmbedding()` throws; semantic memory falls back to non-embedded storage |
 | Voice transcription | `OPENAI_API_KEY` + `AURA_TRANSCRIBE_MODEL` (default `gpt-4o-mini-transcribe`, `/api/transcribe`; falls back to `whisper-1`) | Throws `"OPENAI_API_KEY is required for transcription."` |
-| TTS | `CARTESIA_API_KEY` (`/api/tts`, raw fetch to `https://api.cartesia.ai/tts/bytes`, model `sonic-3.5`) | Cartesia API call fails, 500 returned |
+| TTS | `CARTESIA_API_KEY` (`/api/tts`, Cartesia `/tts/bytes`, model `AURA_TTS_MODEL` default `sonic-3.5`, sample rate `AURA_TTS_SAMPLE_RATE` default `24000`) | Cartesia API call fails, 500 returned |
 | Live web search | `OPENAI_API_KEY`, `OPENAI_WEB_SEARCH_MODEL` (default `gpt-5.4-mini`), `AURA_WEB_SEARCH_CONTEXT` (default `medium`), `AURA_WEB_SEARCH_TIMEOUT_MS` (default 45000), `AURA_WEB_SEARCH_DAILY_LIMIT` (default 25) | Throws `WEB_SEARCH_NOT_CONFIGURED` |
 | Supabase-backed state (cloud) | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `AURA_OWNER_ID`, `AURA_STATE_BACKEND=supabase` | Falls back to local SQLite (`aura.db`) + in-process `localProfileStore` |
 | Mac companion (cloud → Mac) | `AURA_RUNTIME=cloud`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `AURA_OWNER_ID`, `AURA_COMPANION_DEVICE` (default `chriss-macbook-pro`) | `CompanionClient` is only constructed under `AURA_RUNTIME=cloud`; on local runtime `mac_integration.js` is called directly instead |

@@ -23,7 +23,12 @@ const { isTelegramConfigured, sendTelegramMessage, sendTelegramAudio, isFromOwne
 const { runDailyGoalsDigest } = require('./daily_goals_digest');
 const { runMorningBrief, filterUpcomingAssignments } = require('./morning_brief');
 const { parseDueAt } = require('./due_date');
-const { concatWavBuffers, splitIntoSentences } = require('./wav_utils');
+const {
+  concatWavBuffers,
+  splitIntoSentences,
+  splitSpeakable,
+  advancePastEmitted
+} = require('./wav_utils');
 const { MemoryStore } = require('./memory_store');
 const {
   ConversationSummaryService,
@@ -456,14 +461,13 @@ function createBrainCompletion({ _traceLabel, ...requestOptions } = {}) {
 // and returns an object shaped exactly like a non-streaming SDK response
 // (`choices[0].message.{content,tool_calls}`), so every existing call site
 // in processOwnerText's tool loop works unchanged regardless of which one
-// it gets back. onSentence (optional) fires once per complete sentence as
-// soon as it's recognizable in the accumulating text - via the exact same
-// splitIntoSentences() used for post-hoc TTS chunking, just called
-// incrementally: everything splitIntoSentences returns except the LAST
-// piece is guaranteed complete (it was followed by whitespace, meaning
-// more text came after it), so only the last piece is ever held back
-// pending more deltas. If the model calls tools instead, no sentence ever
-// fires - tool-call content is not conversational text.
+// it gets back. onSentence (optional) fires once per complete speakable
+// chunk as soon as it's recognizable in the accumulating text. The first
+// clip may be a leading clause (not a full sentence) so Cartesia can start
+// sooner; later clips use normal sentence boundaries. Everything except
+// the LAST piece is guaranteed complete (more text followed it). If the
+// model calls tools instead, no sentence ever fires - tool-call content is
+// not conversational text.
 async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...requestOptions } = {}) {
   const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
   const stream = await openai.chat.completions.create({
@@ -472,9 +476,23 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...reque
   });
 
   let contentBuffer = '';
-  let emittedSentenceCount = 0;
+  let emittedLength = 0;
   const toolCallsByIndex = new Map();
   let finishReason = null;
+
+  const drainSpeakable = ({ final = false } = {}) => {
+    if (!onSentence) return;
+    const remainder = contentBuffer.slice(emittedLength);
+    if (!remainder.trim()) return;
+    const parts = final
+      ? splitIntoSentences(remainder)
+      : splitSpeakable(remainder, { earlyClause: emittedLength === 0 });
+    const completeCount = final ? parts.length : Math.max(0, parts.length - 1);
+    for (let i = 0; i < completeCount; i += 1) {
+      onSentence(parts[i]);
+      emittedLength = advancePastEmitted(contentBuffer, emittedLength, parts[i]);
+    }
+  };
 
   for await (const chunk of stream) {
     const delta = chunk.choices?.[0]?.delta;
@@ -483,13 +501,7 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...reque
 
     if (delta.content) {
       contentBuffer += delta.content;
-      if (onSentence) {
-        const parts = splitIntoSentences(contentBuffer);
-        while (emittedSentenceCount < parts.length - 1) {
-          onSentence(parts[emittedSentenceCount]);
-          emittedSentenceCount++;
-        }
-      }
+      drainSpeakable();
     }
 
     if (delta.tool_calls) {
@@ -509,11 +521,7 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...reque
   // Flush whatever's left as a final sentence - only meaningful when the
   // model didn't call a tool (tool-call rounds carry no reply text).
   if (onSentence && toolCallsByIndex.size === 0) {
-    const parts = splitIntoSentences(contentBuffer);
-    while (emittedSentenceCount < parts.length) {
-      onSentence(parts[emittedSentenceCount]);
-      emittedSentenceCount++;
-    }
+    drainSpeakable({ final: true });
   }
 
   if (process.env.AURA_TIMING_TRACE) {
@@ -2842,6 +2850,9 @@ app.post('/api/actions/:id/reject', async (req, res) => {
 // One Cartesia call for one chunk of text. Pulled out of the route so it can
 // be fired multiple times concurrently below.
 async function synthesizeSpeechChunk(text) {
+  // 24kHz is plenty for voice on phone/laptop speakers and cuts Cartesia
+  // generation + download vs 44.1kHz — live TTFA had TTS alone at ~3.5s.
+  const sampleRate = Number(process.env.AURA_TTS_SAMPLE_RATE) || 24000;
   const response = await fetch('https://api.cartesia.ai/tts/bytes', {
     method: 'POST',
     headers: {
@@ -2850,10 +2861,15 @@ async function synthesizeSpeechChunk(text) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model_id: 'sonic-3.5',
+      model_id: process.env.AURA_TTS_MODEL || 'sonic-3.5',
       transcript: text,
+      language: 'en',
       voice: { mode: 'id', id: 'e8e5fffb-252c-436d-b842-8879b84445b6' },
-      output_format: { container: 'wav', encoding: 'pcm_s16le', sample_rate: 44100 }
+      output_format: {
+        container: 'wav',
+        encoding: 'pcm_s16le',
+        sample_rate: sampleRate
+      }
     })
   });
   if (!response.ok) {

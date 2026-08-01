@@ -1,6 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseWav, buildWavHeader, concatWavBuffers, splitIntoSentences } = require('../wav_utils');
+const {
+  parseWav,
+  buildWavHeader,
+  concatWavBuffers,
+  splitIntoSentences,
+  splitSpeakable,
+  splitLeadingClause,
+  advancePastEmitted
+} = require('../wav_utils');
 
 function makeWav({ numChannels = 1, sampleRate = 44100, bitsPerSample = 16, samples = [] } = {}) {
   const dataLength = samples.length * (bitsPerSample / 8);
@@ -68,4 +76,34 @@ test('splitIntoSentences handles a single short reply as one chunk', () => {
 test('splitIntoSentences handles empty/whitespace input without throwing', () => {
   assert.deepEqual(splitIntoSentences(''), []);
   assert.deepEqual(splitIntoSentences('   '), []);
+});
+
+test('splitLeadingClause peels a comma clause once more text has arrived', () => {
+  assert.deepEqual(
+    splitLeadingClause('Yeah, I checked the calendar for Monday.'),
+    ['Yeah,', 'I checked the calendar for Monday.']
+  );
+  // Incomplete - nothing after the comma yet - keep as one piece.
+  assert.deepEqual(splitLeadingClause('Yeah,'), ['Yeah,']);
+});
+
+test('splitSpeakable only clause-splits before the first sentence completes', () => {
+  assert.deepEqual(
+    splitSpeakable('Yeah, I checked Monday.', { earlyClause: true }),
+    ['Yeah,', 'I checked Monday.']
+  );
+  assert.deepEqual(
+    splitSpeakable('Yeah, I checked Monday. Next bit.', { earlyClause: true }),
+    ['Yeah, I checked Monday.', 'Next bit.']
+  );
+  assert.deepEqual(
+    splitSpeakable('Yeah, I checked Monday.', { earlyClause: false }),
+    ['Yeah, I checked Monday.']
+  );
+});
+
+test('advancePastEmitted skips the chunk and following whitespace', () => {
+  const full = 'Yeah, I checked Monday.';
+  const next = advancePastEmitted(full, 0, 'Yeah,');
+  assert.equal(full.slice(next), 'I checked Monday.');
 });
