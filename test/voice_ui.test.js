@@ -127,3 +127,10 @@ test('mobile cache-busting versions the waveform assets together', () => {
   assert.ok(styleVersion);
   assert.equal(appVersion, styleVersion);
 });
+
+test('voice path logs wall-clock TTFA marks in the browser console', () => {
+  assert.match(app, /\[timing\] TTFA/);
+  assert.match(app, /timing\.whisperMs/);
+  assert.match(app, /timing\.firstSentenceMs/);
+  assert.match(app, /timing\.ttfaMs/);
+});

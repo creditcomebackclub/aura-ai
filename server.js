@@ -1926,10 +1926,14 @@ async function handleToolCall(toolCall, options = {}) {
 // in, transcript text out."
 async function transcribeAudioFile(filePath) {
   if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for transcription.');
+  const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
   const transcription = await openaiAudio.audio.transcriptions.create({
     file: fs.createReadStream(filePath),
     model: 'whisper-1',
   });
+  if (process.env.AURA_TIMING_TRACE) {
+    console.log(`[timing] whisper: ${Date.now() - startedAtMs}ms`);
+  }
   return transcription.text;
 }
 
@@ -2213,23 +2217,26 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       });
     }
 
-    // The current turn's own message must be committed before we read recent
-    // history back out, or conversationContext can be built without it - the
-    // model then answers as if this turn never arrived, replying to
-    // whatever came before instead. Wait for the write first; only the reads
-    // that don't touch aura_messages (memory job status, semantic memory)
-    // stay parallelized alongside it.
-    await userMessagePromise;
+    // History read still waits on the current turn's write (or the model
+    // answers the previous message). Memory/profile/semantic reads don't
+    // need that write, so run them in parallel with write→getContext instead
+    // of serializing the write in front of everything.
     const contextBuildStartedAtMs = Date.now();
+    const writeStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
+    const conversationContextPromise = userMessagePromise.then(async () => {
+      if (process.env.AURA_TIMING_TRACE) {
+        console.log(`[timing] user message write: ${Date.now() - writeStartedAtMs}ms`);
+      }
+      if (cloudState) return conversationSummary.getContext(30);
+      return {
+        summary: '',
+        messages: await recentConversationMessages(30)
+      };
+    });
     const [memoryJob, memoryContext, conversationContext] = await Promise.all([
       memoryJobPromise,
       memoryV2.buildContext(text),
-      cloudState
-        ? conversationSummary.getContext(30)
-        : Promise.resolve({
-            summary: '',
-            messages: await recentConversationMessages(30)
-          })
+      conversationContextPromise
     ]);
     if (process.env.AURA_TIMING_TRACE) {
       console.log(`[timing] memory/context build: ${Date.now() - contextBuildStartedAtMs}ms`);
@@ -2498,6 +2505,8 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
 // event instead, since the response is already committed to that shape.
 app.post('/api/chat', async (req, res) => {
   let streamStarted = false;
+  const routeStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
+  let firstSentenceLogged = false;
   const startStream = () => {
     if (streamStarted) return;
     streamStarted = true;
@@ -2509,6 +2518,10 @@ app.post('/api/chat', async (req, res) => {
       isolated: req.body.eval === true,
       onSentence: sentence => {
         startStream();
+        if (process.env.AURA_TIMING_TRACE && !firstSentenceLogged) {
+          firstSentenceLogged = true;
+          console.log(`[timing] first sentence: ${Date.now() - routeStartedAtMs}ms`);
+        }
         res.write(JSON.stringify({ type: 'sentence', text: sentence }) + '\n');
       }
     });
@@ -2840,9 +2853,13 @@ app.post('/api/tts', async (req, res) => {
     // reply is a single Cartesia call either way, identical to the prior
     // behavior - this only does extra work when there's real parallelism to
     // gain from.
+    const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
     const sentences = splitIntoSentences(text);
     const chunks = await Promise.all(sentences.map(synthesizeSpeechChunk));
     const combined = chunks.length > 1 ? concatWavBuffers(chunks) : chunks[0];
+    if (process.env.AURA_TIMING_TRACE) {
+      console.log(`[timing] tts (${sentences.length} chunk${sentences.length === 1 ? '' : 's'}): ${Date.now() - startedAtMs}ms`);
+    }
     res.set('Content-Type', 'audio/wav');
     res.send(combined);
   } catch (error) {

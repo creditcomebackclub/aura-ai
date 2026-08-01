@@ -754,7 +754,7 @@ function resetVoiceQueue() {
 // on interruption (stopSpeaking() calls audioPlayer.pause(), which fires a
 // 'pause' event; since pause() alone never fires 'ended', that event is the
 // only way this promise would otherwise hang forever after an interrupt).
-function playBlobAndWait(blob) {
+function playBlobAndWait(blob, { onPlayStart = null } = {}) {
   return new Promise(resolve => {
     if (playbackCancelled) {
       resolve();
@@ -784,7 +784,9 @@ function playBlobAndWait(blob) {
           finish();
           return;
         }
-        audioPlayer.play().catch(error => {
+        audioPlayer.play().then(() => {
+          if (typeof onPlayStart === 'function') onPlayStart();
+        }).catch(error => {
           console.error('Audio playback error:', error);
           finish();
         });
@@ -797,12 +799,13 @@ function playBlobAndWait(blob) {
 // in the queue. isFirst puts the orb into "speaking" state right away,
 // matching the old single-blob behavior of setting state before playback
 // starts rather than waiting for audio to actually begin.
-function enqueueSentenceAudio(text, isFirst) {
+function enqueueSentenceAudio(text, isFirst, timing = null) {
   if (isFirst) {
     setOrbState('speaking', 'Speaking... Tap to stop');
     isSpeaking = true;
     audioPlayer.onplay = startVoiceWave;
   }
+  const ttsStartedAt = timing ? performance.now() : 0;
   const ttsPromise = authenticatedFetch('/api/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -810,6 +813,11 @@ function enqueueSentenceAudio(text, isFirst) {
   }).then(res => {
     if (!res.ok) throw new Error('TTS API failed');
     return res.blob();
+  }).then(blob => {
+    if (timing && isFirst) {
+      timing.ttsMs = Math.round(performance.now() - ttsStartedAt);
+    }
+    return blob;
   });
 
   voiceQueueTail = voiceQueueTail.then(async () => {
@@ -822,7 +830,19 @@ function enqueueSentenceAudio(text, isFirst) {
       return;
     }
     if (playbackCancelled) return;
-    await playBlobAndWait(blob);
+    await playBlobAndWait(blob, {
+      onPlayStart: isFirst && timing
+        ? () => {
+          timing.ttfaMs = Math.round(performance.now() - timing.t0);
+          console.log(
+            `[timing] TTFA ${timing.ttfaMs}ms` +
+            ` (whisper ${timing.whisperMs ?? '?'}ms` +
+            `, first_sentence ${timing.firstSentenceMs ?? '?'}ms` +
+            `, tts ${timing.ttsMs ?? '?'}ms)`
+          );
+        }
+        : null
+    });
   });
 }
 
@@ -1046,6 +1066,9 @@ function stopListening() {
 async function processAudio(audioBlob) {
   isProcessing = true;
   const myTurn = ++currentTurn;
+  // Wall-clock voice latency marks: mic-stop → first audible audio.
+  // Open the browser console on a live turn to read `[timing] TTFA …`.
+  const timing = { t0: performance.now() };
   // True once this turn has been superseded (a newer tap started, or this
   // one errored out) - any UI write after that point is a stale reply and
   // must be dropped instead of displayed/spoken.
@@ -1056,6 +1079,7 @@ async function processAudio(audioBlob) {
     const ext = audioBlob.type.includes('mp4') ? 'm4a' : 'webm';
     formData.append('audio', audioBlob, `recording.${ext}`);
 
+    const whisperStartedAt = performance.now();
     const transcribeRes = await authenticatedFetch('/api/transcribe', {
       method: 'POST',
       body: formData
@@ -1063,6 +1087,7 @@ async function processAudio(audioBlob) {
 
     if (!transcribeRes.ok) throw new Error('Transcription failed');
     const { transcript } = await transcribeRes.json();
+    timing.whisperMs = Math.round(performance.now() - whisperStartedAt);
     console.log('User:', transcript);
 
     if (!transcript || transcript.trim() === '') {
@@ -1080,6 +1105,7 @@ async function processAudio(audioBlob) {
     // queued for TTS/playback as it arrives (see enqueueSentenceAudio) so
     // she starts speaking the first sentence while later ones are still
     // being generated, instead of waiting for the whole reply.
+    const chatStartedAt = performance.now();
     const chatRes = await authenticatedFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1109,7 +1135,10 @@ async function processAudio(audioBlob) {
         if (event.type === 'sentence') {
           if (stale()) continue;
           sentenceCount += 1;
-          enqueueSentenceAudio(event.text, sentenceCount === 1);
+          if (sentenceCount === 1) {
+            timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
+          }
+          enqueueSentenceAudio(event.text, sentenceCount === 1, timing);
         } else if (event.type === 'done') {
           finalResult = event;
         } else if (event.type === 'error') {
@@ -1127,7 +1156,8 @@ async function processAudio(audioBlob) {
     // empty reply) - still speak the full reply as one clip rather than
     // silently saying nothing.
     if (sentenceCount === 0 && reply) {
-      enqueueSentenceAudio(reply, true);
+      timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
+      enqueueSentenceAudio(reply, true, timing);
     }
 
     // Evidence is shown once the reply is fully known, which lands close to
