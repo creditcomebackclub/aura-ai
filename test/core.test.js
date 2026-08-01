@@ -635,7 +635,13 @@ test('owner approval requires an approval-shaped message, not a bare approval wo
     'approve',
     'permission granted',
     'Yes, send the email.',
-    'Confirmed — delete it.'
+    'Confirmed — delete it.',
+    // Natural assent around an approval word must still redeem.
+    "yes that's fine",
+    "That's fine, send it",
+    'sounds good, send it',
+    'yes please',
+    'ok go ahead'
   ]) {
     assert.equal(isClearOwnerApproval(approval), true, approval);
     assert.equal(isClearOwnerRefusal(approval), false, approval);

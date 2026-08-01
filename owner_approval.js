@@ -8,16 +8,18 @@ const OWNER_APPROVAL_PATTERN = /\b(yes|yeah|yep|yup|confirm|confirmed|confirming
 const OWNER_REFUSAL_PATTERN = /\b(no|nope|don'?t|do not|cancel|stop|wait|hold off|never ?mind|not yet)\b/i;
 
 // Leftover tokens that still count as confirming the staged action itself
-// ("yes, send the email") rather than starting a new request.
-const APPROVAL_HARMLESS_REMAINDER = /^(?:(?:the|a|an|my|that|this|it|please|now|just|then|and|to|for|me|ok|okay|sure|alright|right|thanks?|thank\s+you|email|letter|deletion|message|mail|action|pdf|report|file|one)\s*)*$/i;
+// ("yes, send the email", "yes that's fine") rather than starting a new request.
+const APPROVAL_HARMLESS_REMAINDER = /^(?:(?:the|a|an|my|that|thats|this|it|its|please|now|just|then|and|to|for|me|ok|okay|sure|alright|all\s+right|right|thanks?|thank\s+you|email|letter|deletion|message|mail|action|pdf|report|file|one|fine|good|great|perfect|absolutely|definitely|sounds|works|cool|totally|exactly)\s*)*$/i;
 
 function stripApprovalPhrases(message) {
   // Fresh /gi copy: the exported pattern has no `g` (so .test() is safe to
   // reuse), but a mixed approval like "yes, send it" needs every approval
-  // phrase removed before the remainder check.
+  // phrase removed before the remainder check. Possessives ("that's") are
+  // folded to their stem so "yes that's fine" survives the remainder check.
   return String(message || '')
     .replace(new RegExp(OWNER_APPROVAL_PATTERN.source, 'gi'), ' ')
-    .replace(/[^\w\s']/g, ' ')
+    .replace(/\b(\w+)'s\b/gi, '$1')
+    .replace(/[^\w\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

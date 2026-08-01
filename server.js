@@ -1251,31 +1251,78 @@ function selectToolsForTurn(text, recentMessages = []) {
   return tools.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
 }
 
+// Buffers streamed sentences until release(), so a false capability denial
+// can be discarded before any audio/NDJSON sentence reaches the client.
+function createSentenceGate(onSentence) {
+  const pending = [];
+  let released = false;
+  return {
+    onSentence: typeof onSentence === 'function'
+      ? (sentence) => {
+          if (released) onSentence(sentence);
+          else pending.push(sentence);
+        }
+      : undefined,
+    discard() {
+      pending.length = 0;
+    },
+    release() {
+      if (released) return;
+      released = true;
+      if (typeof onSentence !== 'function') {
+        pending.length = 0;
+        return;
+      }
+      for (const sentence of pending) onSentence(sentence);
+      pending.length = 0;
+    }
+  };
+}
+
+// search_web is policy-read but budgeted; correction must never call it
+// without the consume/settle gate used in the main tool loop.
+const CAPABILITY_CORRECTION_BLOCKED_TOOLS = new Set(['search_web']);
+
+function isCapabilityCorrectionToolAllowed(name) {
+  return Boolean(name) &&
+    getToolPolicy(name) === 'read' &&
+    !CAPABILITY_CORRECTION_BLOCKED_TOOLS.has(name);
+}
+
 // If the model verbally denies a capability whose tool was offered this turn,
 // force one correction pass against the actual turnTools list before the
 // reply is persisted / spoken further. Returns the (possibly replaced) reply.
+// When sentenceGate is provided, false-denial sentences are discarded and only
+// the correction (or the original reply, if clean) is released to onSentence.
 async function correctFalseCapabilityDenial({
   reply,
   chatHistory,
   turnTools,
   onSentence,
-  evidence
+  evidence,
+  sentenceGate = null
 }) {
   const availableToolNames = (turnTools || []).map(tool => tool?.function?.name).filter(Boolean);
   const denial = findFalseCapabilityDenial(reply, availableToolNames);
-  if (!denial) return reply;
+  if (!denial) {
+    sentenceGate?.release();
+    return reply;
+  }
 
   console.warn('[capability] false capability denial caught:', {
     snippet: denial.snippet,
     tools: denial.tools
   });
 
-  // Read-only tools only: a correction pass must not send mail, delete,
-  // burn search quota, or otherwise side-effect outside a normal turn gate.
-  const correctionTools = (turnTools || []).filter(tool => {
-    const name = tool?.function?.name;
-    return name && getToolPolicy(name) === 'read';
-  });
+  // Drop any already-buffered false denial, then let the correction stream.
+  sentenceGate?.discard();
+  sentenceGate?.release();
+  const streamSentence = sentenceGate?.onSentence || onSentence;
+
+  // Read-only, non-budgeted tools only: no mail, delete, or search_web.
+  const correctionTools = (turnTools || []).filter(tool =>
+    isCapabilityCorrectionToolAllowed(tool?.function?.name)
+  );
 
   chatHistory.push({ role: 'assistant', content: reply });
   chatHistory.push({
@@ -1292,7 +1339,7 @@ async function correctFalseCapabilityDenial({
     messages: chatHistory,
     tools: correctionTools,
     tool_choice: 'auto',
-    onSentence,
+    onSentence: streamSentence,
     _traceLabel: 'capability correction'
   });
 
@@ -1305,7 +1352,7 @@ async function correctFalseCapabilityDenial({
       let functionResult;
       try {
         const toolName = toolCall?.function?.name;
-        if (!toolName || getToolPolicy(toolName) !== 'read') {
+        if (!isCapabilityCorrectionToolAllowed(toolName)) {
           throw new Error(`Tool is not allowed during capability correction: ${toolName || 'unknown'}`);
         }
         functionResult = await handleToolCall(toolCall, {
@@ -1343,7 +1390,7 @@ async function correctFalseCapabilityDenial({
       messages: chatHistory,
       tools: correctionTools,
       tool_choice: 'auto',
-      onSentence,
+      onSentence: streamSentence,
       _traceLabel: `capability correction round ${round + 1}`
     });
   }
@@ -1803,13 +1850,15 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       // Same turn-start timestamp as the live path so propose+confirm inside
       // one isolated exchange still fails the later-turn gate.
       const requestStartedAtMs = Date.now();
+      const sentenceGate = createSentenceGate(onSentence);
+      const streamSentence = sentenceGate.onSentence;
       const chatHistory = [{ role: 'system', content: AURA_SOUL }, { role: 'user', content: text }];
       const turnTools = selectToolsForTurn(text);
       let response = await createBrainCompletionStreamed({
         messages: chatHistory,
         tools: turnTools,
         tool_choice: 'auto',
-        onSentence,
+        onSentence: streamSentence,
         ...(modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
         _traceLabel: 'isolated round 0'
       });
@@ -1882,7 +1931,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
           messages: chatHistory,
           tools: turnTools,
           tool_choice: 'auto',
-          onSentence,
+          onSentence: streamSentence,
           _traceLabel: `isolated round ${round + 1}`
         });
       }
@@ -1896,15 +1945,20 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             content: 'Tool budget exhausted. Clearly say the lookup is incomplete; do not infer missing facts.'
           });
         }
-        response = await createBrainCompletionStreamed({ messages: chatHistory, onSentence, _traceLabel: 'isolated round cap exhausted' });
+        response = await createBrainCompletionStreamed({
+          messages: chatHistory,
+          onSentence: streamSentence,
+          _traceLabel: 'isolated round cap exhausted'
+        });
       }
       let reply = response.choices[0].message.content || "Sorry, I wasn't able to put together an answer for that.";
       reply = await correctFalseCapabilityDenial({
         reply,
         chatHistory,
         turnTools,
-        onSentence,
-        evidence
+        onSentence: streamSentence,
+        evidence,
+        sentenceGate
       });
       return {
         reply,
@@ -2052,12 +2106,14 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
 
     const chatHistory = [systemPrompt, ...messages];
     const turnTools = selectToolsForTurn(text, messages);
+    const sentenceGate = createSentenceGate(onSentence);
+    const streamSentence = sentenceGate.onSentence;
 
     let response = await createBrainCompletionStreamed({
       messages: chatHistory,
       tools: turnTools,
       tool_choice: 'auto',
-      onSentence,
+      onSentence: streamSentence,
       ...(modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
       _traceLabel: 'round 0'
     });
@@ -2205,14 +2261,14 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       response = forceToolFreeAnswer
         ? await createBrainCompletionStreamed({
             messages: chatHistory,
-            onSentence,
+            onSentence: streamSentence,
             _traceLabel: `round ${round + 1} (forced tool-free)`
           })
         : await createBrainCompletionStreamed({
             messages: chatHistory,
             tools: turnTools,
             tool_choice: 'auto',
-            onSentence,
+            onSentence: streamSentence,
             _traceLabel: `round ${round + 1}`
           });
       if (forceToolFreeAnswer) break;
@@ -2231,7 +2287,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       }
       response = await createBrainCompletionStreamed({
         messages: chatHistory,
-        onSentence,
+        onSentence: streamSentence,
         _traceLabel: 'round cap exhausted'
       });
     }
@@ -2241,8 +2297,9 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       reply,
       chatHistory,
       turnTools,
-      onSentence,
-      evidence
+      onSentence: streamSentence,
+      evidence,
+      sentenceGate
     });
     await addConversationMessage('assistant', reply, {
       evidence,
