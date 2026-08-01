@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.local
+eval/compare-results.json
 .DS_Store
 *.log
 .browser_data/
