@@ -7,10 +7,18 @@ const OPENAI_REASONING_EFFORTS = new Set([
   'max'
 ]);
 
+function defaultPrimaryModel(provider) {
+  if (provider === 'deepseek') return 'deepseek-chat';
+  if (provider === 'xai') return 'grok-4.5';
+  return 'gpt-5.6-sol';
+}
+
 function resolveModelConfig(env = process.env) {
   const provider = env.AI_PROVIDER || 'openai';
-  const primaryModel = env.AURA_CHAT_MODEL ||
-    (provider === 'deepseek' ? 'deepseek-chat' : 'gpt-5.6-sol');
+  const primaryModel = env.AURA_CHAT_MODEL || defaultPrimaryModel(provider);
+  // Memory extraction + rolling summaries stay on OpenAI Luna by default even
+  // when chat is on xAI — vector recall uses OpenAI embeddings, and Luna is
+  // the cheap OpenAI worker that fills the profile/semantic stores.
   const memoryModel = env.AURA_MEMORY_MODEL || 'gpt-5.6-luna';
   // Opt-in only: unset means the tool-routing round uses primaryModel same
   // as before. When set, it's used ONLY for the first (tool-decision) round

@@ -21,6 +21,9 @@ test('SOUL.md preserves the proven-necessary safety and accuracy instructions', 
   assert.match(soul, /Guess client identities/i);
   assert.match(soul, /State numerical totals from truncated/i);
   assert.match(soul, /NEVER.{0,40}search_web.{0,40}private/is);
+  // Voice-first identity: passenger-seat conversationalist, not helpdesk.
+  assert.match(soul, /passenger seat/i);
+  assert.match(soul, /Memory v2/i);
 });
 
 test('the delete-routes description matches the actual staged approval flow, not immediate deletion', () => {

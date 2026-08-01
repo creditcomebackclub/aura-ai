@@ -12,10 +12,11 @@ read-only business intelligence for Credit Comeback Club.
 4. Start AURA with `npm start`.
 5. Open `http://localhost:3000`.
 
-OpenAI is currently required for transcription and semantic embeddings even when
-`AI_PROVIDER=deepseek` is used for chat. AURA's public internet tool uses
-OpenAI Responses web search with live access and source metadata. Cartesia
-provides speech synthesis.
+Chat can run on OpenAI (`gpt-5.6-sol`), xAI (`grok-4.5` via `AI_PROVIDER=xai`),
+or DeepSeek. **Vector memory stays on OpenAI** either way: `text-embedding-3-small`
+for semantic recall, and `AURA_MEMORY_MODEL` (default `gpt-5.6-luna`) for
+extraction/summaries. Whisper transcription and live `search_web` also stay on
+OpenAI. Cartesia provides speech synthesis.
 
 ## Phone and LAN access
 
@@ -116,10 +117,11 @@ npm run backfill:memory-v2
 
 ## Models
 
-Normal conversation and tool decisions use `AURA_CHAT_MODEL` (currently
-`gpt-5.6-sol`) with `AURA_REASONING_EFFORT=medium`. Automatic durable-fact
-extraction and rolling summaries use the lower-cost `AURA_MEMORY_MODEL`
-(`gpt-5.6-luna`). Both choices are environment-configurable.
+Normal conversation and tool decisions use `AURA_CHAT_MODEL` (default
+`grok-4.5` when `AI_PROVIDER=xai`, otherwise `gpt-5.6-sol`). Automatic
+durable-fact extraction, rolling summaries, and **vector embeddings** stay on
+OpenAI (`AURA_MEMORY_MODEL=gpt-5.6-luna` + `text-embedding-3-small`) so recall
+quality does not depend on the chat provider.
 
 ## Voice interface
 
