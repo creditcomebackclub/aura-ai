@@ -203,6 +203,7 @@ specifically. There is no separate manual "deploy" step to run.
   and `.env.local`). `.env.example` is the checked-in template documenting every
   variable the app reads (API keys, `AURA_OWNER_ID`, `AURA_STATE_BACKEND`,
   `AURA_RUNTIME`, `AURA_ACCESS_TOKEN`, email OAuth vars, `BLACKBOARD_ICAL_URL`,
+  `CALENDAR_ICAL_URL`,
   etc.) with placeholder values only.
 - **Cloud:** Render dashboard environment variables, configured against the
   `render.yaml` blueprint. Secret-shaped entries in `render.yaml` are declared
