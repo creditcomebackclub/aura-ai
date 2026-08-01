@@ -20,6 +20,7 @@ const mac = require('./mac_integration');
 const ccc = require('./ccc_database');
 const { generateSimplePdf } = require('./pdf_generator');
 const { isTelegramConfigured, sendTelegramMessage, sendTelegramAudio, isFromOwnerChat, downloadTelegramFile } = require('./telegram');
+const { runDailyGoalsDigest } = require('./daily_goals_digest');
 const { concatWavBuffers, splitIntoSentences } = require('./wav_utils');
 const { MemoryStore } = require('./memory_store');
 const {
@@ -731,6 +732,46 @@ app.post('/internal/scheduled/memory-extraction', authenticateCron, rateLimit, a
   } catch (error) {
     console.error('[Memory queue] Scheduled drain failed:', error.message);
     res.status(500).json({ ok: false, error: 'Memory extraction drain failed.' });
+  }
+});
+
+async function listOpenGoals() {
+  if (cloudState) return cloudState.listTasks();
+  return db.prepare(`
+    SELECT id, description, status, created_at
+    FROM goals
+    WHERE status != 'completed'
+    ORDER BY created_at DESC
+  `).all();
+}
+
+async function deliverDailyGoalsDigest() {
+  return runDailyGoalsDigest({
+    listOpenGoals,
+    sendAlert: sendProactiveAlert,
+    sendTelegram: sendTelegramMessage,
+    telegramConfigured: isTelegramConfigured(),
+    timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
+  });
+}
+
+// Morning open-goals digest. Supabase Cron hits this on sleeping Render Free
+// the same way Blackboard deadlines do.
+app.post('/internal/scheduled/daily-goals', authenticateCron, rateLimit, async (req, res) => {
+  try {
+    const result = await deliverDailyGoalsDigest();
+    res.json({
+      ok: true,
+      status: result.status,
+      sent: result.sent,
+      count: result.count,
+      telegram: result.telegram
+        ? { attempted: result.telegram.attempted, sent: result.telegram.sent }
+        : undefined
+    });
+  } catch (error) {
+    console.error('Error in scheduled daily goals digest:', error);
+    res.status(500).json({ ok: false, error: 'Daily goals digest failed.' });
   }
 });
 
@@ -2818,24 +2859,42 @@ if (schedulerEnabled) cron.schedule('0 7 * * *', async () => {
   }
 }, schedulerOptions);
 
+// Morning to-do digest: push open goals without Chris having to ask.
+// 7:30 AM Phoenix — after Blackboard (7), before business health (8).
+if (schedulerEnabled && process.env.AURA_DAILY_GOALS_DIGEST !== 'false') {
+  cron.schedule('30 7 * * *', async () => {
+    console.log('[Cron] Running daily goals digest...');
+    try {
+      const result = await deliverDailyGoalsDigest();
+      console.log('[Cron] Daily goals digest:', result.status, `count=${result.count}`);
+    } catch (error) {
+      console.error('Error in scheduled daily goals digest:', error);
+    }
+  }, schedulerOptions);
+}
+
 // Stale goals nudge, once a week: anything still open after 14 days gets
 // surfaced so it doesn't just quietly rot in the tracker.
 if (schedulerEnabled) cron.schedule('0 9 * * 1', async () => {
   console.log('[Cron] Running stale goals check...');
   try {
-    const staleGoals = cloudState
-      ? (await cloudState.listTasks()).filter(task =>
-          new Date(task.created_at).getTime() <= Date.now() - 14 * 86400000
-        )
-      : db.prepare(`
-          SELECT * FROM goals
-          WHERE status != 'completed'
-          AND created_at <= datetime('now', '-14 days')
-        `).all();
+    const staleGoals = (await listOpenGoals()).filter(task =>
+      new Date(task.created_at).getTime() <= Date.now() - 14 * 86400000
+    );
 
     if (staleGoals.length > 0) {
       const list = staleGoals.map(g => g.description || g.title).join('; ');
-      await sendProactiveAlert(`You have ${staleGoals.length} goal${staleGoals.length > 1 ? 's' : ''} that have been open for over two weeks: ${list}. Want to update or drop any of them?`);
+      const text = `You have ${staleGoals.length} goal${staleGoals.length > 1 ? 's' : ''} that have been open for over two weeks: ${list}. Want to update or drop any of them?`;
+      await sendProactiveAlert(text, 'goals', 'normal', {
+        dedupeKey: `stale-goals:${new Date().toISOString().slice(0, 10)}`
+      });
+      if (isTelegramConfigured()) {
+        try {
+          await sendTelegramMessage(text);
+        } catch (error) {
+          console.warn('[Cron] Stale-goals Telegram delivery failed:', error.message);
+        }
+      }
     }
   } catch (error) {
     console.error('Error in stale goals check:', error);

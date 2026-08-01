@@ -85,6 +85,44 @@ select cron.schedule(
   $job$
 );
 
+-- Morning open-goals digest at 7:30 AM Phoenix (14:30 UTC). Retries a few
+-- minutes later so a sleeping Render Free instance still gets woken.
+select cron.unschedule(jobid)
+from cron.job
+where jobname = 'aura-daily-goals-730am-phoenix';
+
+select cron.schedule(
+  'aura-daily-goals-730am-phoenix',
+  '30,35,40,45 14 * * *',
+  $job$
+    select net.http_post(
+      url := rtrim(
+        (
+          select decrypted_secret
+          from vault.decrypted_secrets
+          where name = 'aura_deadline_origin'
+        ),
+        '/'
+      ) || '/internal/scheduled/daily-goals',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'Accept', 'application/json',
+        'X-Aura-Cron-Secret',
+          (
+            select decrypted_secret
+            from vault.decrypted_secrets
+            where name = 'aura_deadline_cron_secret'
+          )
+      ),
+      body := jsonb_build_object(
+        'source', 'supabase_cron',
+        'scheduled_at', now()
+      ),
+      timeout_milliseconds := 60000
+    ) as request_id;
+  $job$
+);
+
 -- Remove delivered Mail/Calendar payloads that a client did not pick up, while
 -- retaining metadata about when and how the job completed.
 select cron.schedule(
