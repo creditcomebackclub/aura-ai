@@ -225,6 +225,7 @@ const socket = io({
 const orb = document.getElementById('orb');
 const statusText = document.getElementById('status-text');
 const conversationToggle = document.getElementById('conversation-toggle');
+const volumeToggle = document.getElementById('volume-toggle');
 const sourcePanel = document.getElementById('source-panel');
 const sourceLabel = document.getElementById('source-label');
 const webAnswer = document.getElementById('web-answer');
@@ -241,6 +242,15 @@ const audioPlayer = new Audio();
 // wake-word path — listening only arms for the next reply, which was the
 // reliable middle ground after always-on proved spotty.
 const CONVERSATION_MODE_KEY = 'aura_conversation_mode';
+// Phone volume alone often isn't enough — iOS routes <audio> through Web
+// Audio at unity gain, and Cartesia WAVs sit a bit quiet. A GainNode lets
+// playback go louder than the HTMLMediaElement 0..1 ceiling.
+const PLAYBACK_VOLUME_KEY = 'aura_playback_volume';
+const PLAYBACK_VOLUME_LEVELS = {
+  low: 1.15,
+  medium: 1.7,
+  high: 2.25
+};
 const SILENCE_HANGOVER_MS = 1100;
 const MIN_UTTERANCE_MS = 400;
 const MAX_UTTERANCE_MS = 20000;
@@ -262,6 +272,7 @@ let discardNextRecording = false;
 let audioContext = null;
 let audioAnalyser = null;
 let audioSource = null;
+let playbackGainNode = null;
 let waveformSamples = null;
 let waveformFrame = null;
 // Advances every frame so the wave travels on its own. The analyser only
@@ -414,6 +425,48 @@ function animateVoiceWave() {
   waveformFrame = requestAnimationFrame(animateVoiceWave);
 }
 
+function playbackVolumeLevel() {
+  const stored = localStorage.getItem(PLAYBACK_VOLUME_KEY);
+  if (stored && Object.prototype.hasOwnProperty.call(PLAYBACK_VOLUME_LEVELS, stored)) {
+    return stored;
+  }
+  // Default a bit above unity — the usual complaint is "quiet on iPhone
+  // even at max ringer," not that she's too loud.
+  return 'medium';
+}
+
+function playbackGainValue() {
+  return PLAYBACK_VOLUME_LEVELS[playbackVolumeLevel()] || PLAYBACK_VOLUME_LEVELS.medium;
+}
+
+function syncVolumeToggle() {
+  if (!volumeToggle) return;
+  const level = playbackVolumeLevel();
+  volumeToggle.dataset.level = level;
+  volumeToggle.setAttribute('aria-label', `Playback volume: ${level}. Tap to change.`);
+  volumeToggle.title = `Playback volume: ${level}. Tap to cycle.`;
+  volumeToggle.textContent = level === 'low'
+    ? 'Volume low'
+    : level === 'high'
+      ? 'Volume high'
+      : 'Volume med';
+}
+
+function applyPlaybackGain() {
+  audioPlayer.volume = 1;
+  if (playbackGainNode) {
+    playbackGainNode.gain.value = playbackGainValue();
+  }
+}
+
+function cyclePlaybackVolume() {
+  const order = ['low', 'medium', 'high'];
+  const next = order[(order.indexOf(playbackVolumeLevel()) + 1) % order.length];
+  localStorage.setItem(PLAYBACK_VOLUME_KEY, next);
+  applyPlaybackGain();
+  syncVolumeToggle();
+}
+
 async function ensureAudioGraph() {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass) return false;
@@ -424,13 +477,40 @@ async function ensureAudioGraph() {
     audioAnalyser.smoothingTimeConstant = 0.82;
     waveformSamples = new Uint8Array(audioAnalyser.fftSize);
     audioSource = audioContext.createMediaElementSource(audioPlayer);
-    audioSource.connect(audioAnalyser);
-    audioAnalyser.connect(audioContext.destination);
+    playbackGainNode = audioContext.createGain();
+    playbackGainNode.gain.value = playbackGainValue();
+    // Soft ceiling so High doesn't turn Cartesia peaks into harsh clipping
+    // on phone speakers.
+    const compressor = audioContext.createDynamicsCompressor();
+    compressor.threshold.value = -24;
+    compressor.knee.value = 18;
+    compressor.ratio.value = 3;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.22;
+    audioSource.connect(playbackGainNode);
+    playbackGainNode.connect(audioAnalyser);
+    audioAnalyser.connect(compressor);
+    compressor.connect(audioContext.destination);
+    audioPlayer.volume = 1;
   }
   if (audioContext.state === 'suspended') {
     await audioContext.resume();
   }
+  applyPlaybackGain();
   return true;
+}
+
+function playAudioBlob(blob) {
+  playbackCancelled = false;
+  resetVoiceQueue();
+  voiceQueueTail = voiceQueueTail.then(async () => {
+    if (playbackCancelled) return;
+    setOrbState('speaking', 'Speaking... Tap to stop');
+    isSpeaking = true;
+    audioPlayer.onplay = startVoiceWave;
+    await playBlobAndWait(blob);
+  });
+  finishVoiceQueue();
 }
 
 function startVoiceWave() {
@@ -810,6 +890,15 @@ if (conversationToggle) {
   conversationToggle.addEventListener('click', event => {
     event.stopPropagation();
     setConversationMode(!isConversationMode());
+  });
+}
+
+if (volumeToggle) {
+  syncVolumeToggle();
+  applyPlaybackGain();
+  volumeToggle.addEventListener('click', event => {
+    event.stopPropagation();
+    cyclePlaybackVolume();
   });
 }
 
