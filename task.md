@@ -47,10 +47,10 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Re-measure TTFA after `gpt-4o-mini-transcribe`.** Live baseline was
-  `TTFA 13089ms (whisper 6264, first_sentence 4706, tts 2103)`. STT was the biggest
-  slice — default model is now mini-transcribe. After deploy, capture a new
-  `[timing] TTFA` line; next cuts are first_sentence (Grok/context) and Cartesia TTS.
+- **Re-measure TTFA after early-clause stream + 24kHz TTS.** Latest live number was
+  `TTFA 8771ms (whisper 1955, first_sentence 3278, tts 3531)` after mini-transcribe.
+  Next deploy peels a leading clause for first audio and drops Cartesia to 24kHz —
+  capture a new `[timing] TTFA` line to confirm.
 - **Reposition the on-screen search-results panel and add an on-screen conversation transcript** in
   the PWA frontend (`public/`). The search-results panel was recently re-enabled and re-skinned
   (see Done recently); this is the next visual/layout pass on top of that, plus adding a transcript
