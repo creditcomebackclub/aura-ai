@@ -23,7 +23,14 @@ const SECRET_PATTERNS = [
   /\b(?:sk|rk|pk)-[a-z0-9_-]{20,}\b/i,
   /\beyJ[a-z0-9_-]{20,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\b/i,
   /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\s*(?:is|[:=])\s*\S{8,}/i,
-  /\b[a-f0-9]{48,}\b/i
+  /\b[a-f0-9]{48,}\b/i,
+  /\bghp_[a-zA-Z0-9]{20,}\b/,
+  /\bgho_[a-zA-Z0-9]{20,}\b/,
+  /\bgithub_pat_[a-zA-Z0-9_]{20,}\b/,
+  /\bxox[baprs]-[a-zA-Z0-9-]{10,}\b/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bsb_secret_[a-zA-Z0-9_-]{20,}\b/,
+  /\bBearer\s+[a-zA-Z0-9._\-+/=]{20,}\b/i
 ];
 
 const FORBIDDEN_INSTRUCTION_PATTERNS = [
@@ -350,6 +357,95 @@ function findSelfCapabilityNegation(text) {
   return null;
 }
 
+// Live-reply counterpart to findSelfCapabilityNegation: only fires when the
+// model denies a capability whose tool was actually offered this turn. The
+// offered-tool list is the source of truth — a denial about email is ignored
+// when check_email was filtered out of turnTools, and a database denial is
+// caught when get_client_snapshot (etc.) was present.
+const LIVE_CAPABILITY_DENIAL_CHECKS = [
+  {
+    tools: [
+      'list_database_tables', 'get_table_schema', 'query_database_table',
+      'count_database_rows', 'get_outstanding_balances', 'calculate_financial_metrics',
+      'get_client_snapshot', 'get_client_current_phase', 'list_deletable_test_letters'
+    ],
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,80}\b(?:access|query|look\s*up|check|read|use|reach)\b[^.]{0,50}\b(?:database|client|ccc|phase|balance|letter|ledger|credit\s+comeback)\b/i,
+      /\b(?:i\s+)?(?:don'?t|do\s+not)\s+have\b[^.]{0,50}\b(?:access|a\s+way|a\s+tool|the\s+tool|tools?)\b[^.]{0,50}\b(?:database|client|ccc|phase|balance|letter)\b/i,
+      /\bno\s+(?:access to|way to|tool (?:to|for)|ability to)\b[^.]{0,50}\b(?:database|client|ccc|phase|balance|letter|look\s*up)\b/i,
+      /\b(?:i\s+)?(?:can'?t|cannot|unable to)\b[^.]{0,40}\b(?:look\s*up|query|check|pull\s+up)\b[^.]{0,40}\b(?:client|phase|balance|letter|database)\b/i
+    ]
+  },
+  {
+    tools: ['check_email'],
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:read|check|access|see)\b[^.]{0,40}\b(?:email|mail|inbox)\b/i,
+      /\bno\s+(?:access to|way to|tool (?:to|for))\b[^.]{0,40}\b(?:email|mail|inbox)\b/i
+    ]
+  },
+  {
+    tools: ['check_calendar'],
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:read|check|access|see)\b[^.]{0,40}\bcalendar\b/i,
+      /\bno\s+(?:access to|way to|tool (?:to|for))\b[^.]{0,40}\bcalendar\b/i
+    ]
+  },
+  {
+    tools: ['check_blackboard'],
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:check|access|read|see)\b[^.]{0,40}\bblackboard\b/i,
+      /\bno\s+(?:access to|way to|tool (?:to|for))\b[^.]{0,40}\bblackboard\b/i
+    ]
+  },
+  {
+    tools: ['search_web'],
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:search|browse|look\s*up)\b[^.]{0,40}\b(?:web|internet|online)\b/i,
+      /\bno\s+(?:access to|way to|tool (?:to|for))\b[^.]{0,40}\b(?:web\s*search|live\s*search|the\s+internet)\b/i
+    ]
+  },
+  {
+    tools: ['get_goals', 'add_goal', 'update_goal_status'],
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:access|check|see|track)\b[^.]{0,40}\bgoals?\b/i
+    ]
+  },
+  {
+    tools: ['query_finances', 'log_finance'],
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:access|check|see|log)\b[^.]{0,40}\b(?:financ|transaction)/i
+    ]
+  }
+];
+
+function findFalseCapabilityDenial(text, availableToolNames = []) {
+  const available = new Set(
+    (Array.isArray(availableToolNames) ? availableToolNames : [])
+      .filter(name => typeof name === 'string' && name)
+  );
+  if (!available.size) return null;
+
+  const value = String(text || '');
+  if (!value.trim()) return null;
+
+  for (const check of LIVE_CAPABILITY_DENIAL_CHECKS) {
+    const matchedTools = check.tools.filter(name => available.has(name));
+    if (!matchedTools.length) continue;
+    for (const pattern of check.patterns) {
+      const match = value.match(pattern);
+      if (!match) continue;
+      const start = Math.max(0, match.index - 40);
+      const end = Math.min(value.length, match.index + match[0].length + 40);
+      return {
+        snippet: value.slice(start, end).trim(),
+        tools: matchedTools,
+        pattern: pattern.source
+      };
+    }
+  }
+  return null;
+}
+
 const PROFILE_KIND_LABELS = {
   identity: 'Identity',
   relationship: 'People',
@@ -446,6 +542,15 @@ class MemoryV2 {
     this.semanticMemory = semanticMemory;
     this.client = client;
     this.extractionModel = extractionModel;
+    // Serializes learn/forget so a slow extract-then-upsert cannot snapshot a
+    // stale profile and clobber a concurrent write to the same keys.
+    this.mutationQueue = Promise.resolve();
+  }
+
+  _withMutationLock(task) {
+    const run = this.mutationQueue.catch(() => {}).then(task);
+    this.mutationQueue = run.catch(() => {});
+    return run;
   }
 
   async extractWithModel(text, source, currentProfile = null) {
@@ -503,76 +608,80 @@ class MemoryV2 {
       return { learned: [], skipped: containsSecret(normalized) ? 'contains_secret' : 'empty' };
     }
 
-    const currentProfile = await this.profileStore.getOwnerProfile();
-    const deterministic = deterministicEntries(normalized, source);
-    let extracted = [];
-    let extractionError = null;
-    try {
-      extracted = await this.extractWithModel(normalized, source, currentProfile);
-    } catch (error) {
-      extractionError = error;
-      console.warn('[Memory v2] Durable-fact extraction failed:', error.message);
-    }
-
-    const merged = new Map();
-    for (const entry of [...extracted, ...deterministic]) {
-      if (entry) merged.set(entry.key, entry);
-    }
-    if (explicit && merged.size === 0) {
-      const fallback = normalizeEntry({
-        key: '',
-        kind: 'durable_fact',
-        value: normalized,
-        subject: '',
-        relationship: '',
-        instruction: '',
-        replaces_key: '',
-        pinned: false,
-        confidence: 1
-      }, source);
-      if (fallback) merged.set(fallback.key, fallback);
-    }
-
-    if (!merged.size) {
-      if (extractionError && throwOnExtractionError) throw extractionError;
-      return { learned: [] };
-    }
-    const learned = [];
-    const replacedKeys = new Set();
-    for (const entry of merged.values()) {
-      const replacementKey = entry.replaces_key || entry.key;
-      const existing = currentProfile.entries?.[replacementKey] ||
-        currentProfile.entries?.[entry.key] ||
-        null;
-      const saved = await this.semanticMemory.save(canonicalMemory(entry), {
-        kind: entry.kind,
-        source,
-        confidence: explicit ? 1 : entry.confidence,
-        sensitivity: 'private'
-      });
-      const nextEntry = { ...entry, memory_id: saved.id };
-      if (existing?.memory_id && existing.memory_id !== saved.id &&
-          (existing.value !== entry.value ||
-           existing.relationship !== entry.relationship ||
-           existing.instruction !== entry.instruction)) {
-        await this.semanticMemory.supersede(existing.memory_id, saved.id);
+    return this._withMutationLock(async () => {
+      // Read the profile inside the lock so the supersede/replace decision
+      // cannot race another learn/forget that lands before our upsert.
+      const currentProfile = await this.profileStore.getOwnerProfile();
+      const deterministic = deterministicEntries(normalized, source);
+      let extracted = [];
+      let extractionError = null;
+      try {
+        extracted = await this.extractWithModel(normalized, source, currentProfile);
+      } catch (error) {
+        extractionError = error;
+        console.warn('[Memory v2] Durable-fact extraction failed:', error.message);
       }
-      if (entry.replaces_key && entry.replaces_key !== entry.key) {
-        replacedKeys.add(entry.replaces_key);
+
+      const merged = new Map();
+      for (const entry of [...extracted, ...deterministic]) {
+        if (entry) merged.set(entry.key, entry);
       }
-      learned.push(nextEntry);
-    }
-    if (replacedKeys.size) {
-      await this.profileStore.removeOwnerProfileEntries([...replacedKeys]);
-    }
-    await this.profileStore.upsertOwnerProfileEntries(learned);
-    // Deterministic entries are still persisted during a provider outage, but
-    // the durable worker retries so Luna can recover any additional facts.
-    if (extractionError && throwOnExtractionError) {
-      extractionError.learned = learned;
-      throw extractionError;
-    }
-    return { learned };
+      if (explicit && merged.size === 0) {
+        const fallback = normalizeEntry({
+          key: '',
+          kind: 'durable_fact',
+          value: normalized,
+          subject: '',
+          relationship: '',
+          instruction: '',
+          replaces_key: '',
+          pinned: false,
+          confidence: 1
+        }, source);
+        if (fallback) merged.set(fallback.key, fallback);
+      }
+
+      if (!merged.size) {
+        if (extractionError && throwOnExtractionError) throw extractionError;
+        return { learned: [] };
+      }
+      const learned = [];
+      const replacedKeys = new Set();
+      for (const entry of merged.values()) {
+        const replacementKey = entry.replaces_key || entry.key;
+        const existing = currentProfile.entries?.[replacementKey] ||
+          currentProfile.entries?.[entry.key] ||
+          null;
+        const saved = await this.semanticMemory.save(canonicalMemory(entry), {
+          kind: entry.kind,
+          source,
+          confidence: explicit ? 1 : entry.confidence,
+          sensitivity: 'private'
+        });
+        const nextEntry = { ...entry, memory_id: saved.id };
+        if (existing?.memory_id && existing.memory_id !== saved.id &&
+            (existing.value !== entry.value ||
+             existing.relationship !== entry.relationship ||
+             existing.instruction !== entry.instruction)) {
+          await this.semanticMemory.supersede(existing.memory_id, saved.id);
+        }
+        if (entry.replaces_key && entry.replaces_key !== entry.key) {
+          replacedKeys.add(entry.replaces_key);
+        }
+        learned.push(nextEntry);
+      }
+      if (replacedKeys.size) {
+        await this.profileStore.removeOwnerProfileEntries([...replacedKeys]);
+      }
+      await this.profileStore.upsertOwnerProfileEntries(learned);
+      // Deterministic entries are still persisted during a provider outage, but
+      // the durable worker retries so Luna can recover any additional facts.
+      if (extractionError && throwOnExtractionError) {
+        extractionError.learned = learned;
+        throw extractionError;
+      }
+      return { learned };
+    });
   }
 
   async forget(query) {
@@ -580,24 +689,26 @@ class MemoryV2 {
     if (!normalized || /^(?:this|that|it|everything)$/i.test(normalized)) {
       return { forgotten: false, needs_specificity: true };
     }
-    const profile = await this.profileStore.getOwnerProfile();
-    const matches = findProfileMatches(profile, normalized, { limit: 50, threshold: 0.34 });
-    const keys = matches.map(entry => entry.key);
-    const memoryIds = new Set(matches.map(entry => entry.memory_id).filter(Boolean));
+    return this._withMutationLock(async () => {
+      const profile = await this.profileStore.getOwnerProfile();
+      const matches = findProfileMatches(profile, normalized, { limit: 50, threshold: 0.34 });
+      const keys = matches.map(entry => entry.key);
+      const memoryIds = new Set(matches.map(entry => entry.memory_id).filter(Boolean));
 
-    const memories = await this.semanticMemory.list(500);
-    for (const memory of memories) {
-      const score = textMatchScore(normalized, memory.content);
-      if (score >= 0.67) memoryIds.add(memory.id);
-    }
+      const memories = await this.semanticMemory.list(500);
+      for (const memory of memories) {
+        const score = textMatchScore(normalized, memory.content);
+        if (score >= 0.67) memoryIds.add(memory.id);
+      }
 
-    for (const id of memoryIds) await this.semanticMemory.forget(id);
-    if (keys.length) await this.profileStore.removeOwnerProfileEntries(keys);
-    return {
-      forgotten: keys.length > 0 || memoryIds.size > 0,
-      profile_keys: keys,
-      memory_count: memoryIds.size
-    };
+      for (const id of memoryIds) await this.semanticMemory.forget(id);
+      if (keys.length) await this.profileStore.removeOwnerProfileEntries(keys);
+      return {
+        forgotten: keys.length > 0 || memoryIds.size > 0,
+        profile_keys: keys,
+        memory_count: memoryIds.size
+      };
+    });
   }
 
   async buildContext(query) {
@@ -723,9 +834,11 @@ class ConversationSummaryService {
 module.exports = {
   ConversationSummaryService,
   MemoryV2,
+  LIVE_CAPABILITY_DENIAL_CHECKS,
   buildProfileContext,
   containsSecret,
   deterministicEntries,
+  findFalseCapabilityDenial,
   findProfileMatches,
   findSelfCapabilityNegation,
   normalizeEntry,

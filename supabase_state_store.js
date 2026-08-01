@@ -637,6 +637,46 @@ class SupabaseStateStore {
     return data?.value ?? null;
   }
 
+  // Returns { value, updated_at } (or null) so callers can CAS on updated_at.
+  async getStateRow(key) {
+    const { data, error } = await this.client.from('aura_state')
+      .select('value, updated_at')
+      .eq('owner_id', this.ownerId)
+      .eq('key', key)
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  // Optimistic lock on aura_state.updated_at. expectedUpdatedAt === null means
+  // "insert only if missing"; a concurrent insert returns false so the caller
+  // can retry. Used by the daily web-search limiter across processes.
+  async compareAndSetState(key, expectedUpdatedAt, value) {
+    const updatedAt = new Date().toISOString();
+    if (expectedUpdatedAt == null) {
+      const { error } = await this.client.from('aura_state').insert({
+        owner_id: this.ownerId,
+        key,
+        value,
+        updated_at: updatedAt
+      });
+      if (error) {
+        if (error.code === '23505') return false;
+        throw error;
+      }
+      return true;
+    }
+
+    const { data, error } = await this.client.from('aura_state')
+      .update({ value, updated_at: updatedAt })
+      .eq('owner_id', this.ownerId)
+      .eq('key', key)
+      .eq('updated_at', expectedUpdatedAt)
+      .select('key');
+    if (error) throw error;
+    return Array.isArray(data) && data.length > 0;
+  }
+
   async setState(key, value) {
     const { error } = await this.client.from('aura_state').upsert({
       owner_id: this.ownerId,

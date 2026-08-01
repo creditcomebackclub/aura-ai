@@ -42,7 +42,15 @@ const SEARCH_SECRET_PATTERNS = [
   /\b(?:sk|rk|pk)-[a-z0-9_-]{20,}\b/i,
   /\beyJ[a-z0-9_-]{20,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\b/i,
   /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\s*(?:is|[:=])\s*\S{8,}/i,
-  /\b[a-f0-9]{48,}\b/i
+  /\b[a-f0-9]{48,}\b/i,
+  // Common cloud/VCS tokens the owner might paste into a "was this leaked?" ask.
+  /\bghp_[a-zA-Z0-9]{20,}\b/,
+  /\bgho_[a-zA-Z0-9]{20,}\b/,
+  /\bgithub_pat_[a-zA-Z0-9_]{20,}\b/,
+  /\bxox[baprs]-[a-zA-Z0-9-]{10,}\b/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bsb_secret_[a-zA-Z0-9_-]{20,}\b/,
+  /\bBearer\s+[a-zA-Z0-9._\-+/=]{20,}\b/i
 ];
 
 const OWNER_SEARCH_INPUT_MAX_LENGTH = 1000;

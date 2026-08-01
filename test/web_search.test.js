@@ -331,6 +331,61 @@ test('daily web search limiter serializes settlements against concurrent reserva
   assert.equal(state.value.count, 3);
 });
 
+test('daily web search limiter CAS path retries lost cross-process updates', async () => {
+  let value = null;
+  let token = null;
+  let writes = 0;
+  const limiter = createDailyWebSearchLimiter({
+    getState: async () => value,
+    setState: async (_key, next) => { value = next; },
+    readUsage: async () => ({ value, token }),
+    tryWriteUsage: async (_key, expectedToken, next) => {
+      writes += 1;
+      // First write loses to a simulated concurrent process, then succeeds.
+      if (writes === 1) {
+        token = 'other-process';
+        value = { date: '2026-07-29', count: 1, limit: 5, updated_at: 'other' };
+        return false;
+      }
+      if (expectedToken !== token) return false;
+      value = next;
+      token = `t${writes}`;
+      return true;
+    },
+    limit: 5,
+    now: () => new Date('2026-07-29T12:00:00Z')
+  });
+
+  const usage = await limiter.consume();
+  assert.equal(usage.count, 2);
+  assert.equal(value.count, 2);
+  assert.ok(writes >= 2);
+});
+
+test('daily web search limiter CAS path enforces the daily limit across contending writers', async () => {
+  let value = { date: '2026-07-29', count: 4, limit: 5, updated_at: 't0' };
+  let token = 't0';
+  const limiter = createDailyWebSearchLimiter({
+    getState: async () => value,
+    setState: async (_key, next) => { value = next; },
+    readUsage: async () => ({ value, token }),
+    tryWriteUsage: async (_key, expectedToken, next) => {
+      if (expectedToken !== token) return false;
+      value = next;
+      token = next.updated_at;
+      return true;
+    },
+    limit: 5,
+    now: () => new Date('2026-07-29T12:00:00Z')
+  });
+
+  assert.equal((await limiter.consume()).count, 5);
+  await assert.rejects(
+    () => limiter.consume(),
+    error => error.code === 'WEB_SEARCH_DAILY_LIMIT'
+  );
+});
+
 test('web search reports how many billable provider searches it ran', async () => {
   const response = successfulResponse();
   response.output.unshift({

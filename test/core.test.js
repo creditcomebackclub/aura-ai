@@ -7,6 +7,7 @@ const {
   MemoryV2,
   buildProfileContext,
   deterministicEntries,
+  findFalseCapabilityDenial,
   findProfileMatches,
   findSelfCapabilityNegation,
   parseMemoryCommand,
@@ -15,11 +16,16 @@ const {
 const { brainRequestOptions, resolveModelConfig } = require('../model_router');
 const {
   OWNER_SEARCH_INPUT_MAX_LENGTH,
+  containsSearchSecret,
   getToolPolicy,
   parseAndAuthorizeToolCall,
   resolveOwnerSearchInput,
   validatePublicSearchInput
 } = require('../agent_policy');
+const {
+  isClearOwnerApproval,
+  isClearOwnerRefusal
+} = require('../owner_approval');
 const {
   normalizePhaseLabel,
   isOutstanding,
@@ -393,6 +399,56 @@ test('automatic learning saves structured profile entries and semantic memory', 
   assert.equal(semanticMemory.rows.size, 1);
 });
 
+test('concurrent learns serialize so a slow extract cannot clobber another write', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  let releaseFirstExtract;
+  const firstExtractGate = new Promise(resolve => { releaseFirstExtract = resolve; });
+  let extractCalls = 0;
+  const client = {
+    chat: {
+      completions: {
+        async create({ messages }) {
+          extractCalls += 1;
+          const text = messages.find(message => message.role === 'user')?.content || '';
+          if (extractCalls === 1) await firstExtractGate;
+          const value = text.includes('Maya') ? 'Maya' : 'Emma';
+          return {
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  entries: [{
+                    key: `people.${value.toLowerCase()}`,
+                    kind: 'relationship',
+                    value,
+                    subject: value,
+                    relationship: 'daughter',
+                    instruction: '',
+                    replaces_key: '',
+                    pinned: true,
+                    confidence: 1
+                  }]
+                })
+              }
+            }]
+          };
+        }
+      }
+    }
+  };
+  const memory = new MemoryV2({ profileStore, semanticMemory, client });
+  const first = memory.learnFromUserMessage('Remember my daughter is Maya');
+  // Let the first learn enter extract before starting the second.
+  await new Promise(resolve => setImmediate(resolve));
+  const second = memory.learnFromUserMessage('Remember my daughter is Emma');
+  releaseFirstExtract();
+  await Promise.all([first, second]);
+
+  const entries = (await profileStore.getOwnerProfile()).entries;
+  assert.equal(entries['people.maya']?.value, 'Maya');
+  assert.equal(entries['people.emma']?.value, 'Emma');
+});
+
 test('model and deterministic communication preferences merge into one canonical rule', async () => {
   const profileStore = createProfileStore();
   const semanticMemory = createSemanticMemory();
@@ -567,6 +623,91 @@ test('findSelfCapabilityNegation catches the actual incident string and ignores 
     'Chris said Karl Elliott has no access to his online portal yet.'
   ]) {
     assert.equal(findSelfCapabilityNegation(benign), null, benign);
+  }
+});
+
+test('owner approval requires an approval-shaped message, not a bare approval word in a mixed turn', () => {
+  for (const approval of [
+    'yes',
+    'Yeah',
+    'send it',
+    'go ahead',
+    'approve',
+    'permission granted',
+    'Yes, send the email.',
+    'Confirmed — delete it.'
+  ]) {
+    assert.equal(isClearOwnerApproval(approval), true, approval);
+    assert.equal(isClearOwnerRefusal(approval), false, approval);
+  }
+
+  for (const mixed of [
+    'yes, also can you check my email',
+    'Yes, pull up Mary\'s balance',
+    'Can you send a Telegram that I\'m late?',
+    'please proceed with the client outreach plan tomorrow',
+    'approve the budget after you check the ledger'
+  ]) {
+    assert.equal(isClearOwnerApproval(mixed), false, mixed);
+  }
+
+  for (const refusal of ['no', "don't", 'cancel', 'hold off', "don't send it", 'wait']) {
+    assert.equal(isClearOwnerRefusal(refusal), true, refusal);
+    assert.equal(isClearOwnerApproval(refusal), false, refusal);
+  }
+
+  assert.equal(isClearOwnerApproval('not sure'), false);
+  assert.equal(isClearOwnerApproval('maybe later'), false);
+  assert.equal(isClearOwnerApproval(''), false);
+});
+
+test('findFalseCapabilityDenial only fires when the denied capability was actually offered', () => {
+  const denial = findFalseCapabilityDenial(
+    "I don't have access to the client database.",
+    ['get_client_snapshot', 'check_email']
+  );
+  assert.ok(denial);
+  assert.ok(denial.tools.includes('get_client_snapshot'));
+
+  assert.equal(
+    findFalseCapabilityDenial(
+      "I don't have access to the client database.",
+      ['check_email', 'search_web']
+    ),
+    null,
+    'database denial must not fire when business tools were not offered'
+  );
+
+  assert.equal(
+    findFalseCapabilityDenial(
+      'The client has no access to their bank statement.',
+      ['get_client_snapshot']
+    ),
+    null,
+    'benign client-language must not count as a self-denial'
+  );
+
+  const emailDenial = findFalseCapabilityDenial(
+    "I can't check email from here.",
+    ['check_email']
+  );
+  assert.ok(emailDenial);
+  assert.deepEqual(emailDenial.tools, ['check_email']);
+});
+
+test('search secret patterns catch common cloud and VCS tokens', () => {
+  for (const secret of [
+    `ghp_${'a'.repeat(36)}`,
+    `xoxb-${'a'.repeat(12)}-${'b'.repeat(24)}`,
+    'AKIAIOSFODNN7EXAMPLE',
+    `sb_secret_${'c'.repeat(24)}`,
+    `Bearer ${'d'.repeat(32)}`
+  ]) {
+    assert.equal(containsSearchSecret(secret), true, secret);
+    assert.throws(
+      () => resolveOwnerSearchInput(`was this leaked? ${secret}`),
+      error => error.code === 'WEB_SEARCH_SECRET_IN_INPUT'
+    );
   }
 });
 
