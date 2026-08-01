@@ -49,6 +49,7 @@ const { CompanionClient } = require('./companion_client');
 const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
 const { isDirectEmailConfigured, isDirectSendConfigured, sendGmailMessage, getDirectUnreadEmails } = require('./email_provider');
+const { isDirectCalendarConfigured, getDirectCalendarText } = require('./calendar_feed');
 const { brainRequestOptions, resolveModelConfig } = require('./model_router');
 const {
   WebSearchError,
@@ -788,6 +789,9 @@ async function peekBlackboardUpcoming() {
 }
 
 async function peekTodaysCalendar() {
+  // Prefer the private Google/Calendly iCal feed when configured so the
+  // morning brief (and check_calendar) work on cloud without the Mac awake.
+  if (isDirectCalendarConfigured()) return getDirectCalendarText();
   if (companionClient) return companionClient.execute('check_calendar');
   return mac.getTodaysCalendar();
 }
@@ -1133,7 +1137,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'check_calendar',
-      description: 'Reads the users scheduled events for today and tomorrow from the native Apple Calendar app.',
+      description: 'Reads the users scheduled events for today and tomorrow. Uses the configured Google/Calendly iCal feed when available (cloud-capable); otherwise Apple Calendar via the Mac companion.',
       parameters: { type: 'object', properties: {} }
     }
   },
@@ -1686,10 +1690,11 @@ async function handleToolCall(toolCall, options = {}) {
       result = emails;
       break;
     case 'check_calendar':
-      const events = companionClient
-        ? await companionClient.execute('check_calendar')
-        : await mac.getTodaysCalendar();
-      result = events;
+      result = isDirectCalendarConfigured()
+        ? await getDirectCalendarText()
+        : companionClient
+          ? await companionClient.execute('check_calendar')
+          : await mac.getTodaysCalendar();
       break;
     case 'list_pending_owner_actions': {
       // Email only now - Telegram sends immediately with no staging step, so
