@@ -47,10 +47,10 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Re-measure TTFA after early-clause stream + 24kHz TTS.** Latest live number was
-  `TTFA 8771ms (whisper 1955, first_sentence 3278, tts 3531)` after mini-transcribe.
-  Next deploy peels a leading clause for first audio and drops Cartesia to 24kHz —
-  capture a new `[timing] TTFA` line to confirm.
+- **Re-measure TTFA after Grok `reasoning_effort: low`.** Latest live number was
+  `TTFA 6279ms (whisper 1675, first_sentence 3539, tts 1061)`. First-sentence was
+  the bottleneck — Grok was silently defaulting to high effort when the field was
+  omitted. Capture a new `[timing] TTFA` after deploy.
 - **Reposition the on-screen search-results panel and add an on-screen conversation transcript** in
   the PWA frontend (`public/`). The search-results panel was recently re-enabled and re-skinned
   (see Done recently); this is the next visual/layout pass on top of that, plus adding a transcript
