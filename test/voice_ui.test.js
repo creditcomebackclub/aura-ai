@@ -133,4 +133,5 @@ test('voice path logs wall-clock TTFA marks in the browser console', () => {
   assert.match(app, /timing\.whisperMs/);
   assert.match(app, /timing\.firstSentenceMs/);
   assert.match(app, /timing\.ttfaMs/);
+  assert.match(app, /audioBitsPerSecond:\s*48000/);
 });

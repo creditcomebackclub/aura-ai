@@ -296,7 +296,7 @@ then direct `mac_integration.js` call.
 | Vector memory | `OPENAI_API_KEY` (`text-embedding-3-small`), `AURA_MEMORY_MODEL` (default `gpt-5.6-luna` for extraction/summaries) — always OpenAI, even when chat is xAI/Grok | Semantic recall and Luna extraction unavailable without OpenAI |
 | Memory extraction / summarization | `AURA_MEMORY_MODEL` (default `gpt-5.6-luna`), `AURA_SUMMARY_MESSAGE_THRESHOLD` (default 40) | Summaries never regenerate below the threshold |
 | Embeddings (memory search) | `OPENAI_API_KEY` | `getEmbedding()` throws; semantic memory falls back to non-embedded storage |
-| Voice transcription | `OPENAI_API_KEY` (Whisper `whisper-1`, `/api/transcribe`) | Throws `"OPENAI_API_KEY is required for transcription."` |
+| Voice transcription | `OPENAI_API_KEY` + `AURA_TRANSCRIBE_MODEL` (default `gpt-4o-mini-transcribe`, `/api/transcribe`; falls back to `whisper-1`) | Throws `"OPENAI_API_KEY is required for transcription."` |
 | TTS | `CARTESIA_API_KEY` (`/api/tts`, raw fetch to `https://api.cartesia.ai/tts/bytes`, model `sonic-3.5`) | Cartesia API call fails, 500 returned |
 | Live web search | `OPENAI_API_KEY`, `OPENAI_WEB_SEARCH_MODEL` (default `gpt-5.4-mini`), `AURA_WEB_SEARCH_CONTEXT` (default `medium`), `AURA_WEB_SEARCH_TIMEOUT_MS` (default 45000), `AURA_WEB_SEARCH_DAILY_LIMIT` (default 25) | Throws `WEB_SEARCH_NOT_CONFIGURED` |
 | Supabase-backed state (cloud) | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `AURA_OWNER_ID`, `AURA_STATE_BACKEND=supabase` | Falls back to local SQLite (`aura.db`) + in-process `localProfileStore` |

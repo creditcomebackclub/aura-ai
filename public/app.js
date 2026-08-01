@@ -989,7 +989,14 @@ async function startListening({ fromConversation = false } = {}) {
       mimeType = 'audio/mp4';
     }
 
-    mediaRecorder = new MediaRecorder(stream, { mimeType });
+    // Cap bitrate so Whisper/STT uploads stay small — long webm blobs were a
+    // real slice of the measured ~6s transcription stage.
+    const recorderOptions = { mimeType, audioBitsPerSecond: 48000 };
+    try {
+      mediaRecorder = new MediaRecorder(stream, recorderOptions);
+    } catch {
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+    }
     audioChunks = [];
 
     mediaRecorder.ondataavailable = (event) => {
