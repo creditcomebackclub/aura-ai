@@ -711,14 +711,17 @@ class MemoryV2 {
     });
   }
 
-  async buildContext(query) {
+  async buildContext(query, { includeSemantic = true } = {}) {
     // Neither fetch depends on the other's result - run concurrently instead
     // of paying two sequential round trips (Supabase read + embedding/vector
-    // search) on every single chat turn.
-    const [profile, semantic] = await Promise.all([
-      this.profileStore.getOwnerProfile(),
-      this.semanticMemory.search(query, { limit: 6, threshold: 0.32 })
-    ]);
+    // search) on every single chat turn. Lightweight chit-chat skips the
+    // embedding/vector leg entirely (profile only) — that was a real slice of
+    // first_sentence on "hey what's up" turns.
+    const profilePromise = this.profileStore.getOwnerProfile();
+    const semanticPromise = includeSemantic
+      ? this.semanticMemory.search(query, { limit: 6, threshold: 0.32 })
+      : Promise.resolve([]);
+    const [profile, semantic] = await Promise.all([profilePromise, semanticPromise]);
     const relatedProfile = findProfileMatches(profile, query);
     const seen = new Set();
     const related = [];
