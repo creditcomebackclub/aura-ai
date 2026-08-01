@@ -224,6 +224,7 @@ const socket = io({
 
 const orb = document.getElementById('orb');
 const statusText = document.getElementById('status-text');
+const conversationToggle = document.getElementById('conversation-toggle');
 const sourcePanel = document.getElementById('source-panel');
 const sourceLabel = document.getElementById('source-label');
 const webAnswer = document.getElementById('web-answer');
@@ -235,9 +236,29 @@ const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 // Global audio player for iOS Safari unlocking
 const audioPlayer = new Audio();
 
+// Conversation mode: after AURA finishes speaking, reopen the mic and
+// auto-stop on a short pause. This is NOT the old ambient always-on /
+// wake-word path — listening only arms for the next reply, which was the
+// reliable middle ground after always-on proved spotty.
+const CONVERSATION_MODE_KEY = 'aura_conversation_mode';
+const SILENCE_HANGOVER_MS = 1100;
+const MIN_UTTERANCE_MS = 400;
+const MAX_UTTERANCE_MS = 20000;
+// If the mic arms after her reply and nobody speaks, drop back to idle
+// instead of holding the mic open until MAX_UTTERANCE_MS.
+const NO_SPEECH_IDLE_MS = 5000;
+const SPEECH_RMS_START = 0.025;
+const SPEECH_RMS_CONTINUE = 0.015;
+
 let isListening = false;
 let isSpeaking = false;
 let audioUnlocked = false;
+let silenceWatchFrame = null;
+let silenceListenContext = null;
+let listeningFromConversation = false;
+// When true, the next mediaRecorder.onstop should release the mic without
+// sending audio (no-speech idle timeout / explicit cancel).
+let discardNextRecording = false;
 let audioContext = null;
 let audioAnalyser = null;
 let audioSource = null;
@@ -515,6 +536,94 @@ function showSearchEvidence(webResults = [], sources = [], replyText = '') {
   sourcePanel.setAttribute('aria-hidden', String(!hasContent));
 }
 
+function isConversationMode() {
+  return localStorage.getItem(CONVERSATION_MODE_KEY) !== 'false';
+}
+
+function idleStatusText() {
+  return isConversationMode()
+    ? 'Tap to talk · conversation on'
+    : 'Tap to talk to AURA';
+}
+
+function syncConversationToggle() {
+  if (!conversationToggle) return;
+  const on = isConversationMode();
+  conversationToggle.setAttribute('aria-pressed', String(on));
+  conversationToggle.textContent = on ? 'Conversation on' : 'Conversation off';
+}
+
+function setConversationMode(on) {
+  localStorage.setItem(CONVERSATION_MODE_KEY, on ? 'true' : 'false');
+  syncConversationToggle();
+  if (!isListening && !isSpeaking && !isProcessing) {
+    setOrbState('idle', idleStatusText());
+  }
+}
+
+function clearSilenceWatch() {
+  if (silenceWatchFrame) {
+    cancelAnimationFrame(silenceWatchFrame);
+    silenceWatchFrame = null;
+  }
+  if (silenceListenContext) {
+    silenceListenContext.close().catch(() => {});
+    silenceListenContext = null;
+  }
+}
+
+function armSilenceAutoStop(stream) {
+  clearSilenceWatch();
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return;
+  const ctx = new AudioCtx();
+  silenceListenContext = ctx;
+  const source = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 2048;
+  source.connect(analyser);
+  const samples = new Uint8Array(analyser.fftSize);
+  const startedAt = Date.now();
+  let heardSpeech = false;
+  let silenceStartedAt = null;
+
+  const tick = () => {
+    if (!isListening || !mediaRecorder || mediaRecorder.state === 'inactive') {
+      clearSilenceWatch();
+      return;
+    }
+    analyser.getByteTimeDomainData(samples);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const v = (samples[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / samples.length);
+    const elapsed = Date.now() - startedAt;
+    if (!heardSpeech && elapsed >= NO_SPEECH_IDLE_MS) {
+      cancelListeningToIdle();
+      return;
+    }
+    if (elapsed >= MAX_UTTERANCE_MS) {
+      stopListening();
+      return;
+    }
+    const threshold = heardSpeech ? SPEECH_RMS_CONTINUE : SPEECH_RMS_START;
+    if (rms >= threshold) {
+      heardSpeech = true;
+      silenceStartedAt = null;
+    } else if (heardSpeech && elapsed >= MIN_UTTERANCE_MS) {
+      if (!silenceStartedAt) silenceStartedAt = Date.now();
+      else if (Date.now() - silenceStartedAt >= SILENCE_HANGOVER_MS) {
+        stopListening();
+        return;
+      }
+    }
+    silenceWatchFrame = requestAnimationFrame(tick);
+  };
+  silenceWatchFrame = requestAnimationFrame(tick);
+}
+
 // Cuts AURA off mid-sentence and returns the orb to idle.
 function stopSpeaking() {
   playbackCancelled = true;
@@ -523,7 +632,7 @@ function stopSpeaking() {
   releaseAudioUrl();
   isSpeaking = false;
   stopVoiceWave();
-  setOrbState('idle', 'Tap to talk to AURA');
+  setOrbState('idle', idleStatusText());
   showSearchEvidence([], []);
 }
 
@@ -629,13 +738,23 @@ function enqueueSentenceAudio(text, isFirst) {
 // 'done' event arrived) - the actual "return to idle" only happens once
 // every queued clip has finished playing, not the moment this is called.
 function finishVoiceQueue() {
-  voiceQueueTail = voiceQueueTail.then(() => {
+  voiceQueueTail = voiceQueueTail.then(async () => {
     if (playbackCancelled) return;
     isSpeaking = false;
     stopVoiceWave();
     releaseAudioUrl();
-    setOrbState('idle', 'Tap to talk to AURA');
     showSearchEvidence([], []);
+    // Hands-free follow-up: reopen the mic after she finishes speaking.
+    // Silence auto-stop ends the utterance; tap still cancels anytime.
+    if (isConversationMode() && !isProcessing && !isListening) {
+      try {
+        await startListening({ fromConversation: true });
+        return;
+      } catch (error) {
+        console.warn('Conversation re-listen failed:', error.message || error);
+      }
+    }
+    setOrbState('idle', idleStatusText());
   });
 }
 
@@ -643,7 +762,7 @@ function finishVoiceQueue() {
 socket.on('connect', () => {
   console.log('Connected to AURA server');
   if (orb.className === 'error' || statusText.textContent.includes('Reconnecting')) {
-    setOrbState('idle', 'Tap to talk to AURA');
+    setOrbState('idle', idleStatusText());
   }
 });
 
@@ -683,9 +802,16 @@ socket.on('proactive-alert', async (data) => {
     if (!ttsRes.ok) throw new Error('TTS API failed');
     const blob = await ttsRes.blob();
     playAudioBlob(blob);
-  } catch (err) { console.error(err); setOrbState('idle', 'Tap to talk to AURA'); }
+  } catch (err) { console.error(err); setOrbState('idle', idleStatusText()); }
 });
 
+if (conversationToggle) {
+  syncConversationToggle();
+  conversationToggle.addEventListener('click', event => {
+    event.stopPropagation();
+    setConversationMode(!isConversationMode());
+  });
+}
 
 // Interaction & Microphone Permission Handling
 document.getElementById('orb-container').addEventListener('click', async () => {
@@ -696,8 +822,12 @@ document.getElementById('orb-container').addEventListener('click', async () => {
   }
 
   // Tapping the orb while she's speaking (orange) interrupts her.
+  // In conversation mode, jump straight into listening for the barge-in reply.
   if (isSpeaking) {
     stopSpeaking();
+    if (isConversationMode() && !isProcessing) {
+      await startListening({ fromConversation: true });
+    }
     return;
   }
 
@@ -723,9 +853,11 @@ document.getElementById('orb-container').addEventListener('keydown', event => {
   event.currentTarget.click();
 });
 
-async function startListening() {
+async function startListening({ fromConversation = false } = {}) {
   // Clear any prior interrupt so this new exchange is allowed to speak.
   playbackCancelled = false;
+  discardNextRecording = false;
+  listeningFromConversation = fromConversation;
   showSearchEvidence([], []);
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -746,12 +878,22 @@ async function startListening() {
     };
 
     mediaRecorder.onstop = async () => {
+      clearSilenceWatch();
       // Release microphone tracks immediately when stopped
       stream.getTracks().forEach(track => track.stop());
 
+      if (discardNextRecording) {
+        discardNextRecording = false;
+        listeningFromConversation = false;
+        return;
+      }
+
       const audioBlob = new Blob(audioChunks, { type: mimeType });
+      // Empty captures used to re-arm forever in conversation mode and
+      // felt like the old spotty always-on mic. Go idle instead.
       if (audioBlob.size === 0) {
-        setOrbState('idle', 'Tap to talk to AURA');
+        listeningFromConversation = false;
+        setOrbState('idle', idleStatusText());
         return;
       }
 
@@ -760,15 +902,39 @@ async function startListening() {
 
     mediaRecorder.start();
     isListening = true;
-    setOrbState('listening', 'Listening... Tap to stop');
+    setOrbState(
+      'listening',
+      fromConversation || isConversationMode()
+        ? 'Listening... pause to send'
+        : 'Listening... Tap to stop'
+    );
+    // Conversation follow-ups (and normal listens while conversation mode is
+    // on) end on a short pause so you don't have to re-tap the orb.
+    if (fromConversation || isConversationMode()) {
+      armSilenceAutoStop(stream);
+    }
   } catch (err) {
     console.error('Mic error:', err);
+    listeningFromConversation = false;
     setOrbState('error', 'Microphone blocked');
-    setTimeout(() => setOrbState('idle', 'Tap to talk to AURA'), 3000);
+    setTimeout(() => setOrbState('idle', idleStatusText()), 3000);
+    throw err;
   }
 }
 
+function cancelListeningToIdle() {
+  discardNextRecording = true;
+  clearSilenceWatch();
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+  isListening = false;
+  listeningFromConversation = false;
+  setOrbState('idle', idleStatusText());
+}
+
 function stopListening() {
+  clearSilenceWatch();
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
   }
@@ -799,7 +965,7 @@ async function processAudio(audioBlob) {
     console.log('User:', transcript);
 
     if (!transcript || transcript.trim() === '') {
-      setOrbState('idle', 'Tap to talk to AURA');
+      setOrbState('idle', idleStatusText());
       return;
     }
 
@@ -880,8 +1046,13 @@ async function processAudio(audioBlob) {
     showSearchEvidence([], []);
     setOrbState('error', 'Error occurred. Tap to retry.');
     isSpeaking = false;
-    setTimeout(() => setOrbState('idle', 'Tap to talk to AURA'), 3000);
+    setTimeout(() => setOrbState('idle', idleStatusText()), 3000);
   } finally {
     isProcessing = false;
   }
+}
+
+syncConversationToggle();
+if (!isListening && !isSpeaking && !isProcessing) {
+  setOrbState(orb.className || 'idle', idleStatusText());
 }
