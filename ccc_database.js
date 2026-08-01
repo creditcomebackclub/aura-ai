@@ -235,9 +235,14 @@ function directionalNameSimilarity(sourceTokens, targetTokens) {
         bestIndex = index;
       }
     }
-    // A weak resemblance between unrelated words should not inflate a name match.
-    if (bestScore >= 0.6) total += bestScore;
-    if (bestIndex >= 0) available.splice(bestIndex, 1);
+    // A weak resemblance between unrelated words should not inflate a name
+    // match, and must not consume the real matching token either — otherwise
+    // "Pesavage" vs "Mike Pesavage" can lose the last-name hit to a weak
+    // first-name pair and score artificially low.
+    if (bestScore >= 0.6) {
+      total += bestScore;
+      if (bestIndex >= 0) available.splice(bestIndex, 1);
+    }
   }
   return total / sourceTokens.length;
 }
@@ -250,13 +255,32 @@ function scoreClientName(query, candidate) {
 
   const queryCoverage = directionalNameSimilarity(queryTokens, candidateTokens);
   const candidateCoverage = directionalNameSimilarity(candidateTokens, queryTokens);
-  return Number(((queryCoverage + candidateCoverage) / 2).toFixed(4));
+  const average = (queryCoverage + candidateCoverage) / 2;
+  // Spoken queries are often last-name-only or a Whisper-garbled last name
+  // ("pissavage", "Karl") against a stored "First Last". Averaging in the
+  // unmatched first name pulls a good last-name hit below the admit
+  // threshold — prefer query coverage when the owner said fewer tokens.
+  const score = queryTokens.length < candidateTokens.length
+    ? Math.max(queryCoverage, average)
+    : average;
+  return Number(score.toFixed(4));
 }
 
-function rankClientMatches(name, clients) {
-  const ranked = (clients || [])
-    .map(client => ({ ...client, _match_score: scoreClientName(name, client.name) }))
-    .filter(client => client._match_score >= 0.68)
+function bestTokenOverlap(query, candidate) {
+  const queryTokens = normalizeClientName(query);
+  const candidateTokens = normalizeClientName(candidate);
+  let best = 0;
+  for (const queryToken of queryTokens) {
+    for (const candidateToken of candidateTokens) {
+      best = Math.max(best, wordSimilarity(queryToken, candidateToken));
+    }
+  }
+  return best;
+}
+
+function rankScoredClients(scored, { minScore = 0.68, clearWinnerGap = 0.1, ambiguityWindow = 0.04 } = {}) {
+  const ranked = (scored || [])
+    .filter(client => client._match_score >= minScore)
     .sort((left, right) =>
       right._match_score - left._match_score ||
       String(left.name).localeCompare(String(right.name))
@@ -265,11 +289,141 @@ function rankClientMatches(name, clients) {
   if (ranked.length <= 1) return ranked;
   // A clearly superior match is safe to use. Close candidates must remain
   // ambiguous so AURA asks the owner instead of guessing a client identity.
-  if (ranked[0]._match_score - ranked[1]._match_score >= 0.1) return [ranked[0]];
-  return ranked.filter(client => ranked[0]._match_score - client._match_score <= 0.04);
+  if (ranked[0]._match_score - ranked[1]._match_score >= clearWinnerGap) return [ranked[0]];
+  return ranked.filter(client => ranked[0]._match_score - client._match_score <= ambiguityWindow);
 }
 
-async function findClientsByName(name) {
+function rankClientMatches(name, clients) {
+  const scored = (clients || []).map(client => ({
+    ...client,
+    _match_score: scoreClientName(name, client.name)
+  }));
+  return rankScoredClients(scored);
+}
+
+// Lower-confidence neighbors for "did you mean?" when nothing clears the
+// admit threshold — Whisper often mangling a last name should still surface
+// the real client instead of a hard not-found.
+function suggestClientMatches(name, clients, { minScore = 0.45, limit = 3 } = {}) {
+  return (clients || [])
+    .map(client => {
+      const full = scoreClientName(name, client.name);
+      const token = bestTokenOverlap(name, client.name);
+      // Wrong first name + close last name averages too low to admit, but the
+      // strong token hit is enough to ask "did you mean Jonathan Pesavage?"
+      const score = Math.max(full, token >= 0.72 ? Number((token * 0.92).toFixed(4)) : 0);
+      return { ...client, _match_score: score };
+    })
+    .filter(client => client._match_score >= minScore)
+    .sort((left, right) =>
+      right._match_score - left._match_score ||
+      String(left.name).localeCompare(String(right.name))
+    )
+    .slice(0, limit);
+}
+
+function windowAnchoredToClientName(cleaned, clientName) {
+  const queryTokens = normalizeClientName(cleaned);
+  const candidateTokens = normalizeClientName(clientName);
+  if (!queryTokens.length || !candidateTokens.length) return false;
+  // Reject windows that start/end on filler ("is jonathan pissavage") so
+  // correction only rewrites the name span itself.
+  const firstOk = candidateTokens.some(token => wordSimilarity(queryTokens[0], token) >= 0.6);
+  const lastOk = candidateTokens.some(
+    token => wordSimilarity(queryTokens[queryTokens.length - 1], token) >= 0.6
+  );
+  return firstOk && lastOk;
+}
+
+function bestCanonicalNameToken(cleaned, clientName) {
+  const queryToken = normalizeClientName(cleaned)[0];
+  if (!queryToken) return null;
+  let best = null;
+  for (const rawToken of String(clientName).split(/\s+/)) {
+    const normalized = normalizeClientName(rawToken)[0];
+    if (!normalized) continue;
+    const score = wordSimilarity(queryToken, normalized);
+    if (!best || score > best.score) best = { score, rawToken };
+  }
+  return best?.score >= 0.6 ? best.rawToken : null;
+}
+
+// Rewrite Whisper-mangled client names in owner text to the canonical
+// directory spelling before the model (and tool layer) see them. Only
+// clear single winners are rewritten — ambiguous first names stay as-is.
+function correctTranscriptClientNames(text, clients, { minScore = 0.72 } = {}) {
+  if (!text || !clients?.length) return text;
+  const parts = String(text).split(/(\s+)/);
+  const wordIndexes = [];
+  for (let index = 0; index < parts.length; index++) {
+    if (parts[index] && !/^\s+$/.test(parts[index])) wordIndexes.push(index);
+  }
+
+  let cursor = 0;
+  while (cursor < wordIndexes.length) {
+    let best = null;
+    for (let len = Math.min(3, wordIndexes.length - cursor); len >= 1; len--) {
+      const indexes = wordIndexes.slice(cursor, cursor + len);
+      const rawPhrase = indexes.map(index => parts[index]).join(' ');
+      const cleaned = rawPhrase.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+      if (!normalizeClientName(cleaned).length) continue;
+      // Skip tiny single tokens ("a", "to") — real surnames are longer.
+      if (len === 1 && cleaned.length < 4) continue;
+
+      const ranked = rankScoredClients(
+        clients.map(client => ({
+          ...client,
+          _match_score: scoreClientName(cleaned, client.name)
+        })),
+        { minScore }
+      ).filter(client => windowAnchoredToClientName(cleaned, client.name));
+      if (ranked.length !== 1) continue;
+      // Single-token hits correct only that token's spelling (pissavage→
+      // Pesavage). Multi-token hits expand to the full directory name.
+      const replacement = len === 1
+        ? (bestCanonicalNameToken(cleaned, ranked[0].name) || ranked[0].name)
+        : ranked[0].name;
+      const candidate = {
+        len,
+        score: ranked[0]._match_score,
+        replacement,
+        indexes
+      };
+      // Prefer the longest name window so "jonathan pissavage" becomes one
+      // full name instead of two independent single-token rewrites.
+      if (
+        !best ||
+        candidate.len > best.len ||
+        (candidate.len === best.len && candidate.score > best.score)
+      ) {
+        best = candidate;
+      }
+    }
+
+    if (!best) {
+      cursor += 1;
+      continue;
+    }
+
+    const first = best.indexes[0];
+    const last = best.indexes[best.indexes.length - 1];
+    const leading = parts[first].match(/^[^\p{L}\p{N}]*/u)?.[0] || '';
+    const trailing = parts[last].match(/[^\p{L}\p{N}]*$/u)?.[0] || '';
+    parts[first] = `${leading}${best.replacement}${trailing}`;
+    for (let index = first + 1; index <= last; index++) parts[index] = '';
+    cursor += best.len;
+  }
+
+  return parts.join('').replace(/[^\S\n]{2,}/g, ' ').trim();
+}
+
+async function correctOwnerTextClientNames(text) {
+  const directory = await loadClientDirectory();
+  if (directory.error || !directory.data?.length) return text;
+  return correctTranscriptClientNames(text, directory.data);
+}
+
+async function loadClientDirectory() {
   const db = initSupabase();
   if (!db) return { error: 'Database connection not configured.' };
   const { data, error } = await db
@@ -277,7 +431,27 @@ async function findClientsByName(name) {
     .select('id, name, status, billing_status, billing_tier, ledger')
     .limit(1000);
   if (error) return { error: error.message };
-  return { data: rankClientMatches(name, data || []) };
+  return { data: data || [] };
+}
+
+async function findClientsByName(name) {
+  const directory = await loadClientDirectory();
+  if (directory.error) return directory;
+  return { data: rankClientMatches(name, directory.data) };
+}
+
+function clientNotFoundResult(name, directory = []) {
+  const suggestions = suggestClientMatches(name, directory)
+    .map(client => ({
+      id: client.id,
+      name: client.name,
+      confidence: client._match_score
+    }));
+  return JSON.stringify({
+    found: false,
+    query: name,
+    ...(suggestions.length ? { suggestions } : {})
+  });
 }
 
 function normalizePhaseLabel(phase) {
@@ -293,9 +467,10 @@ async function getClientCurrentPhase(name) {
   const db = initSupabase();
   if (!db) return "Error: Database connection not configured.";
   try {
-    const clients = await findClientsByName(name);
-    if (clients.error) throw new Error(clients.error);
-    if (clients.data.length === 0) return JSON.stringify({ found: false, query: name });
+    const directory = await loadClientDirectory();
+    if (directory.error) throw new Error(directory.error);
+    const clients = { data: rankClientMatches(name, directory.data) };
+    if (clients.data.length === 0) return clientNotFoundResult(name, directory.data);
     if (clients.data.length > 1) {
       return JSON.stringify({
         found: false,
@@ -342,9 +517,10 @@ async function getClientSnapshot(name) {
   const db = initSupabase();
   if (!db) return "Error: Database connection not configured.";
   try {
-    const clients = await findClientsByName(name);
-    if (clients.error) throw new Error(clients.error);
-    if (clients.data.length === 0) return JSON.stringify({ found: false, query: name });
+    const directory = await loadClientDirectory();
+    if (directory.error) throw new Error(directory.error);
+    const clients = { data: rankClientMatches(name, directory.data) };
+    if (clients.data.length === 0) return clientNotFoundResult(name, directory.data);
     if (clients.data.length > 1) {
       return JSON.stringify({
         found: false,
@@ -716,6 +892,9 @@ module.exports = {
   normalizeClientName,
   scoreClientName,
   rankClientMatches,
+  suggestClientMatches,
+  correctTranscriptClientNames,
+  correctOwnerTextClientNames,
   getClientCurrentPhase,
   normalizePhaseLabel,
   isOutstanding,

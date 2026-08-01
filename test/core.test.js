@@ -32,7 +32,9 @@ const {
   getLedgerTransactionDate,
   normalizeClientName,
   scoreClientName,
-  rankClientMatches
+  rankClientMatches,
+  suggestClientMatches,
+  correctTranscriptClientNames
 } = require('../ccc_database');
 const {
   checkBlackboardCalendarFeed,
@@ -796,6 +798,28 @@ test('client names tolerate punctuation, honorifics, and omitted middle names', 
   assert.equal(scoreClientName('Jordan Smyth', 'Jordan Smith') > 0.85, true);
 });
 
+test('client matching accepts Whisper-garbled and partial last names', () => {
+  // Spoken last-name misspellings against a stored "First Last".
+  assert.ok(scoreClientName('pissavage', 'Jonathan Pesavage') >= 0.68);
+  assert.ok(scoreClientName('jonathan pissavage', 'Jonathan Pesavage') >= 0.68);
+  assert.ok(scoreClientName('carl elliot', 'Karl Elliott') >= 0.68);
+  assert.ok(scoreClientName('Karl', 'Karl Elliott') >= 0.68);
+  assert.ok(scoreClientName('Karl', 'Carl Elliott') >= 0.68);
+  assert.ok(scoreClientName('Karl Elliott', 'Carl Elliott') >= 0.68);
+
+  const pesavage = rankClientMatches('jonathan pissavage', [
+    { id: 1, name: 'Jonathan Pesavage' },
+    { id: 2, name: 'Jordan Smith' }
+  ]);
+  assert.deepEqual(pesavage.map(client => client.id), [1]);
+
+  const karl = rankClientMatches('carl elliot', [
+    { id: 1, name: 'Karl Elliott' },
+    { id: 2, name: 'Carol Ellis' }
+  ]);
+  assert.deepEqual(karl.map(client => client.id), [1]);
+});
+
 test('client matching selects a clear fuzzy winner but preserves ambiguity', () => {
   const clear = rankClientMatches('Jordan Smyth', [
     { id: 1, name: 'Jordan Smith' },
@@ -808,6 +832,46 @@ test('client matching selects a clear fuzzy winner but preserves ambiguity', () 
     { id: 2, name: 'Jordan Jones' }
   ]);
   assert.deepEqual(ambiguous.map(client => client.id), [2, 1]);
+});
+
+test('near-miss suggestions surface close last names when the full score is low', () => {
+  // Wrong first name + garbled last name averages below admit, but the
+  // last-name token hit should still produce a "did you mean?" candidate.
+  assert.ok(scoreClientName('mike pissavage', 'Jonathan Pesavage') < 0.68);
+  const suggestions = suggestClientMatches('mike pissavage', [
+    { id: 1, name: 'Jonathan Pesavage' },
+    { id: 2, name: 'Taylor Jones' }
+  ], { minScore: 0.45, limit: 3 });
+  assert.ok(suggestions.length >= 1);
+  assert.equal(suggestions[0].id, 1);
+});
+
+test('transcript correction rewrites clear Whisper mangling to directory names', () => {
+  const clients = [
+    { id: 1, name: 'Jonathan Pesavage' },
+    { id: 2, name: 'Karl Elliott' },
+    { id: 3, name: 'Jordan Smith' }
+  ];
+  assert.equal(
+    correctTranscriptClientNames('What phase is jonathan pissavage in?', clients),
+    'What phase is Jonathan Pesavage in?'
+  );
+  assert.equal(
+    correctTranscriptClientNames('pull up carl elliot', clients),
+    'pull up Karl Elliott'
+  );
+  assert.equal(
+    correctTranscriptClientNames('Look up pissavage please', clients),
+    'Look up Pesavage please'
+  );
+  // Ambiguous first name alone must not guess.
+  assert.equal(
+    correctTranscriptClientNames('How is Jordan doing?', [
+      { id: 1, name: 'Jordan Smith' },
+      { id: 2, name: 'Jordan Jones' }
+    ]),
+    'How is Jordan doing?'
+  );
 });
 
 test('30-day income uses transaction date before import timestamp', () => {

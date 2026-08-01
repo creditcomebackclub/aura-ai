@@ -491,6 +491,42 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   white-space: nowrap;
 }
 
+/* Conversation mode: keep listening after she finishes speaking. Small,
+   low-contrast control so it doesn't compete with the orb composition. */
+#conversation-toggle {
+  position: absolute;
+  left: 50%;
+  bottom: max(28px, calc(env(safe-area-inset-bottom) + 18px));
+  transform: translateX(-50%);
+  z-index: 5;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(8, 12, 20, 0.55);
+  color: rgba(220, 230, 245, 0.78);
+  border-radius: 999px;
+  padding: 0.45rem 0.95rem;
+  font: 500 0.78rem/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#conversation-toggle[aria-pressed="true"] {
+  border-color: rgba(0, 200, 120, 0.45);
+  color: rgba(180, 255, 210, 0.92);
+}
+
+#conversation-toggle:focus-visible {
+  outline: 2px solid rgba(0, 180, 255, 0.7);
+  outline-offset: 3px;
+}
+
+@media (max-width: 700px) {
+  #conversation-toggle {
+    bottom: max(16px, calc(env(safe-area-inset-bottom) + 10px));
+  }
+}
+
 /* Search-results HUD panel. Non-persistent by design: hidden by default via
    opacity/transform (not display:none, so it can transition) and only made
    visible by app.js adding .visible - which it does exactly when a search

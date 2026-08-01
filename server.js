@@ -947,7 +947,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'get_client_snapshot',
-      description: 'Returns one deterministic client summary including status, billing, current phase, recent letters, and outstanding ledger entries. The name resolver tolerates punctuation, omitted middle names, and minor speech-transcription errors. Prefer this over manually chaining generic table queries for a named client.',
+      description: 'Returns one deterministic client summary including status, billing, current phase, recent letters, and outstanding ledger entries. The name resolver tolerates punctuation, omitted middle names, and minor speech-transcription errors (for example pissavage→Pesavage, Carl/Karl). If found is false and suggestions are present, ask the owner which suggested name they meant — do not invent spellings or give up after one miss. Prefer this over manually chaining generic table queries for a named client.',
       parameters: {
         type: 'object',
         properties: { name: { type: 'string', description: 'Full or partial client name' } },
@@ -959,7 +959,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'get_client_current_phase',
-      description: 'Returns a named client’s current phase from their latest letter, including the source record used as evidence. The name resolver tolerates punctuation, omitted middle names, and minor speech-transcription errors.',
+      description: 'Returns a named client’s current phase from their latest letter, including the source record used as evidence. The name resolver tolerates punctuation, omitted middle names, and minor speech-transcription errors (for example pissavage→Pesavage, Carl/Karl). If found is false and suggestions are present, ask the owner which suggested name they meant — do not invent spellings or give up after one miss.',
       parameters: {
         type: 'object',
         properties: { name: { type: 'string', description: 'Full or partial client name' } },
@@ -1819,6 +1819,14 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
   {
     if (typeof text !== 'string' || !text.trim() || text.length > 10000) {
       throw new Error('Text must be between 1 and 10,000 characters.');
+    }
+    // Whisper (and casual typing) often mangle client surnames. Rewrite clear
+    // directory hits to the canonical spelling before memory/tools see them,
+    // so she doesn't echo "pissavage" / "Carl" back as not-found.
+    try {
+      text = await ccc.correctOwnerTextClientNames(text);
+    } catch (error) {
+      console.warn('Client-name transcript correction skipped:', error.message || error);
     }
     // isolated: true runs a turn against a throwaway, empty history instead
     // of the real owner conversation, and skips every persistent write (no
