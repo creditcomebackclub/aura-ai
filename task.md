@@ -47,12 +47,10 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Capture a live TTFA number now that the harness shipped.** Browser console logs
-  `[timing] TTFA …ms (whisper …, first_sentence …, tts …)` on every voice turn. Server adds
-  `[timing] whisper / user message write / memory/context / first sentence / tts` when
-  `AURA_TIMING_TRACE=1`. Optional headless text-path probe:
-  `AURA_ACCESS_TOKEN=… node scripts/measure-voice-latency.js`. Compare against the old
-  3.5–5.6s baseline, then pick the next cut from the largest slice.
+- **Re-measure TTFA after `gpt-4o-mini-transcribe`.** Live baseline was
+  `TTFA 13089ms (whisper 6264, first_sentence 4706, tts 2103)`. STT was the biggest
+  slice — default model is now mini-transcribe. After deploy, capture a new
+  `[timing] TTFA` line; next cuts are first_sentence (Grok/context) and Cartesia TTS.
 - **Reposition the on-screen search-results panel and add an on-screen conversation transcript** in
   the PWA frontend (`public/`). The search-results panel was recently re-enabled and re-skinned
   (see Done recently); this is the next visual/layout pass on top of that, plus adding a transcript

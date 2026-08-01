@@ -13,6 +13,12 @@ function defaultPrimaryModel(provider) {
   return 'gpt-5.6-sol';
 }
 
+function resolveTranscribeModel(env = process.env) {
+  // Live TTFA showed whisper-1 alone ~6s of a ~13s turn. Mini-transcribe is
+  // the faster default; override with AURA_TRANSCRIBE_MODEL if needed.
+  return env.AURA_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
+}
+
 function resolveModelConfig(env = process.env) {
   const provider = env.AI_PROVIDER || 'openai';
   const primaryModel = env.AURA_CHAT_MODEL || defaultPrimaryModel(provider);
@@ -35,7 +41,8 @@ function resolveModelConfig(env = process.env) {
     primaryModel,
     memoryModel,
     routerModel,
-    reasoningEffort
+    reasoningEffort,
+    transcribeModel: resolveTranscribeModel(env)
   };
 }
 
@@ -58,5 +65,6 @@ function brainRequestOptions(config, options = {}) {
 
 module.exports = {
   brainRequestOptions,
-  resolveModelConfig
+  resolveModelConfig,
+  resolveTranscribeModel
 };

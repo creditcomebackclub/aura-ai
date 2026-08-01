@@ -50,7 +50,7 @@ const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
 const { isDirectEmailConfigured, isDirectSendConfigured, sendGmailMessage, getDirectUnreadEmails } = require('./email_provider');
 const { isDirectCalendarConfigured, getDirectCalendarText } = require('./calendar_feed');
-const { brainRequestOptions, resolveModelConfig } = require('./model_router');
+const { brainRequestOptions, resolveModelConfig, resolveTranscribeModel } = require('./model_router');
 const {
   WebSearchError,
   createDailyWebSearchLimiter,
@@ -107,6 +107,7 @@ app.get('/healthz', (req, res) => {
       model: chatModel,
       reasoning_effort: reasoningEffort || null,
       memory_model: backgroundModel,
+      transcribe_model: resolveTranscribeModel(),
       // Vector recall is always OpenAI embeddings, independent of chat provider.
       embeddings: process.env.OPENAI_API_KEY ? 'openai:text-embedding-3-small' : null
     },
@@ -1924,15 +1925,38 @@ async function handleToolCall(toolCall, options = {}) {
 // Shared by /api/transcribe (browser mic upload) and the Telegram webhook
 // (voice notes) - both just need "a file on disk with the right extension
 // in, transcript text out."
+async function createTranscription(filePath, model) {
+  return openaiAudio.audio.transcriptions.create({
+    file: fs.createReadStream(filePath),
+    model,
+    // Owner speech is English; pinning language skips language-detect work.
+    language: 'en'
+  });
+}
+
 async function transcribeAudioFile(filePath) {
   if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for transcription.');
   const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
-  const transcription = await openaiAudio.audio.transcriptions.create({
-    file: fs.createReadStream(filePath),
-    model: 'whisper-1',
-  });
+  const model = resolveTranscribeModel();
+  let usedModel = model;
+  let transcription;
+  try {
+    transcription = await createTranscription(filePath, model);
+  } catch (error) {
+    // Older accounts / regional rollouts may not have the mini model yet —
+    // fall back rather than hard-failing voice.
+    if (model !== 'whisper-1') {
+      console.warn(
+        `[transcribe] ${model} failed (${error.message || error}); falling back to whisper-1`
+      );
+      usedModel = 'whisper-1';
+      transcription = await createTranscription(filePath, 'whisper-1');
+    } else {
+      throw error;
+    }
+  }
   if (process.env.AURA_TIMING_TRACE) {
-    console.log(`[timing] whisper: ${Date.now() - startedAtMs}ms`);
+    console.log(`[timing] whisper (${usedModel}): ${Date.now() - startedAtMs}ms`);
   }
   return transcription.text;
 }

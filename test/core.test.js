@@ -13,7 +13,7 @@ const {
   parseMemoryCommand,
   renderMemoryDocument
 } = require('../memory_v2');
-const { brainRequestOptions, resolveModelConfig } = require('../model_router');
+const { brainRequestOptions, resolveModelConfig, resolveTranscribeModel } = require('../model_router');
 const {
   OWNER_SEARCH_INPUT_MAX_LENGTH,
   containsSearchSecret,
@@ -783,6 +783,18 @@ test('model routing defaults to Sol with Luna for memory work', () => {
       model: 'gpt-5.6-sol',
       reasoning_effort: 'none'
     }
+  );
+});
+
+test('voice transcription defaults to gpt-4o-mini-transcribe', () => {
+  assert.equal(resolveTranscribeModel({}), 'gpt-4o-mini-transcribe');
+  assert.equal(
+    resolveTranscribeModel({ AURA_TRANSCRIBE_MODEL: 'whisper-1' }),
+    'whisper-1'
+  );
+  assert.equal(
+    resolveModelConfig({}).transcribeModel,
+    'gpt-4o-mini-transcribe'
   );
 });
 
