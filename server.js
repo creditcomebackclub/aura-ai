@@ -791,7 +791,11 @@ async function peekBlackboardUpcoming() {
 async function peekTodaysCalendar() {
   // Prefer the private Google/Calendly iCal feed when configured so the
   // morning brief (and check_calendar) work on cloud without the Mac awake.
-  if (isDirectCalendarConfigured()) return getDirectCalendarText();
+  // Morning brief stays tight (today + tomorrow); the check_calendar tool
+  // uses the wider default week-ahead window.
+  if (isDirectCalendarConfigured()) {
+    return getDirectCalendarText({ daysAhead: 1 });
+  }
   if (companionClient) return companionClient.execute('check_calendar');
   return mac.getTodaysCalendar();
 }
@@ -1137,7 +1141,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'check_calendar',
-      description: 'Reads the users scheduled events for today and tomorrow. Uses the configured Google/Calendly iCal feed when available (cloud-capable); otherwise Apple Calendar via the Mac companion.',
+      description: 'Reads the users upcoming scheduled events (Google/Calendly iCal feed when configured: about the next week, cloud-capable; otherwise Apple Calendar today/tomorrow via the Mac companion).',
       parameters: { type: 'object', properties: {} }
     }
   },
