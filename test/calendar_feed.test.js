@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   parsePersonalIcs,
   eventsForTodayAndTomorrow,
+  eventsInWindow,
   formatCalendarEvents,
   getDirectCalendarText,
   isDirectCalendarConfigured
@@ -86,7 +87,7 @@ test('formatCalendarEvents matches the Event: line shape morning brief expects',
   assert.match(text, /Event: Credit consult - Tomorrow \(Starts:/);
 });
 
-test('getDirectCalendarText fetches ICS and formats today/tomorrow', async () => {
+test('getDirectCalendarText fetches ICS and formats a week-ahead window by default', async () => {
   const previous = process.env.CALENDAR_ICAL_URL;
   process.env.CALENDAR_ICAL_URL = 'https://example.com/private.ics';
   try {
@@ -105,6 +106,25 @@ test('getDirectCalendarText fetches ICS and formats today/tomorrow', async () =>
     if (previous === undefined) delete process.env.CALENDAR_ICAL_URL;
     else process.env.CALENDAR_ICAL_URL = previous;
   }
+});
+
+test('eventsInWindow can reach a Monday consult from Saturday', () => {
+  const saturday = new Date('2026-08-01T17:00:00Z');
+  const events = parsePersonalIcs([
+    'BEGIN:VCALENDAR',
+    'BEGIN:VEVENT',
+    'DTSTART:20260803T160000Z',
+    'SUMMARY:David Moya and Chris Holland',
+    'END:VEVENT',
+    'END:VCALENDAR'
+  ].join('\r\n'), { timeZone: TZ });
+  const sat = eventsInWindow(events, { now: saturday, timeZone: TZ, daysAhead: 6 });
+  assert.equal(sat.length, 1);
+  assert.equal(sat[0].title, 'David Moya and Chris Holland');
+  assert.equal(
+    eventsForTodayAndTomorrow(events, { now: saturday, timeZone: TZ }).length,
+    0
+  );
 });
 
 test('getDirectCalendarText rejects non-ICS payloads', async () => {

@@ -97,16 +97,29 @@ function parsePersonalIcs(text, { timeZone = 'America/Phoenix' } = {}) {
   }).filter(Boolean).sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
 }
 
-function eventsForTodayAndTomorrow(events, {
+function eventsInWindow(events, {
   now = new Date(),
-  timeZone = 'America/Phoenix'
+  timeZone = 'America/Phoenix',
+  // 0 = today only; 1 = today+tomorrow (legacy); 6 = through the next week.
+  daysAhead = 1
 } = {}) {
   const todayKey = zonedDayKey(now, timeZone);
-  const tomorrowKey = addLocalDays(todayKey, 1, timeZone);
+  const allowed = new Set();
+  const span = Math.max(0, Number(daysAhead) || 0);
+  for (let i = 0; i <= span; i += 1) {
+    allowed.add(addLocalDays(todayKey, i, timeZone));
+  }
+  // addLocalDays(today, 0) should be today — ensure today is present even if
+  // addLocalDays is only used for offsets above.
+  allowed.add(todayKey);
   return (Array.isArray(events) ? events : []).filter(event => {
     const key = zonedDayKey(new Date(event.start_at), timeZone);
-    return key === todayKey || key === tomorrowKey;
+    return allowed.has(key);
   });
+}
+
+function eventsForTodayAndTomorrow(events, options = {}) {
+  return eventsInWindow(events, { ...options, daysAhead: 1 });
 }
 
 function formatEventStart(event, { timeZone = 'America/Phoenix' } = {}) {
@@ -129,8 +142,11 @@ function formatEventStart(event, { timeZone = 'America/Phoenix' } = {}) {
   }).format(start);
 }
 
-function formatCalendarEvents(events, { timeZone = 'America/Phoenix' } = {}) {
-  if (!events.length) return 'No events scheduled for today.';
+function formatCalendarEvents(events, {
+  timeZone = 'America/Phoenix',
+  emptyMessage = 'No events scheduled for today.'
+} = {}) {
+  if (!events.length) return emptyMessage;
   return events.map(event => {
     const where = event.location ? ` @ ${event.location}` : '';
     return `Event: ${event.title}${where} (Starts: ${formatEventStart(event, { timeZone })})`;
@@ -159,6 +175,9 @@ async function fetchCalendarIcs(feedUrl, { fetchImpl = fetch } = {}) {
 async function getDirectCalendarText({
   now = new Date(),
   timeZone = process.env.AURA_TIMEZONE || 'America/Phoenix',
+  // Tool default: week ahead so Monday consults are visible when asked on Sat.
+  // Morning brief passes daysAhead: 1 for a tighter spoken push.
+  daysAhead = 6,
   fetchImpl = fetch
 } = {}) {
   const feedUrl = calendarFeedUrl();
@@ -167,11 +186,14 @@ async function getDirectCalendarText({
   }
   try {
     const ics = await fetchCalendarIcs(feedUrl, { fetchImpl });
-    const events = eventsForTodayAndTomorrow(
+    const events = eventsInWindow(
       parsePersonalIcs(ics, { timeZone }),
-      { now, timeZone }
+      { now, timeZone, daysAhead }
     );
-    return formatCalendarEvents(events, { timeZone });
+    const emptyMessage = daysAhead <= 1
+      ? 'No events scheduled for today.'
+      : 'No events scheduled in the next several days.';
+    return formatCalendarEvents(events, { timeZone, emptyMessage });
   } catch (error) {
     throw new Error(`Google/personal calendar could not be read: ${error.message || error}`);
   }
@@ -182,6 +204,7 @@ module.exports = {
   getDirectCalendarText,
   parsePersonalIcs,
   eventsForTodayAndTomorrow,
+  eventsInWindow,
   formatCalendarEvents,
   fetchCalendarIcs,
   calendarFeedUrl
