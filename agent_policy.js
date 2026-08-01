@@ -168,7 +168,14 @@ function validateToolArguments(name, args) {
   if (name === 'send_telegram_message') {
     requireString('message', 4000);
   }
-  if (name === 'add_goal') requireString('description', 1000);
+  if (name === 'add_goal') {
+    requireString('description', 1000);
+    if (args.due_at !== undefined && args.due_at !== null) {
+      if (typeof args.due_at !== 'string' || args.due_at.length > 80) {
+        throw new Error('Goal due_at must be a short date string.');
+      }
+    }
+  }
   if (name === 'save_semantic_memory') requireString('fact', 2000);
 
   if (name === 'update_goal_status') {

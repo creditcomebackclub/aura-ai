@@ -21,6 +21,8 @@ const ccc = require('./ccc_database');
 const { generateSimplePdf } = require('./pdf_generator');
 const { isTelegramConfigured, sendTelegramMessage, sendTelegramAudio, isFromOwnerChat, downloadTelegramFile } = require('./telegram');
 const { runDailyGoalsDigest } = require('./daily_goals_digest');
+const { runMorningBrief, filterUpcomingAssignments } = require('./morning_brief');
+const { parseDueAt } = require('./due_date');
 const { concatWavBuffers, splitIntoSentences } = require('./wav_utils');
 const { MemoryStore } = require('./memory_store');
 const {
@@ -124,6 +126,7 @@ if (db) db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     description TEXT NOT NULL,
     status TEXT DEFAULT 'pending',
+    due_at TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS finances (
@@ -574,6 +577,15 @@ async function sendProactiveAlert(text, category = 'general', urgency = 'normal'
     urgency
   });
   io.emit('proactive-alert', notification);
+  // Phone push: mirror every proactive alert to Telegram when configured so
+  // Chris still gets it if the orb UI isn't open.
+  if (options.telegram !== false && isTelegramConfigured()) {
+    try {
+      await sendTelegramMessage(text);
+    } catch (error) {
+      console.warn('[Proactive Alert] Telegram mirror failed:', error.message || error);
+    }
+  }
   return notification;
 }
 
@@ -673,11 +685,17 @@ function rateLimit(req, res, next) {
   next();
 }
 
+// When the combined morning brief is on, Blackboard's 7am job still scrapes
+// and records state/errors, but skips the upcoming-deadline alert so Chris
+// gets one morning push at 7:30 instead of two.
+const morningBriefEnabled = process.env.AURA_MORNING_BRIEF !== 'false';
+
 const runBlackboardDeadlineCheck = createBlackboardDeadlineCheck({
   checkAssignments: () => scraper.checkBlackboardAssignments(),
   getAlertState,
   setAlertState,
   sendAlert: sendProactiveAlert,
+  notifyUpcoming: !morningBriefEnabled,
   timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
   summarizeText: async scraped => {
     const summary = await createBrainCompletion({
@@ -735,28 +753,67 @@ app.post('/internal/scheduled/memory-extraction', authenticateCron, rateLimit, a
   }
 });
 
+if (db) {
+  try {
+    db.exec('ALTER TABLE goals ADD COLUMN due_at TEXT');
+  } catch {
+    // Column already exists on upgraded local DBs.
+  }
+}
+
 async function listOpenGoals() {
   if (cloudState) return cloudState.listTasks();
   return db.prepare(`
-    SELECT id, description, status, created_at
+    SELECT id, description, status, due_at, created_at
     FROM goals
     WHERE status != 'completed'
     ORDER BY created_at DESC
   `).all();
 }
 
-async function deliverDailyGoalsDigest() {
-  return runDailyGoalsDigest({
+async function peekBlackboardUpcoming() {
+  const scraped = await scraper.checkBlackboardAssignments();
+  if (!scraped || typeof scraped !== 'string' || scraped.startsWith('BLACKBOARD_')) {
+    return [];
+  }
+  try {
+    const calendar = JSON.parse(scraped);
+    if (calendar?.source === 'blackboard_ical' && Array.isArray(calendar.assignments)) {
+      return filterUpcomingAssignments(calendar.assignments);
+    }
+  } catch {
+    // Browser scrape text isn't structured — morning brief skips it.
+  }
+  return [];
+}
+
+async function peekTodaysCalendar() {
+  if (companionClient) return companionClient.execute('check_calendar');
+  return mac.getTodaysCalendar();
+}
+
+async function deliverMorningBrief() {
+  return runMorningBrief({
     listOpenGoals,
+    getCalendarText: peekTodaysCalendar,
+    getBlackboardUpcoming: peekBlackboardUpcoming,
     sendAlert: sendProactiveAlert,
-    sendTelegram: sendTelegramMessage,
-    telegramConfigured: isTelegramConfigured(),
     timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
   });
 }
 
-// Morning open-goals digest. Supabase Cron hits this on sleeping Render Free
-// the same way Blackboard deadlines do.
+// Back-compat alias used by older cron SQL / docs.
+async function deliverDailyGoalsDigest() {
+  if (morningBriefEnabled) return deliverMorningBrief();
+  return runDailyGoalsDigest({
+    listOpenGoals,
+    sendAlert: sendProactiveAlert,
+    timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
+  });
+}
+
+// Morning brief (goals + calendar + Blackboard). Supabase Cron hits this on
+// sleeping Render Free the same way Blackboard deadlines do.
 app.post('/internal/scheduled/daily-goals', authenticateCron, rateLimit, async (req, res) => {
   try {
     const result = await deliverDailyGoalsDigest();
@@ -765,13 +822,29 @@ app.post('/internal/scheduled/daily-goals', authenticateCron, rateLimit, async (
       status: result.status,
       sent: result.sent,
       count: result.count,
-      telegram: result.telegram
-        ? { attempted: result.telegram.attempted, sent: result.telegram.sent }
-        : undefined
+      calendar: result.calendar,
+      blackboard: result.blackboard
     });
   } catch (error) {
-    console.error('Error in scheduled daily goals digest:', error);
-    res.status(500).json({ ok: false, error: 'Daily goals digest failed.' });
+    console.error('Error in scheduled morning brief:', error);
+    res.status(500).json({ ok: false, error: 'Morning brief failed.' });
+  }
+});
+
+app.post('/internal/scheduled/morning-brief', authenticateCron, rateLimit, async (req, res) => {
+  try {
+    const result = await deliverMorningBrief();
+    res.json({
+      ok: true,
+      status: result.status,
+      sent: result.sent,
+      count: result.count,
+      calendar: result.calendar,
+      blackboard: result.blackboard
+    });
+  } catch (error) {
+    console.error('Error in scheduled morning brief:', error);
+    res.status(500).json({ ok: false, error: 'Morning brief failed.' });
   }
 });
 
@@ -1151,10 +1224,16 @@ const tools = [
     type: 'function',
     function: {
       name: 'add_goal',
-      description: 'Add a new goal to the users goal tracker.',
+      description: 'Add a new goal or to-do to the tracker. When Chris names a due time (today, tomorrow, Friday, in 3 days, or an ISO date), pass it as due_at so the morning brief can surface it.',
       parameters: {
         type: 'object',
-        properties: { description: { type: 'string', description: 'The goal description' } },
+        properties: {
+          description: { type: 'string', description: 'The goal description' },
+          due_at: {
+            type: 'string',
+            description: 'Optional due date: ISO timestamp, or relative phrase like today, tomorrow, Friday, next week, in 3 days.'
+          }
+        },
         required: ['description']
       }
     }
@@ -1163,12 +1242,12 @@ const tools = [
     type: 'function',
     function: {
       name: 'update_goal_status',
-      description: 'Update the status of an existing goal.',
+      description: 'Update the status of an existing goal (pending, active, paused, completed, dropped).',
       parameters: {
         type: 'object',
         properties: { 
           id: { type: 'string', description: 'The goal ID as shown by get_goals' },
-          status: { type: 'string', description: 'The new status (e.g., completed, pending)' }
+          status: { type: 'string', description: 'The new status (e.g., completed, pending, dropped)' }
         },
         required: ['id', 'status']
       }
@@ -1178,7 +1257,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'get_goals',
-      description: 'Retrieve the users current goals.',
+      description: 'Retrieve the users current open goals/to-dos, including due_at when set.',
       parameters: { type: 'object', properties: {} }
     }
   },
@@ -1547,14 +1626,22 @@ async function handleToolCall(toolCall, options = {}) {
   const turn = options.turn ?? conversationTurn;
   let result;
   switch (name) {
-    case 'add_goal':
+    case 'add_goal': {
+      const dueAt = parseDueAt(args.due_at, {
+        timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
+      });
       if (cloudState) {
-        result = await cloudState.addTask(args.description);
+        result = await cloudState.addTask(args.description, { dueAt });
       } else {
-        db.prepare("INSERT INTO goals (description, created_at) VALUES (?, CURRENT_TIMESTAMP)").run(args.description);
-        result = `Goal added: ${args.description}`;
+        db.prepare(
+          'INSERT INTO goals (description, due_at, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)'
+        ).run(args.description, dueAt);
+        result = dueAt
+          ? `Goal added: ${args.description} (due ${dueAt})`
+          : `Goal added: ${args.description}`;
       }
       break;
+    }
     case 'update_goal_status':
       if (cloudState) {
         const taskStatus = {
@@ -2859,16 +2946,22 @@ if (schedulerEnabled) cron.schedule('0 7 * * *', async () => {
   }
 }, schedulerOptions);
 
-// Morning to-do digest: push open goals without Chris having to ask.
-// 7:30 AM Phoenix — after Blackboard (7), before business health (8).
+// Morning brief: open goals (with due dates), today's calendar, Blackboard.
+// 7:30 AM Phoenix — after Blackboard scrape (7), before business health (8).
 if (schedulerEnabled && process.env.AURA_DAILY_GOALS_DIGEST !== 'false') {
   cron.schedule('30 7 * * *', async () => {
-    console.log('[Cron] Running daily goals digest...');
+    console.log('[Cron] Running morning brief...');
     try {
       const result = await deliverDailyGoalsDigest();
-      console.log('[Cron] Daily goals digest:', result.status, `count=${result.count}`);
+      console.log(
+        '[Cron] Morning brief:',
+        result.status,
+        `goals=${result.count}`,
+        `calendar=${result.calendar}`,
+        `blackboard=${result.blackboard}`
+      );
     } catch (error) {
-      console.error('Error in scheduled daily goals digest:', error);
+      console.error('Error in scheduled morning brief:', error);
     }
   }, schedulerOptions);
 }
@@ -2885,16 +2978,10 @@ if (schedulerEnabled) cron.schedule('0 9 * * 1', async () => {
     if (staleGoals.length > 0) {
       const list = staleGoals.map(g => g.description || g.title).join('; ');
       const text = `You have ${staleGoals.length} goal${staleGoals.length > 1 ? 's' : ''} that have been open for over two weeks: ${list}. Want to update or drop any of them?`;
+      // Telegram mirror is handled inside sendProactiveAlert.
       await sendProactiveAlert(text, 'goals', 'normal', {
         dedupeKey: `stale-goals:${new Date().toISOString().slice(0, 10)}`
       });
-      if (isTelegramConfigured()) {
-        try {
-          await sendTelegramMessage(text);
-        } catch (error) {
-          console.warn('[Cron] Stale-goals Telegram delivery failed:', error.message);
-        }
-      }
     }
   } catch (error) {
     console.error('Error in stale goals check:', error);

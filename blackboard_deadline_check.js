@@ -13,6 +13,7 @@ function createBlackboardDeadlineCheck({
   setAlertState,
   sendAlert,
   summarizeText,
+  notifyUpcoming = true,
   now = () => new Date(),
   timeZone = 'America/Phoenix'
 }) {
@@ -82,7 +83,7 @@ function createBlackboardDeadlineCheck({
         .sort((a, b) => new Date(a.due_at) - new Date(b.due_at));
 
       let notificationCreated = false;
-      if (upcoming.length > 0) {
+      if (notifyUpcoming && upcoming.length > 0) {
         const dueFormatter = new Intl.DateTimeFormat('en-US', {
           timeZone,
           weekday: 'short',
@@ -121,7 +122,7 @@ function createBlackboardDeadlineCheck({
       throw new Error('Blackboard text summarization is not configured');
     }
     const text = String(await summarizeText(scraped) || '').trim();
-    const shouldNotify = Boolean(text && text.toUpperCase() !== 'NONE');
+    const shouldNotify = Boolean(notifyUpcoming && text && text.toUpperCase() !== 'NONE');
     let notificationCreated = false;
     if (shouldNotify) {
       const notification = await sendAlert(

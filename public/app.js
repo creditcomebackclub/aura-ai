@@ -251,14 +251,17 @@ const PLAYBACK_VOLUME_LEVELS = {
   medium: 1.7,
   high: 2.25
 };
-const SILENCE_HANGOVER_MS = 1100;
-const MIN_UTTERANCE_MS = 400;
+const SILENCE_HANGOVER_MS = 850;
+const MIN_UTTERANCE_MS = 350;
 const MAX_UTTERANCE_MS = 20000;
 // If the mic arms after her reply and nobody speaks, drop back to idle
 // instead of holding the mic open until MAX_UTTERANCE_MS.
-const NO_SPEECH_IDLE_MS = 5000;
-const SPEECH_RMS_START = 0.025;
-const SPEECH_RMS_CONTINUE = 0.015;
+const NO_SPEECH_IDLE_MS = 4000;
+// Ignore the first beat after arming so speaker bleed / room echo from her
+// last sentence doesn't look like the start of Chris's reply.
+const LISTEN_ARM_GRACE_MS = 450;
+const SPEECH_RMS_START = 0.028;
+const SPEECH_RMS_CONTINUE = 0.014;
 
 let isListening = false;
 let isSpeaking = false;
@@ -569,10 +572,15 @@ function appendCitedBlock(block) {
   webAnswer.appendChild(paragraph);
 }
 
-// Shows AURA's last answer as on-screen text in the side panel. When the
-// turn included a live web search, that takes priority (citations/sources
-// are the more useful thing to show); otherwise falls back to her plain
-// reply text, so every answer is readable on screen, not just search ones.
+// Ear for talk, panel for receipts: show search citations/sources, or a
+// number-heavy business reply (balances, counts, MRR). Plain chit-chat stays
+// voice-only so the side rail doesn't compete with conversation mode.
+function looksLikeReceipt(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  return /\$\s?\d|\d+\s*%|\bMRR\b|\boutstanding\b|\bbalance\b|\brevenue\b|\b\d{1,3}(,\d{3})+(\.\d+)?\b|\b\d+\s+(clients?|letters?|accounts?|items?|goals?|people|furnishers?)\b|\b(clients?|letters?|accounts?|goals?)\b[^.]{0,40}\b\d+/i.test(t);
+}
+
 function showSearchEvidence(webResults = [], sources = [], replyText = '') {
   webAnswer.replaceChildren();
   sourceLinks.replaceChildren();
@@ -587,7 +595,7 @@ function showSearchEvidence(webResults = [], sources = [], replyText = '') {
     paragraph.textContent = latestResult.answer;
     webAnswer.appendChild(paragraph);
     isSearchResult = true;
-  } else if (replyText.trim()) {
+  } else if (looksLikeReceipt(replyText)) {
     const paragraph = document.createElement('p');
     paragraph.textContent = replyText.trim();
     webAnswer.appendChild(paragraph);
@@ -605,7 +613,7 @@ function showSearchEvidence(webResults = [], sources = [], replyText = '') {
       : url.hostname;
     sourceLinks.appendChild(link);
   }
-  sourceLabel.textContent = isSearchResult ? 'Live web result' : 'AURA said';
+  sourceLabel.textContent = isSearchResult ? 'Live web result' : 'Receipt';
 
   // Non-persistent by design: only ever made visible when there's actually
   // something to show, and hidden again as soon as there isn't - opacity/
@@ -688,15 +696,19 @@ function armSilenceAutoStop(stream) {
       stopListening();
       return;
     }
-    const threshold = heardSpeech ? SPEECH_RMS_CONTINUE : SPEECH_RMS_START;
-    if (rms >= threshold) {
-      heardSpeech = true;
-      silenceStartedAt = null;
-    } else if (heardSpeech && elapsed >= MIN_UTTERANCE_MS) {
-      if (!silenceStartedAt) silenceStartedAt = Date.now();
-      else if (Date.now() - silenceStartedAt >= SILENCE_HANGOVER_MS) {
-        stopListening();
-        return;
+    // Skip RMS speech detection during the arming grace window so residual
+    // speaker bleed from her last sentence doesn't trip heardSpeech.
+    if (elapsed >= LISTEN_ARM_GRACE_MS) {
+      const threshold = heardSpeech ? SPEECH_RMS_CONTINUE : SPEECH_RMS_START;
+      if (rms >= threshold) {
+        heardSpeech = true;
+        silenceStartedAt = null;
+      } else if (heardSpeech && elapsed >= MIN_UTTERANCE_MS) {
+        if (!silenceStartedAt) silenceStartedAt = Date.now();
+        else if (Date.now() - silenceStartedAt >= SILENCE_HANGOVER_MS) {
+          stopListening();
+          return;
+        }
       }
     }
     silenceWatchFrame = requestAnimationFrame(tick);

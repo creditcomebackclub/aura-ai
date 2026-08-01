@@ -41,14 +41,15 @@ test('the search-results panel is non-persistent and appears only with content',
   assert.match(stopSpeakingFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
 });
 
-test('the panel shows plain reply text on screen when there is no search result', () => {
-  // Text-on-screen was an explicit ask, distinct from the search-citations
-  // case: every answer should be readable on screen, not only ones that
-  // triggered a live web search. Falls back to replyText only when there is
-  // no citation block/answer to show, and the label switches accordingly.
+test('the panel shows receipts only — search evidence or number-heavy replies', () => {
+  // Voice stays primary for chit-chat; the side panel is for receipts
+  // (live search citations/sources, or replies that look like money/counts).
   assert.match(app, /function showSearchEvidence\(webResults = \[\], sources = \[\], replyText = ''\)/);
-  assert.match(app, /else if \(replyText\.trim\(\)\)/);
-  assert.match(app, /sourceLabel\.textContent = isSearchResult \? 'Live web result' : 'AURA said'/);
+  assert.match(app, /function looksLikeReceipt\(/);
+  assert.match(app, /else if \(looksLikeReceipt\(replyText\)\)/);
+  assert.match(app, /sourceLabel\.textContent = isSearchResult \? 'Live web result' : 'Receipt'/);
+  assert.match(app, /LISTEN_ARM_GRACE_MS/);
+  assert.match(app, /elapsed >= LISTEN_ARM_GRACE_MS/);
 });
 
 test('the search panel sits right of the wave, never over it, and syncs to speech start', () => {
