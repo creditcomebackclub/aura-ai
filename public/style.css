@@ -491,14 +491,21 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   white-space: nowrap;
 }
 
-/* Conversation mode: keep listening after she finishes speaking. Small,
-   low-contrast control so it doesn't compete with the orb composition. */
-#conversation-toggle {
+/* Bottom controls: conversation arm + playback loudness. Kept small and
+   low-contrast so they don't compete with the orb composition. */
+#orb-controls {
   position: absolute;
   left: 50%;
   bottom: max(28px, calc(env(safe-area-inset-bottom) + 18px));
   transform: translateX(-50%);
   z-index: 5;
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+#conversation-toggle,
+#volume-toggle {
   border: 1px solid rgba(255, 255, 255, 0.18);
   background: rgba(8, 12, 20, 0.55);
   color: rgba(220, 230, 245, 0.78);
@@ -516,13 +523,19 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   color: rgba(180, 255, 210, 0.92);
 }
 
-#conversation-toggle:focus-visible {
+#volume-toggle[data-level="high"] {
+  border-color: rgba(255, 180, 90, 0.5);
+  color: rgba(255, 220, 180, 0.95);
+}
+
+#conversation-toggle:focus-visible,
+#volume-toggle:focus-visible {
   outline: 2px solid rgba(0, 180, 255, 0.7);
   outline-offset: 3px;
 }
 
 @media (max-width: 700px) {
-  #conversation-toggle {
+  #orb-controls {
     bottom: max(16px, calc(env(safe-area-inset-bottom) + 10px));
   }
 }
