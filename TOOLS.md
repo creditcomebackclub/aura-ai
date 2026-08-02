@@ -63,13 +63,13 @@ sees in the `tools` array; "underlying tables" are what the executor in
 | `get_client_snapshot` | One deterministic client summary: status, billing, current phase, recent letters, outstanding ledger entries. Fuzzy name matching tolerates punctuation, missing middle names, and speech-transcription errors. | `name` | `clients` + `letters` tables, via `ccc_database.js::getClientSnapshot()` / `findClientsByName()` |
 | `get_client_current_phase` | A named client's current phase, sourced from their most recent letter batch, with the evidence record attached. | `name` | `clients` + `letters` tables, via `getClientCurrentPhase()` |
 | `check_email` | Reads the most recent unread emails (sender, subject, snippet). | none | Direct Gmail/Outlook (`email_provider.js`) if `EMAIL_PROVIDER` is configured, else Mac companion job `check_email`, else direct `mac_integration.js` call on local runtime |
-| `check_calendar` | Reads today's + tomorrow's events. | none | Private iCal feed (`CALENDAR_ICAL_URL` / `GOOGLE_CALENDAR_ICAL_URL`) via `calendar_feed.js` when set — cloud-capable, no Mac; else Mac companion job `check_calendar`, else local `mac_integration.js` |
+| `check_calendar` | Reads upcoming events (about a week ahead on iCal). Read-only. | none | Private iCal feed (`CALENDAR_ICAL_URL` / `GOOGLE_CALENDAR_ICAL_URL`) via `calendar_feed.js` when set — cloud-capable, no Mac; else Mac companion job `check_calendar`, else local `mac_integration.js` |
 | `get_goals` | Retrieves current (non-completed) goals. | none | SQLite `goals` table locally, or `aura_tasks` via `cloudState.listTasks()` in cloud mode |
 | `query_finances` | Recent expense/income log entries. | `limit` | SQLite `finances` table (local-only; throws if no SQLite `db`, i.e. always cloud-unsupported today) |
 | `check_blackboard` | Scrapes/reads upcoming Blackboard assignment deadlines. | none | `scraper.js::checkBlackboardAssignments()` — see §5 for the two code paths |
 | `search_web` | Live public web search + sourced answer, for public information only — never for private CCC records. Rate-limited to 2 attempts per chat turn and gated so it cannot be mixed with private-data tool calls in the same round (privacy boundary enforced in `/api/chat`). | `query` | OpenAI Responses API `web_search` tool via `web_search.js::createOpenAIWebSearch()`; daily quota enforced by `createDailyWebSearchLimiter()` against `aura_state` key `web_search_daily_usage` |
 | `list_deletable_test_letters` | Lists unmailed letters whose client name AND furnisher both match the test-record pattern — the only letters eligible for deletion. | none | `letters` table, via `ccc_database.js::listDeletableTestLetters()` (pattern: `/\b(test|delete me|dummy|sample)\b/i`) |
-| `list_pending_owner_actions` | Lists staged-but-unapproved emails with their `action_id`, so AURA can recover an id that fell out of context instead of guessing (Telegram is never staged, so it never appears here). | none | `aura_actions` where `status = 'proposed'` and `tool_name` in `send_owner_email`/`send_email`, via `cloudState.listPendingActions()` |
+| `list_pending_owner_actions` | Lists staged-but-unapproved emails and calendar events with their `action_id`, so AURA can recover an id that fell out of context instead of guessing (Telegram is never staged, so it never appears here). | none | `aura_actions` where `status = 'proposed'` and `tool_name` in `send_owner_email`/`send_email`/`create_calendar_event`, via `cloudState.listPendingActions()` |
 
 ### 2.2 `reversible_write` tools
 
@@ -82,6 +82,7 @@ sees in the `tools` array; "underlying tables" are what the executor in
 | `propose_test_letter_deletion` | **Step 1 of 2** for deleting a test letter. Re-validates eligibility and *stages* the deletion; deletes nothing. | `letter_id` | Inserts a `proposed` row into `aura_actions` (`tool_name: 'confirm_test_letter_deletion'`) |
 | `propose_owner_email` | **Step 1 of 2** for emailing the owner. Stages subject/body/optional PDF content; sends nothing. | `subject`, `body`, `pdf_content` (optional) | Inserts a `proposed` row into `aura_actions` (`tool_name: 'send_owner_email'`) via `cloudState.proposeAction()` |
 | `propose_email` | **Step 1 of 2** for emailing anyone OTHER than the owner - only used when the owner explicitly names a recipient. Stages `to`/subject/body/optional PDF content; sends nothing. `to` is validated as a plausible email address by `agent_policy.js` before staging. | `to`, `subject`, `body`, `pdf_content` (optional) | Inserts a `proposed` row into `aura_actions` (`tool_name: 'send_email'`, `risk_level: 'external_action'`) via `cloudState.proposeAction()` |
+| `propose_calendar_event` | **Step 1 of 2** for creating a Google Calendar event (optional attendees → invitations). Stages the event; creates nothing until confirm. | `summary`, `start`, `end?`, `duration_minutes?`, `description?`, `location?`, `attendees[]?`, `time_zone?` | Inserts a `proposed` row into `aura_actions` (`tool_name: 'create_calendar_event'`, `risk_level: 'external_action'`) via `cloudState.proposeAction()`; payload validated by `google_calendar.js::buildGoogleCalendarEvent()` |
 
 `send_telegram_message` is NOT a propose/confirm pair - see the `read`/single-call
 notes below. It was originally built as a two-step `propose_telegram_message`/
@@ -114,6 +115,7 @@ turn-passage, and the owner's own words before doing anything irreversible.
 | Tool | Purpose | Key arguments | Effect when redeemed |
 |---|---|---|---|
 | `confirm_email` | **Step 2.** Actually sends a staged email to an arbitrary, owner-approved recipient. Registered `external_action` rather than `destructive_write` because the recipient is a real tool argument here, not fixed server config - there is no structural guarantee behind this one, only the propose/confirm gate itself. Same re-verification (staged, turn-passage, owner's own words) as every other confirm tool. | `action_id` | Dispatched by `executeApprovedAction()` → `companionClient.execute('send_email_to_recipient', …)` (cloud) or `mac.sendEmailToOwner(args.to, …)` (local) — see §5 |
+| `confirm_calendar_event` | **Step 2.** Creates the staged Google Calendar event (and sends invitations when attendees were staged). Same propose/confirm gate as `confirm_email`. | `action_id` | `executeApprovedAction()` → `google_calendar.js::createGoogleCalendarEvent()` via Calendar API `events.insert` (`sendUpdates=all` when attendees present) |
 
 Two additional `destructive_write` actions exist in the **same** `aura_actions`
 approval queue but are staged from HTTP routes rather than chat tools (no
@@ -305,6 +307,7 @@ then direct `mac_integration.js` call.
 | Owner email (send) | `AURA_OWNER_EMAIL` — fixed recipient, **never** a tool argument the model can supply | `propose_owner_email` returns "Email is not configured" without ever staging anything |
 | Third-party email (send) | No dedicated env var — reuses whatever Mac Mail / companion path is already configured for owner email; the recipient comes from the staged `to` argument instead of `AURA_OWNER_EMAIL`. | `propose_email` still requires `cloudState` (the approval queue) to stage anything, same as `propose_owner_email` |
 | Direct cloud email (bypasses Mac) | `EMAIL_PROVIDER=gmail\|outlook` plus matching OAuth vars: Gmail — `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`; Outlook — `OUTLOOK_TENANT_ID`, `OUTLOOK_CLIENT_ID`, `OUTLOOK_CLIENT_SECRET`, `OUTLOOK_REFRESH_TOKEN` | `isDirectEmailConfigured()` returns false; `check_email` falls through to the companion/mac path |
+| Google Calendar write | `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN` (OAuth scope `calendar.events`); optional `GOOGLE_CALENDAR_ID` (default `primary`). Falls back to `GMAIL_*` if the dedicated vars are unset. | `propose_calendar_event` returns a not-configured message without staging |
 | Telegram (send) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — fixed chat id, **never** a tool argument | `send_telegram_message` returns "Telegram is not configured" without sending anything |
 | Blackboard — cloud path | `BLACKBOARD_ICAL_URL` (an iCal/webcal feed URL, must resolve to `https://` or `webcal:`; treat as a secret — it is usually a bearer-token URL) | On cloud runtime with no iCal URL set, `check_blackboard` returns `BLACKBOARD_CALENDAR_ERROR: Blackboard calendar access is not configured on the cloud service.` |
 | Blackboard — local Mac path | None required beyond a previously-authenticated Puppeteer session (`.browser_data/`, established via `node login-blackboard.js`); optional `AURA_DEBUG_SCRAPES=true` dumps raw scraped text to `scraped_blackboard.txt` | Falls back to `BLACKBOARD_LOGIN_REQUIRED` if the saved session expired |
@@ -328,7 +331,8 @@ read:
 
 reversible_write:
   add_goal, update_goal_status, log_finance, save_semantic_memory,
-  propose_test_letter_deletion, propose_owner_email, propose_email
+  propose_test_letter_deletion, propose_owner_email, propose_email,
+  propose_calendar_event
 
 destructive_write:
   confirm_test_letter_deletion, confirm_owner_email, send_telegram_message
@@ -339,11 +343,9 @@ destructive_write:
   # redundant. Every other destructive_write tool here IS gated.
 
 external_action:
-  confirm_email
-  # The one tool where the recipient is a real argument, not fixed server
-  # config - registered a tier above destructive_write specifically to flag
-  # that its safety rests entirely on the propose/confirm gate, with no
-  # structural fixed-recipient guarantee underneath it.
+  confirm_email, confirm_calendar_event
+  # Recipient/attendees are real arguments, not fixed server config — safety
+  # rests on the propose/confirm gate.
 
 (anything else): blocked
 ```

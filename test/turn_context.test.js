@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   BUSINESS_INTEL_TOOL_NAMES,
   OUTBOUND_EMAIL_TOOL_NAMES,
+  CALENDAR_WRITE_TOOL_NAMES,
   isLightweightChitchat,
   selectToolsForTurn,
   historyLimitForTurn,
@@ -17,6 +18,8 @@ function fakeTools(names) {
 const ALL_NAMES = [
   ...BUSINESS_INTEL_TOOL_NAMES,
   ...OUTBOUND_EMAIL_TOOL_NAMES,
+  ...CALENDAR_WRITE_TOOL_NAMES,
+  'list_pending_owner_actions',
   'check_email',
   'check_calendar',
   'get_goals',
@@ -76,4 +79,24 @@ test('selectToolsForTurn keeps outbound email tools when the turn asks to send',
   const names = new Set(selected.map(tool => tool.function.name));
   assert.equal(names.has('propose_owner_email'), true);
   assert.equal(names.has('confirm_owner_email'), true);
+  assert.equal(names.has('list_pending_owner_actions'), true);
+});
+
+test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
+  const selected = selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'Schedule a consult with David on Monday at 9'
+  );
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('propose_calendar_event'), true);
+  assert.equal(names.has('confirm_calendar_event'), true);
+  assert.equal(names.has('list_pending_owner_actions'), true);
+  assert.equal(names.has('propose_owner_email'), false);
+});
+
+test('selectToolsForTurn drops calendar write tools on plain chit-chat', () => {
+  const selected = selectToolsForTurn(fakeTools(ALL_NAMES), "Hey, what's up?");
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('propose_calendar_event'), false);
+  assert.equal(names.has('list_pending_owner_actions'), false);
 });

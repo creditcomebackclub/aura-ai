@@ -75,6 +75,27 @@ test('tool arguments reject unsafe identifiers and invalid writes', () => {
   );
 });
 
+test('propose_calendar_event validates times and attendees; confirm needs action_id', () => {
+  assert.equal(getToolPolicy('propose_calendar_event'), 'reversible_write');
+  assert.equal(getToolPolicy('confirm_calendar_event'), 'external_action');
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('propose_calendar_event', {
+      summary: 'Consult', start: '2026-08-04T09:00:00-07:00', attendees: ['nope']
+    })),
+    /valid email/
+  );
+  const parsed = parseAndAuthorizeToolCall(toolCall('propose_calendar_event', {
+    summary: 'Consult',
+    start: '2026-08-04T09:00:00-07:00',
+    attendees: ['client@example.com']
+  }));
+  assert.deepEqual(parsed.args.attendees, ['client@example.com']);
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('confirm_calendar_event', { action_id: '!!!' })),
+    /Invalid action_id/
+  );
+});
+
 test('propose_email requires a valid recipient address, unlike the fixed-recipient owner tools', () => {
   // The asymmetry itself is the safety-relevant fact here: propose_owner_email
   // and send_telegram_message deliberately have no recipient argument at all
@@ -674,7 +695,9 @@ test('owner approval requires an approval-shaped message, not a bare approval wo
     "That's fine, send it",
     'sounds good, send it',
     'yes please',
-    'ok go ahead'
+    'ok go ahead',
+    'yes, schedule it',
+    'yes create the event'
   ]) {
     assert.equal(isClearOwnerApproval(approval), true, approval);
     assert.equal(isClearOwnerRefusal(approval), false, approval);
