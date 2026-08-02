@@ -9,7 +9,7 @@ const OWNER_REFUSAL_PATTERN = /\b(no|nope|don'?t|do not|cancel|stop|wait|hold of
 
 // Leftover tokens that still count as confirming the staged action itself
 // ("yes, send the email", "yes that's fine") rather than starting a new request.
-const APPROVAL_HARMLESS_REMAINDER = /^(?:(?:the|a|an|my|that|thats|this|it|its|please|now|just|then|and|to|for|me|ok|okay|sure|alright|all\s+right|right|thanks?|thank\s+you|email|letter|deletion|message|mail|action|pdf|report|file|one|fine|good|great|perfect|absolutely|definitely|sounds|works|cool|totally|exactly|calendar|event|invite|invitation|appointment|meeting|consult|consultation|schedule)\s*)*$/i;
+const APPROVAL_HARMLESS_REMAINDER = /^(?:(?:the|a|an|my|that|thats|this|it|its|please|now|just|then|and|to|for|me|ok|okay|sure|alright|all\s+right|right|thanks?|thank\s+you|email|letter|deletion|message|mail|action|pdf|report|file|one|fine|good|great|perfect|absolutely|definitely|sounds|works|cool|totally|exactly|calendar|event|invite|invitation|appointment|meeting|consult|consultation|schedule|create|book)\s*)*$/i;
 
 function stripApprovalPhrases(message) {
   // Fresh /gi copy: the exported pattern has no `g` (so .test() is safe to
