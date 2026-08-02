@@ -1,5 +1,5 @@
 // Combined morning push: open goals (with due dates), today's calendar, and
-// near-term Blackboard deadlines — one spoken/Telegram message.
+// near-term Blackboard deadlines — one readable Telegram/WebSocket message.
 
 const {
   formatDailyGoalsDigest,
@@ -15,8 +15,8 @@ function formatGoalLine(goal, index, { nowMs, timeZone }) {
   const created = new Date(goal.created_at).getTime();
   const stale = Number.isFinite(created) && created <= nowMs - STALE_MS;
   const tags = [dueLabel, stale && !dueLabel ? 'open over two weeks' : null].filter(Boolean);
-  const suffix = tags.length ? `, ${tags.join(', ')}` : '';
-  return `${index + 1}) ${title}${suffix}`;
+  const suffix = tags.length ? ` — ${tags.join(', ')}` : '';
+  return `${index + 1}. ${title}${suffix}`;
 }
 
 function formatGoalsSection(goals, { nowMs, timeZone } = {}) {
@@ -34,43 +34,116 @@ function formatGoalsSection(goals, { nowMs, timeZone } = {}) {
     return rank(left) - rank(right);
   });
 
-  if (sorted.length === 1) {
-    const dueLabel = formatDueLabel(sorted[0].due_at, { timeZone, now: new Date(nowMs) });
-    const dueBit = dueLabel ? ` (${dueLabel})` : '';
-    return `On your list: ${goalTitle(sorted[0])}${dueBit}.`;
-  }
+  const lines = sorted.map((goal, index) => formatGoalLine(goal, index, { nowMs, timeZone }));
+  return [`Goals (${sorted.length})`, ...lines].join('\n');
+}
 
-  const items = sorted.map((goal, index) => formatGoalLine(goal, index, { nowMs, timeZone }));
-  return `On your list (${sorted.length}): ${items.join('; ')}.`;
+function cleanCalendarEventLine(line) {
+  // "Event: Title @ place (Starts: Mon, Aug 3, 9:00 AM)" → "Title @ place — Mon, Aug 3, 9:00 AM"
+  let text = String(line || '').trim().replace(/^Event:\s*/i, '');
+  const startsMatch = text.match(/^(.*)\s*\(Starts:\s*(.+)\)\s*$/i);
+  if (startsMatch) {
+    const title = startsMatch[1].trim();
+    const when = startsMatch[2].trim();
+    return when ? `${title} — ${when}` : title;
+  }
+  return text;
 }
 
 function formatCalendarSection(calendarText) {
   if (!calendarText || typeof calendarText !== 'string') return null;
   const trimmed = calendarText.trim();
   if (!trimmed) return null;
-  if (/^no events scheduled/i.test(trimmed)) return 'Calendar is clear today.';
-  // Compact: keep first few event lines.
-  const lines = trimmed.split('\n').map(line => line.trim()).filter(Boolean).slice(0, 5);
+  if (/^no events scheduled/i.test(trimmed)) return 'Calendar\nClear.';
+  const lines = trimmed
+    .split('\n')
+    .map(line => cleanCalendarEventLine(line))
+    .filter(Boolean)
+    .slice(0, 5);
   if (!lines.length) return null;
-  return `Today on the calendar: ${lines.map(line => line.replace(/^Event:\s*/i, '')).join('; ')}.`;
+  return ['Calendar', ...lines.map(line => `• ${line}`)].join('\n');
 }
 
-function formatBlackboardSection(upcoming, { timeZone = 'America/Phoenix' } = {}) {
-  const items = Array.isArray(upcoming) ? upcoming : [];
-  if (!items.length) return null;
-  const dueFormatter = new Intl.DateTimeFormat('en-US', {
+function cleanBlackboardTitle(title) {
+  return String(title || '')
+    .replace(/\s*\[due\s+day\s+\d+\]\s*/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function zonedDayParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
     weekday: 'short',
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
-    minute: '2-digit'
-  });
-  const list = items.slice(0, 5).map(item => {
-    const due = item.due_at ? dueFormatter.format(new Date(item.due_at)) : 'soon';
-    return `${item.title}, due ${due}`;
-  }).join('; ');
-  return `Blackboard: ${items.length} deadline${items.length === 1 ? '' : 's'} in the next three days — ${list}.`;
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(date);
+  const get = (type) => parts.find(part => part.type === type)?.value;
+  return {
+    weekday: get('weekday'),
+    month: get('month'),
+    day: Number(get('day')),
+    hour: Number(get('hour')),
+    minute: Number(get('minute')),
+    dayKey: `${get('weekday')}|${get('month')}|${get('day')}`
+  };
+}
+
+function formatBlackboardDayLabel(parts) {
+  return `${parts.weekday}, ${parts.month} ${parts.day}`;
+}
+
+function formatBlackboardSection(upcoming, { timeZone = 'America/Phoenix' } = {}) {
+  const items = (Array.isArray(upcoming) ? upcoming : [])
+    .slice(0, 8)
+    .map(item => {
+      const dueAt = item.due_at ? new Date(item.due_at) : null;
+      const validDue = dueAt && Number.isFinite(dueAt.getTime()) ? dueAt : null;
+      const parts = validDue ? zonedDayParts(validDue, timeZone) : null;
+      return {
+        title: cleanBlackboardTitle(item.title) || 'Untitled',
+        parts,
+        dueAt: validDue,
+        // Academic deadlines are almost always 11:59pm — omit that noise.
+        showTime: parts ? !(parts.hour === 23 && parts.minute === 59) : false
+      };
+    })
+    .filter(item => item.title);
+
+  if (!items.length) return null;
+
+  const groups = new Map();
+  for (const item of items) {
+    const key = item.parts ? item.parts.dayKey : 'soon';
+    if (!groups.has(key)) {
+      groups.set(key, {
+        label: item.parts ? formatBlackboardDayLabel(item.parts) : 'Soon',
+        items: []
+      });
+    }
+    groups.get(key).items.push(item);
+  }
+
+  const lines = [`Blackboard (${items.length})`];
+  for (const group of groups.values()) {
+    lines.push(group.label);
+    for (const item of group.items) {
+      if (item.showTime && item.dueAt) {
+        const time = new Intl.DateTimeFormat('en-US', {
+          timeZone,
+          hour: 'numeric',
+          minute: '2-digit'
+        }).format(item.dueAt);
+        lines.push(`• ${item.title} — ${time}`);
+      } else {
+        lines.push(`• ${item.title}`);
+      }
+    }
+  }
+  return lines.join('\n');
 }
 
 function formatMorningBrief({
@@ -88,7 +161,13 @@ function formatMorningBrief({
   ].filter(Boolean);
 
   if (!sections.length) return null;
-  return `Morning. ${sections.join(' ')} Ask me anytime if you want to knock something out.`;
+  return [
+    'Morning.',
+    '',
+    sections.join('\n\n'),
+    '',
+    'Ask me anytime if you want to knock something out.'
+  ].join('\n');
 }
 
 function filterUpcomingAssignments(assignments, { now = new Date(), withinDays = 3 } = {}) {
