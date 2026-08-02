@@ -906,10 +906,13 @@ socket.on('proactive-alert', async (data) => {
   playbackCancelled = false;
   setOrbState('thinking', 'AURA is notifying you...');
   try {
+    // Prefer the prose `spoken` field when present (morning brief) so TTS
+    // doesn't read bullet layout / section headers aloud.
+    const speakText = data.spoken || data.metadata?.spoken || data.text;
     const ttsRes = await authenticatedFetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: data.text })
+      body: JSON.stringify({ text: speakText })
     });
     if (!ttsRes.ok) throw new Error('TTS API failed');
     const blob = await ttsRes.blob();

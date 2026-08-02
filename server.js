@@ -570,10 +570,26 @@ function scheduleConversationSummary() {
   });
 }
 
+async function synthesizeAlertVoice(spokenText) {
+  const sentences = splitIntoSentences(spokenText);
+  if (!sentences.length) return null;
+  const chunks = await Promise.all(sentences.map(synthesizeSpeechChunk));
+  return chunks.length > 1 ? concatWavBuffers(chunks) : chunks[0];
+}
+
 async function sendProactiveAlert(text, category = 'general', urgency = 'normal', options = {}) {
+  const spoken = typeof options.spoken === 'string' && options.spoken.trim()
+    ? options.spoken.trim()
+    : null;
   let notification;
   if (cloudState) {
-    notification = await cloudState.createNotification(text, category, urgency, options);
+    notification = await cloudState.createNotification(text, category, urgency, {
+      ...options,
+      metadata: {
+        ...(options.metadata || {}),
+        ...(spoken ? { spoken } : {})
+      }
+    });
   } else {
     if (options.dedupeKey) {
       const existing = db.prepare(
@@ -598,19 +614,33 @@ async function sendProactiveAlert(text, category = 'general', urgency = 'normal'
       .run(notification.id);
   }
   if (notification.deduplicated) return notification;
+  // Attach spoken copy for live clients even when metadata isn't round-tripped.
+  notification = { ...notification, spoken: spoken || notification.metadata?.spoken || null };
   console.log('[Proactive Alert] Created notification:', {
     id: notification.id,
     category,
-    urgency
+    urgency,
+    voice: Boolean(options.telegramVoice && notification.spoken)
   });
   io.emit('proactive-alert', notification);
   // Phone push: mirror every proactive alert to Telegram when configured so
-  // Chris still gets it if the orb UI isn't open.
+  // Chris still gets it if the orb UI isn't open. Morning brief also attaches
+  // a tap-to-play voice note (spoken prose, not the bullet layout).
   if (options.telegram !== false && isTelegramConfigured()) {
     try {
       await sendTelegramMessage(text);
     } catch (error) {
       console.warn('[Proactive Alert] Telegram mirror failed:', error.message || error);
+    }
+    if (options.telegramVoice && notification.spoken) {
+      try {
+        const audio = await synthesizeAlertVoice(notification.spoken);
+        if (audio) {
+          await sendTelegramAudio(audio, { filename: 'morning-brief.wav' });
+        }
+      } catch (error) {
+        console.warn('[Proactive Alert] Telegram voice failed:', error.message || error);
+      }
     }
   }
   return notification;
