@@ -549,6 +549,32 @@ test('forget removes matching structured facts and linked semantic memories', as
   assert.equal(semanticMemory.rows.size, 0);
 });
 
+test('buildContext can skip semantic search for lightweight turns', async () => {
+  const profileStore = createProfileStore({
+    'preference.tone': {
+      key: 'preference.tone',
+      kind: 'preference',
+      value: 'direct',
+      pinned: true,
+      confidence: 1
+    }
+  });
+  let searchCalls = 0;
+  const semanticMemory = createSemanticMemory();
+  const originalSearch = semanticMemory.search.bind(semanticMemory);
+  semanticMemory.search = async (...args) => {
+    searchCalls += 1;
+    return originalSearch(...args);
+  };
+  const memory = new MemoryV2({ profileStore, semanticMemory });
+  const light = await memory.buildContext('hey', { includeSemantic: false });
+  assert.equal(searchCalls, 0);
+  assert.ok(light.profileContext);
+  const full = await memory.buildContext('hey', { includeSemantic: true });
+  assert.equal(searchCalls, 1);
+  assert.ok(full.profileContext);
+});
+
 test('rolling summaries update only after the message threshold', async () => {
   let update = null;
   const messages = Array.from({ length: 4 }, (_, index) => ({

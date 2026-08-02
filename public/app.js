@@ -1148,6 +1148,18 @@ async function processAudio(audioBlob) {
           enqueueSentenceAudio(event.text, sentenceCount === 1, timing);
         } else if (event.type === 'done') {
           finalResult = event;
+          // Arrives after the tool loop finishes — later than TTFA, but this is
+          // where pre_model / first_delta / lightweight are known accurately.
+          if (event.timing) {
+            timing.serverTiming = event.timing;
+            console.log(
+              `[timing] server` +
+              ` (pre_model ${event.timing.pre_model_ms ?? '?'}ms` +
+              `, first_delta ${event.timing.first_delta_ms ?? '?'}ms` +
+              `, context ${event.timing.context_build_ms ?? '?'}ms` +
+              `${event.timing.lightweight ? ', lightweight' : ''})`
+            );
+          }
         } else if (event.type === 'error') {
           throw new Error(event.error);
         }
