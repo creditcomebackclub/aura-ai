@@ -61,6 +61,14 @@ services:
         sync: false
       - key: CALENDAR_ICAL_URL
         sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CALENDAR_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
       - key: AURA_OWNER_EMAIL
         sync: false
       - key: TELEGRAM_BOT_TOKEN

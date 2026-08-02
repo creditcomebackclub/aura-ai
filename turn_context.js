@@ -22,7 +22,16 @@ const OUTBOUND_EMAIL_TOOL_NAMES = new Set([
   'propose_owner_email',
   'confirm_owner_email',
   'propose_email',
-  'confirm_email',
+  'confirm_email'
+]);
+
+const CALENDAR_WRITE_TOOL_NAMES = new Set([
+  'propose_calendar_event',
+  'confirm_calendar_event'
+]);
+
+// Recovery helper for any staged propose/confirm flow (email + calendar).
+const STAGED_ACTION_TOOL_NAMES = new Set([
   'list_pending_owner_actions'
 ]);
 
@@ -39,7 +48,8 @@ const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
 );
 
 const OUTBOUND_EMAIL_KEYWORD_PATTERN = /\b(email|e-?mail|send|propose|approve|confirm|draft|pending action)\b/i;
-const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|search|remember|memory|profile|mail|consult|consultation)\b/i;
+const CALENDAR_WRITE_KEYWORD_PATTERN = /\b(schedule|scheduling|scheduled|book|booking|invite|invitation|calendar event|add (?:this |it |an? )?to (?:my )?calendar|put .+ on (?:my )?calendar|block off|hold on my calendar)\b/i;
+const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|search|remember|memory|profile|mail|consult|consultation|schedule|book|invite)\b/i;
 
 // A short follow-up ("What about for his wife, Mary?", "Is her POA signed?")
 // carries no business keyword of its own - it leans entirely on the client
@@ -63,6 +73,7 @@ function isLightweightChitchat(text) {
   if (BUSINESS_INTEL_KEYWORD_PATTERN.test(trimmed)) return false;
   if (HEAVY_CONTEXT_KEYWORD_PATTERN.test(trimmed)) return false;
   if (OUTBOUND_EMAIL_KEYWORD_PATTERN.test(trimmed)) return false;
+  if (CALENDAR_WRITE_KEYWORD_PATTERN.test(trimmed)) return false;
   return true;
 }
 
@@ -76,8 +87,16 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
   if (!BUSINESS_INTEL_KEYWORD_PATTERN.test(combined)) {
     selected = selected.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
   }
-  if (!OUTBOUND_EMAIL_KEYWORD_PATTERN.test(combined)) {
+  const needsEmailTools = OUTBOUND_EMAIL_KEYWORD_PATTERN.test(combined);
+  const needsCalendarWriteTools = CALENDAR_WRITE_KEYWORD_PATTERN.test(combined);
+  if (!needsEmailTools) {
     selected = selected.filter(tool => !OUTBOUND_EMAIL_TOOL_NAMES.has(tool.function.name));
+  }
+  if (!needsCalendarWriteTools) {
+    selected = selected.filter(tool => !CALENDAR_WRITE_TOOL_NAMES.has(tool.function.name));
+  }
+  if (!needsEmailTools && !needsCalendarWriteTools) {
+    selected = selected.filter(tool => !STAGED_ACTION_TOOL_NAMES.has(tool.function.name));
   }
   return selected;
 }
@@ -89,8 +108,11 @@ function historyLimitForTurn(text) {
 module.exports = {
   BUSINESS_INTEL_TOOL_NAMES,
   OUTBOUND_EMAIL_TOOL_NAMES,
+  CALENDAR_WRITE_TOOL_NAMES,
+  STAGED_ACTION_TOOL_NAMES,
   BUSINESS_INTEL_KEYWORD_PATTERN,
   OUTBOUND_EMAIL_KEYWORD_PATTERN,
+  CALENDAR_WRITE_KEYWORD_PATTERN,
   HEAVY_CONTEXT_KEYWORD_PATTERN,
   BUSINESS_INTEL_HISTORY_LOOKBACK,
   LIGHTWEIGHT_MAX_CHARS,

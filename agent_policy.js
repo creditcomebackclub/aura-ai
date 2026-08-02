@@ -33,6 +33,10 @@ const TOOL_POLICIES = Object.freeze({
   // guarantee to fall back on.
   propose_email: 'reversible_write',
   confirm_email: 'external_action',
+  // Calendar writes hit Google Calendar API (and may email invites). Same
+  // propose → owner-approve → confirm gate as third-party email.
+  propose_calendar_event: 'reversible_write',
+  confirm_calendar_event: 'external_action',
   // No staging - the recipient is fixed to the owner's own chat regardless,
   // so a confirmation step protects against nothing here (unlike email).
   send_telegram_message: 'destructive_write'
@@ -160,6 +164,47 @@ function validateToolArguments(name, args) {
     if (args.pdf_content !== undefined) requireString('pdf_content', 20000);
   }
   if (name === 'confirm_email') {
+    requireString('action_id', 100);
+    if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
+      throw new Error(`Invalid action_id for ${name}.`);
+    }
+  }
+  if (name === 'propose_calendar_event') {
+    requireString('summary', 500);
+    requireString('start', 80);
+    if (args.end !== undefined && args.end !== null) requireString('end', 80);
+    if (args.description !== undefined && args.description !== null) {
+      requireString('description', 8000);
+    }
+    if (args.location !== undefined && args.location !== null) {
+      requireString('location', 500);
+    }
+    if (args.time_zone !== undefined && args.time_zone !== null) {
+      requireString('time_zone', 80);
+    }
+    if (args.duration_minutes !== undefined && args.duration_minutes !== null) {
+      const minutes = Number(args.duration_minutes);
+      if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 24 * 60) {
+        throw new Error('duration_minutes must be between 1 and 1440.');
+      }
+      args.duration_minutes = Math.trunc(minutes);
+    }
+    if (args.attendees !== undefined && args.attendees !== null) {
+      if (!Array.isArray(args.attendees)) {
+        throw new Error('attendees must be an array of email addresses.');
+      }
+      if (args.attendees.length > 20) {
+        throw new Error('attendees supports at most 20 addresses.');
+      }
+      args.attendees = args.attendees.map(email => {
+        if (typeof email !== 'string' || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
+          throw new Error('Each attendee must be a valid email address.');
+        }
+        return email.trim().toLowerCase();
+      });
+    }
+  }
+  if (name === 'confirm_calendar_event') {
     requireString('action_id', 100);
     if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
       throw new Error(`Invalid action_id for ${name}.`);
