@@ -47,11 +47,10 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Deploy and live-test calendar grounding plus smoother voice.** `calendar_time.js` now supplies
-  an authoritative Phoenix clock and corrects relative dates before staging. The voice pipeline now
-  waits for one complete opening sentence, groups the remainder for connected Cartesia prosody, and
-  avoids sentence-by-sentence WAV seams across PWA, Telegram, and proactive voice. After deploy,
-  repeat the calendar test and compare conversational cadence/TTFA on a two-or-three-sentence reply.
+- **Deploy and live-test direct calendar execution.** A clear owner instruction such as “Schedule
+  lunch tomorrow at 1:30” now creates the event immediately, records the audit result, and confirms
+  the exact date/time afterward. Calendar creation no longer enters the staged actions queue; only
+  genuinely missing or ambiguous details should trigger a short follow-up question.
 
 ## Blocked
 
@@ -67,8 +66,10 @@ Name exactly what's needed and from whom.*
 
 *Last handful of shipped items. Prune older entries — this is not a permanent changelog; git log is.*
 
+- Calendar grounding and smoother connected voice shipped in #25; the mistaken April 8 and April 15
+  test events were deleted and verified as cancelled through the Calendar API.
 - Google Calendar write OAuth configured on Render and verified against the Calendar API. The API
-  returned real event ids/links; the remaining failure was incorrect relative-date grounding.
+  returned real event ids/links; relative dates are now grounded by the server clock.
 - Voice smoothness pass: removed comma/dash/six-word early fragments, kept a fast complete first
   sentence, grouped later sentences into continuous Cartesia performances, and refined `SOUL.md`
   so compact replies stay connected rather than telegraphic.

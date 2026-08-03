@@ -26,11 +26,11 @@ const OUTBOUND_EMAIL_TOOL_NAMES = new Set([
 ]);
 
 const CALENDAR_WRITE_TOOL_NAMES = new Set([
-  'propose_calendar_event',
-  'confirm_calendar_event'
+  'create_calendar_event'
 ]);
 
-// Recovery helper for any staged propose/confirm flow (email + calendar).
+// Recovery helper for staged email flows. Calendar writes execute directly
+// from an explicit owner scheduling command and never enter this queue.
 const STAGED_ACTION_TOOL_NAMES = new Set([
   'list_pending_owner_actions'
 ]);
@@ -95,7 +95,7 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
   if (!needsCalendarWriteTools) {
     selected = selected.filter(tool => !CALENDAR_WRITE_TOOL_NAMES.has(tool.function.name));
   }
-  if (!needsEmailTools && !needsCalendarWriteTools) {
+  if (!needsEmailTools) {
     selected = selected.filter(tool => !STAGED_ACTION_TOOL_NAMES.has(tool.function.name));
   }
   return selected;

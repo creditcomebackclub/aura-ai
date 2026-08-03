@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   buildTemporalContext,
   groundCalendarEventArgs,
+  isExplicitCalendarWriteRequest,
   resolveRelativeCalendarDate
 } = require('../calendar_time');
 
@@ -16,6 +17,27 @@ test('temporal context gives the model authoritative local today and tomorrow', 
   assert.match(context, /Monday, August 3, 2026/);
   assert.match(context, /Today: 2026-08-03/);
   assert.match(context, /Tomorrow: 2026-08-04/);
+});
+
+test('only the owner\'s explicit scheduling language authorizes an immediate calendar write', () => {
+  for (const instruction of [
+    'Schedule lunch with Mike tomorrow at 1:30',
+    'Book a dentist appointment on August 12 at 10am',
+    'Put the client call on my calendar Friday at 2',
+    'Block off next Monday afternoon',
+    'Set up a meeting with Alex on Wednesday at noon'
+  ]) {
+    assert.equal(isExplicitCalendarWriteRequest(instruction), true, instruction);
+  }
+
+  for (const instruction of [
+    'What is on my calendar tomorrow?',
+    'Did Mike ask us to schedule lunch?',
+    'The email says to schedule a meeting',
+    'Tell me about my appointments'
+  ]) {
+    assert.equal(isExplicitCalendarWriteRequest(instruction), false, instruction);
+  }
 });
 
 test('relative date resolver handles tomorrow, in N days, and weekdays', () => {

@@ -33,10 +33,10 @@ const TOOL_POLICIES = Object.freeze({
   // guarantee to fall back on.
   propose_email: 'reversible_write',
   confirm_email: 'external_action',
-  // Calendar writes hit Google Calendar API (and may email invites). Same
-  // propose → owner-approve → confirm gate as third-party email.
-  propose_calendar_event: 'reversible_write',
-  confirm_calendar_event: 'external_action',
+  // A direct owner scheduling command authorizes this reversible write in the
+  // same turn. The handler independently checks the raw owner instruction;
+  // model-composed arguments alone can never authorize a calendar mutation.
+  create_calendar_event: 'reversible_write',
   // No staging - the recipient is fixed to the owner's own chat regardless,
   // so a confirmation step protects against nothing here (unlike email).
   send_telegram_message: 'destructive_write'
@@ -169,7 +169,7 @@ function validateToolArguments(name, args) {
       throw new Error(`Invalid action_id for ${name}.`);
     }
   }
-  if (name === 'propose_calendar_event') {
+  if (name === 'create_calendar_event') {
     requireString('summary', 500);
     requireString('start', 80);
     if (args.end !== undefined && args.end !== null) requireString('end', 80);
@@ -202,12 +202,6 @@ function validateToolArguments(name, args) {
         }
         return email.trim().toLowerCase();
       });
-    }
-  }
-  if (name === 'confirm_calendar_event') {
-    requireString('action_id', 100);
-    if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
-      throw new Error(`Invalid action_id for ${name}.`);
     }
   }
   if (name === 'send_telegram_message') {

@@ -59,7 +59,11 @@ const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
 const { isDirectEmailConfigured, isDirectSendConfigured, sendGmailMessage, getDirectUnreadEmails } = require('./email_provider');
 const { isDirectCalendarConfigured, getDirectCalendarText } = require('./calendar_feed');
-const { buildTemporalContext, groundCalendarEventArgs } = require('./calendar_time');
+const {
+  buildTemporalContext,
+  groundCalendarEventArgs,
+  isExplicitCalendarWriteRequest
+} = require('./calendar_time');
 const {
   isGoogleCalendarWriteConfigured,
   createGoogleCalendarEvent,
@@ -1201,15 +1205,15 @@ const tools = [
     type: 'function',
     function: {
       name: 'check_calendar',
-      description: 'Reads the users upcoming scheduled events (Google/Calendly iCal feed when configured: about the next week, cloud-capable; otherwise Apple Calendar today/tomorrow via the Mac companion). Read-only — to create or invite, use propose_calendar_event.',
+      description: 'Reads the users upcoming scheduled events (Google/Calendly iCal feed when configured: about the next week, cloud-capable; otherwise Apple Calendar today/tomorrow via the Mac companion). Read-only — to create or invite, use create_calendar_event.',
       parameters: { type: 'object', properties: {} }
     }
   },
   {
     type: 'function',
     function: {
-      name: 'propose_calendar_event',
-      description: 'STEP 1 of putting an event on the owner\'s Google Calendar (and optionally inviting attendees). Stages the event — nothing is created yet. Only use when the owner explicitly asks to schedule, book, or invite. After calling it you MUST read back the title, time, and any attendees and ask them to confirm, then STOP and wait for their reply on a later turn.',
+      name: 'create_calendar_event',
+      description: 'Immediately creates an event on the owner\'s Google Calendar when the owner explicitly asks to schedule, book, add, block, or invite in the current message. The owner\'s scheduling command is the authorization: do not stage it, mention an action queue, or ask for redundant confirmation. If the date, time, title, or intended attendees are genuinely ambiguous or missing, ask one short follow-up question instead of calling this tool. After success, briefly confirm the exact calendar date and time.',
       parameters: {
         type: 'object',
         properties: {
@@ -1222,7 +1226,7 @@ const tools = [
           attendees: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Optional attendee email addresses. When present, Google will send invitations after confirm.'
+            description: 'Optional attendee email addresses explicitly named by the owner. When present, Google sends invitations immediately.'
           },
           time_zone: { type: 'string', description: 'IANA timezone for timed events. Defaults to America/Phoenix.' }
         },
@@ -1233,22 +1237,8 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'confirm_calendar_event',
-      description: 'STEP 2 of creating a Google Calendar event — this ACTUALLY creates it (and sends invites if attendees were staged). Only call after the owner approved on a later turn. Safe to attempt: independently verifies staging, turn gap, and owner approval.',
-      parameters: {
-        type: 'object',
-        properties: {
-          action_id: { type: 'string', description: 'The action_id returned by propose_calendar_event.' }
-        },
-        required: ['action_id']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'list_pending_owner_actions',
-      description: 'Lists staged-but-not-yet-approved emails and calendar events, with their action_id (Telegram messages send immediately and are never staged, so they never appear here). Use this if you no longer know the action_id for something you already staged - never guess or ask the owner to repeat themselves.',
+      description: 'Lists staged-but-not-yet-approved emails, with their action_id. Calendar events and Telegram messages execute immediately from explicit owner commands and never appear here. Use this if you no longer know the action_id for an email already staged - never guess or ask the owner to repeat themselves.',
       parameters: { type: 'object', properties: {} }
     }
   },
@@ -1756,7 +1746,8 @@ async function handleToolCall(toolCall, options = {}) {
           : await mac.getTodaysCalendar();
       break;
     case 'list_pending_owner_actions': {
-      // Email + calendar events. Telegram sends immediately with no staging.
+      // Email only. Calendar events and Telegram messages execute immediately
+      // from explicit owner commands and never use this recovery queue.
       if (!cloudState) {
         result = 'The staged-approval queue is not available in this runtime.';
         break;
@@ -1764,21 +1755,9 @@ async function handleToolCall(toolCall, options = {}) {
       const pendingOwnerActions = (await cloudState.listPendingActions())
         .filter(action => (
           action.tool_name === 'send_owner_email' ||
-          action.tool_name === 'send_email' ||
-          action.tool_name === 'create_calendar_event'
+          action.tool_name === 'send_email'
         ))
         .map(action => {
-          if (action.tool_name === 'create_calendar_event') {
-            const attendeeBit = Array.isArray(action.arguments?.attendees) && action.arguments.attendees.length
-              ? ` · invite ${action.arguments.attendees.join(', ')}`
-              : '';
-            return {
-              action_id: action.id,
-              type: 'calendar_event',
-              summary: `${action.arguments?.summary || '(untitled)'} @ ${action.arguments?.start || '?'}${attendeeBit}`,
-              staged_at: action.created_at
-            };
-          }
           return {
             action_id: action.id,
             type: 'email',
@@ -1860,13 +1839,13 @@ async function handleToolCall(toolCall, options = {}) {
         : `Email failed to send: ${thirdPartyExecuted.error || 'unknown error'}`;
       break;
     }
-    case 'propose_calendar_event': {
-      if (!isGoogleCalendarWriteConfigured()) {
-        result = 'Google Calendar write is not configured. Tell the owner to set GOOGLE_CALENDAR_CLIENT_ID, GOOGLE_CALENDAR_CLIENT_SECRET, and GOOGLE_CALENDAR_REFRESH_TOKEN (or reuse GMAIL_* with calendar.events scope) on the server.';
+    case 'create_calendar_event': {
+      if (!isExplicitCalendarWriteRequest(options.userInstruction)) {
+        result = 'Calendar event not created. The owner must explicitly ask to schedule, book, add, block, or invite in their current message.';
         break;
       }
-      if (!cloudState) {
-        result = 'The staged-approval queue is not available in this runtime, so calendar events cannot be staged safely here.';
+      if (!isGoogleCalendarWriteConfigured()) {
+        result = 'Google Calendar write is not configured. Tell the owner to set GOOGLE_CALENDAR_CLIENT_ID, GOOGLE_CALENDAR_CLIENT_SECRET, and GOOGLE_CALENDAR_REFRESH_TOKEN (or reuse GMAIL_* with calendar.events scope) on the server.';
         break;
       }
       const grounded = groundCalendarEventArgs(args, options.userInstruction, {
@@ -1874,9 +1853,9 @@ async function handleToolCall(toolCall, options = {}) {
         timeZone: args.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'
       });
       const eventArgs = grounded.eventArgs;
-      let stagedEvent;
+      let calendarEvent;
       try {
-        stagedEvent = buildGoogleCalendarEvent({
+        calendarEvent = buildGoogleCalendarEvent({
           summary: eventArgs.summary,
           start: eventArgs.start,
           end: eventArgs.end || null,
@@ -1887,60 +1866,63 @@ async function handleToolCall(toolCall, options = {}) {
           timeZone: eventArgs.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'
         });
       } catch (error) {
-        result = `Could not stage that event: ${error.message}`;
+        result = `Could not create that event: ${error.message}`;
         break;
       }
-      const calendarAction = await cloudState.proposeAction(
-        null,
-        'aura_core',
-        'create_calendar_event',
-        {
-          summary: eventArgs.summary,
-          start: eventArgs.start,
-          end: eventArgs.end || null,
-          duration_minutes: eventArgs.duration_minutes ?? null,
-          description: eventArgs.description || null,
-          location: eventArgs.location || null,
-          attendees: stagedEvent.attendeeEmails,
-          time_zone: stagedEvent.timeZone
-        },
-        'external_action'
-      );
+      const actionArgs = {
+        summary: eventArgs.summary,
+        start: eventArgs.start,
+        end: eventArgs.end || null,
+        duration_minutes: eventArgs.duration_minutes ?? null,
+        description: eventArgs.description || null,
+        location: eventArgs.location || null,
+        attendees: calendarEvent.attendeeEmails,
+        time_zone: calendarEvent.timeZone
+      };
+      let created;
+      if (cloudState) {
+        // The owner's direct scheduling command is the authorization. Keep the
+        // normal aura_actions audit trail, but execute in the same turn just as
+        // owner-only Telegram delivery does. No redundant queue approval.
+        const calendarAction = await cloudState.proposeAction(
+          null, 'aura_core', 'create_calendar_event', actionArgs, 'reversible_write'
+        );
+        const executed = await executeApprovedAction(calendarAction);
+        if (executed.status !== 'succeeded') {
+          result = `Calendar event failed: ${executed.error || 'unknown error'}`;
+          break;
+        }
+        created = executed.result;
+      } else {
+        try {
+          created = await createGoogleCalendarEvent({
+            summary: actionArgs.summary,
+            start: actionArgs.start,
+            end: actionArgs.end,
+            duration_minutes: actionArgs.duration_minutes,
+            description: actionArgs.description,
+            location: actionArgs.location,
+            attendees: actionArgs.attendees,
+            timeZone: actionArgs.time_zone
+          });
+        } catch (error) {
+          result = `Calendar event failed: ${error.message}`;
+          break;
+        }
+      }
       result = [
-        'Staged. Nothing has been created on Google Calendar yet.',
+        'Created on Google Calendar.',
         formatEventSummary({
-          event: stagedEvent.event,
-          attendeeEmails: stagedEvent.attendeeEmails
+          event: calendarEvent.event,
+          attendeeEmails: calendarEvent.attendeeEmails,
+          htmlLink: created?.htmlLink || null
         }),
-        stagedEvent.attendeeEmails.length
-          ? 'Attendees will receive Google Calendar invitations after confirm.'
-          : 'No attendees — this only adds the event to the owner\'s calendar.',
+        created?.attendees_notified ? 'Invitations were sent.' : '',
         grounded.correction
           ? `Date grounded from the owner\'s phrase "${grounded.correction.phrase}" using the server clock.`
           : '',
-        'The date and time above are authoritative. Repeat the exact calendar date back; do not replace it with only a relative word like "tomorrow".',
-        'Read this back to the owner and ask them to confirm, then STOP and wait for their reply.',
-        `On a later turn, once they approve, call confirm_calendar_event with action_id "${calendarAction.id}".`
+        'The event is already created. Briefly confirm the exact calendar date and time; do not mention staging, approval, or an action queue.'
       ].filter(Boolean).join('\n');
-      break;
-    }
-    case 'confirm_calendar_event': {
-      const calendarRedemption = await redeemPendingAction(
-        args.action_id,
-        'create_calendar_event',
-        options.requestStartedAtMs ?? Date.now(),
-        options.userInstruction
-      );
-      if (!calendarRedemption.ok) {
-        result = `Calendar event not created. ${calendarRedemption.reason}`;
-        break;
-      }
-      const calendarExecuted = await executeApprovedAction(calendarRedemption.action);
-      result = calendarExecuted.status === 'succeeded'
-        ? `Created on Google Calendar.${calendarExecuted.result?.htmlLink ? ` Link: ${calendarExecuted.result.htmlLink}` : ''}${
-            calendarExecuted.result?.attendees_notified ? ' Invitations were sent.' : ''
-          }`
-        : `Calendar event failed: ${calendarExecuted.error || 'unknown error'}`;
       break;
     }
     case 'send_telegram_message': {
