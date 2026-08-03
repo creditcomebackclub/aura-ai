@@ -7,10 +7,9 @@ happened yet — and the next person (or the next instance of Claude) picking th
 know *what's in flight* without re-deriving it from git log and grep.
 
 **This is not a substitute for `aura_actions`.** AURA already has a durable, queryable,
-crash-surviving mechanism for pending approvals — the `aura_actions` table (see POLICY.md /
-GROUNDING for the full propose → approve → execute pattern). If you want to know "is there an
-owner-email or Telegram message awaiting approval right now," query `aura_actions` (or hit
-`GET /api/actions/pending`) — don't look here, and don't duplicate that state here. `task.md` is
+crash-surviving action audit and approval mechanism in the `aura_actions` table (see POLICY.md).
+If you want to inspect a send result or a deletion awaiting approval, query `aura_actions` (or hit
+`GET /api/actions/pending` for staged items) — don't look here, and don't duplicate that state here. `task.md` is
 for the *broader* engineering work around AURA: the feature being built, the bug being chased, the
 thing blocked on a human going and doing something outside the codebase. Same underlying idea as
 `aura_actions` (make in-flight state legible and resumable instead of living only in one person's
@@ -47,10 +46,11 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Deploy and live-test direct calendar execution.** A clear owner instruction such as “Schedule
-  lunch tomorrow at 1:30” now creates the event immediately, records the audit result, and confirms
-  the exact date/time afterward. Calendar creation no longer enters the staged actions queue; only
-  genuinely missing or ambiguous details should trigger a short follow-up question.
+- **Deploy and live-test direct command execution.** Calendar creation is already immediate. Email
+  now follows the same executive-assistant model: a clear current-turn command sends immediately,
+  records the audit result, and confirms afterward. Third-party delivery additionally requires the
+  exact recipient address in Chris's current message; missing or ambiguous details get one short
+  follow-up instead of an approval queue.
 
 ## Blocked
 
@@ -79,7 +79,7 @@ Name exactly what's needed and from whom.*
 - Goal due dates, morning brief cron, Google iCal read, week-ahead calendar (#15–17).
 - PWA conversation transcript panel + mobile search panel lifted above orb controls; `/api/messages`
   endpoint; `scripts/google-calendar-oauth.js` + `npm run google:calendar-oauth`.
-- `propose_email` live-model eval case landed in `eval/cases.json` (`forbiddenTools`).
+- Third-party `send_email` prompt-injection eval case lives in `eval/cases.json` (`forbiddenTools`).
 
 ## Next up
 
@@ -100,12 +100,11 @@ an interruption":
 
 | | `aura_actions` (database table) | `task.md` (this file) |
 |---|---|---|
-| Tracks | A single proposed tool call (send this email, delete this letter) awaiting owner approval | Ongoing engineering work: features, bugs, docs, refactors |
-| Survives | Process restarts, redeploys — it's a Postgres row, checked via timestamp comparison (`redeemStagedDeletion`/`redeemPendingAction` in `server.js`), not an in-memory counter | Git commits and session boundaries — it's a checked-in file, read at the start of a session |
+| Tracks | Audited tool calls and proposed destructive actions; email/calendar/Telegram execute directly while deletions may await approval | Ongoing engineering work: features, bugs, docs, refactors |
+| Survives | Process restarts and redeploys — it is a Postgres row; staged deletion approval uses a timestamp comparison in `redeemStagedDeletion`, while direct sends record their outcome durably | Git commits and session boundaries — it's a checked-in file, read at the start of a session |
 | Granularity | One row per action, with `status` (`proposed`/`approved`/`rejected`/`executing`/`succeeded`/`failed`/`expired`/`cancelled`) and a hard 10-minute TTL (`DELETION_CONFIRMATION_TTL_MS`) | One bullet per unit of work, no formal state machine, pruned by hand |
-| Queried by | AURA itself, at inference time (`list_pending_owner_actions` tool, `GET /api/actions/pending`) | A human or an AI engineer opening the repo, at the start of a session |
+| Queried by | The action executor and the PWA (`GET /api/actions/pending`) | A human or an AI engineer opening the repo, at the start of a session |
 | Authority for "did the owner approve this" | The literal text the owner typed/said, matched against `OWNER_APPROVAL_PATTERN`/`OWNER_REFUSAL_PATTERN` — never what the model claims | N/A — no approval semantics here at all |
 
-If you find yourself wanting to log "email to owner proposed, awaiting approval" in `task.md`,
-that's a sign you should be looking at `aura_actions` instead — this file has no TTL, no approval
-gate, and no audit trail, and pending actions already have a better home.
+If you find yourself wanting to log an individual send or proposed deletion in `task.md`,
+look at `aura_actions` instead — this file has no execution status, TTL, or audit trail.

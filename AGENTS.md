@@ -89,16 +89,16 @@ The only thing that gates which tools can actually run is `agent_policy.js`'s
 (`read` / `reversible_write` / `destructive_write` / implicitly `blocked` for
 anything not listed). It has no concept of `client_operations` or `finance` at all;
 every enabled tool is available to whichever conversation is running, all the time,
-subject only to its own risk level and (for reversible/destructive writes) the
-propose → approve → execute gate described in `POLICY.md` / the propose-approve-execute
-doc. In other words: **the tool-level authorization system that actually runs today
+subject only to its own risk level and tool-specific authorization described
+in `POLICY.md` (direct current-turn commands for calendar/email/Telegram;
+propose → approve → execute for deletion). In other words: **the tool-level authorization system that actually runs today
 is one flat policy shared by "everyone," not three scoped policies selected per
 persona.**
 
 ### The `agent_id` stamped on `aura_actions` is a label, not a selection
 
-Every write into `aura_actions` — test-letter deletion staging, owner email staging,
-Telegram message staging, memory/profile deletion staging — passes the **literal
+Every write into `aura_actions` — test-letter deletion staging, direct email and
+Telegram audit records, memory/profile deletion staging — passes the **literal
 string `'aura_core'`** as `agent_id`, hardcoded at each call site
 (`ccc_database.js:589`, `ccc_database.js:662`, `server.js:1197`, `server.js:1233`,
 `supabase_state_store.js`'s `proposeAction(taskId, agentId, ...)` signature accepts

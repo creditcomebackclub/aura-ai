@@ -116,8 +116,8 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'propose_email',
-      description: 'STEP 1 of emailing SOMEONE OTHER THAN THE OWNER. Only use when the owner explicitly asks. Stages only; nothing is sent yet.',
+      name: 'send_email',
+      description: 'Immediately emails someone else only when the owner explicitly asks and includes the exact address in the current message.',
       parameters: {
         type: 'object',
         properties: {
@@ -132,20 +132,8 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'confirm_email',
-      description: 'STEP 2 of emailing a third party — actually sends. Only after owner approval on a later turn.',
-      parameters: {
-        type: 'object',
-        properties: { action_id: { type: 'string' } },
-        required: ['action_id']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'propose_owner_email',
-      description: 'STEP 1 of emailing the owner himself only. Stages; does not send.',
+      name: 'send_owner_email',
+      description: 'Immediately emails the owner at the fixed configured address when explicitly requested.',
       parameters: {
         type: 'object',
         properties: {
@@ -153,18 +141,6 @@ const tools = [
           body: { type: 'string' }
         },
         required: ['subject', 'body']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'confirm_owner_email',
-      description: 'STEP 2 of emailing the owner — actually sends after approval.',
-      parameters: {
-        type: 'object',
-        properties: { action_id: { type: 'string' } },
-        required: ['action_id']
       }
     }
   }

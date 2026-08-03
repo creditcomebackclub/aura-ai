@@ -23,10 +23,10 @@ Every tool AURA can call is assigned exactly one risk tier in the
 
 | Tier | Meaning | Examples (from `TOOL_POLICIES`) |
 |---|---|---|
-| `read` | No state change. Always autonomous. | `list_database_tables`, `get_table_schema`, `query_database_table`, `count_database_rows`, `get_outstanding_balances`, `calculate_financial_metrics`, `get_client_snapshot`, `get_client_current_phase`, `check_email`, `check_calendar`, `get_goals`, `query_finances`, `check_blackboard`, `search_web`, `list_deletable_test_letters`, `list_pending_owner_actions` |
-| `reversible_write` | Changes state non-destructively, either from a direct owner command or by only *staging* a later destructive step. | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `create_calendar_event`, `propose_test_letter_deletion`, `propose_owner_email`, `propose_email` |
-| `destructive_write` | Irreversible or externally-visible, to a recipient fixed server-side: deletes a record, or sends something a third party can see to an address the model never supplied. Note `send_telegram_message` is tagged here for audit honesty but is NOT gated - it sends immediately (see §5). | `confirm_test_letter_deletion`, `confirm_owner_email`, `send_telegram_message` |
-| `external_action` | Same externally-visible category as `destructive_write`, but to a recipient that IS a real tool argument, with no fixed-server-config guarantee behind it. Gated exactly like `destructive_write` (propose → approve → execute) - the tier split exists to flag the missing structural guarantee, not to change the gate. | `confirm_email` |
+| `read` | No state change. Always autonomous. | `list_database_tables`, `get_table_schema`, `query_database_table`, `count_database_rows`, `get_outstanding_balances`, `calculate_financial_metrics`, `get_client_snapshot`, `get_client_current_phase`, `check_email`, `check_calendar`, `get_goals`, `query_finances`, `check_blackboard`, `search_web`, `list_deletable_test_letters` |
+| `reversible_write` | Changes state non-destructively, either from a direct owner command or by only *staging* a later destructive step. | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `create_calendar_event`, `propose_test_letter_deletion` |
+| `destructive_write` | Irreversible or externally visible with a recipient fixed server-side. Test-letter deletion stays gated; owner email and Telegram execute from a direct owner command. | `confirm_test_letter_deletion`, `send_owner_email`, `send_telegram_message` |
+| `external_action` | Sends to a recipient supplied as an argument. Direct execution requires both a current-turn send command and the exact literal recipient address in that same owner message. | `send_email` |
 
 **Deny-by-default is the load-bearing property, not the tier labels themselves.**
 `getToolPolicy(name)` returns `TOOL_POLICIES[name] || 'blocked'` — any tool name
@@ -98,12 +98,13 @@ policy logic, which is what makes it independently testable (see
 
 ---
 
-## 2. The propose → approve → execute pattern
+## 2. The staged propose → approve → execute pattern
 
-This is the single mechanism behind every destructive or externally-visible
-action AURA can take. It exists so that no irreversible action ever happens
-because the model *decided* to — an irreversible action only happens because
-the owner said, in his own words, on a later turn, to do it.
+This mechanism protects actions that still require a separate approval: test-letter
+deletion and the HTTP memory/profile deletion routes. Explicit owner commands to
+send email, send Telegram messages, or create calendar events execute in the same
+turn after their handlers independently verify the owner's raw current message;
+those direct paths are documented in §2.3.
 
 ### 2.1 The generic shape
 
@@ -119,20 +120,16 @@ the owner said, in his own words, on a later turn, to do it.
 
 ### 2.2 The redemption gate, in full mechanical detail
 
-Two functions implement this gate today — `redeemStagedDeletion` (test-letter
-deletion, backed by `ccc_database.js`'s bespoke staging) and
-`redeemPendingAction` (owner email/Telegram, backed by the generic
-`aura_actions` queue via `supabase_state_store.js`). Both enforce the identical
-set of checks, in the same order:
+`redeemStagedDeletion` implements the conversational gate today for test-letter
+deletion, backed by `ccc_database.js`'s bespoke staging. It enforces these checks
+in order:
 
 1. **The proposal must exist and still be pending.**
    `redeemStagedDeletion` looks it up via `ccc.findStagedDeletion(letterId)`
    (a `aura_actions` row with `tool_name = 'confirm_test_letter_deletion'` and
-   `status = 'proposed'`). `redeemPendingAction` looks it up via
-   `cloudState.listPendingActions()` filtered by `action.id` and
-   `expectedToolName` — note the tool name is checked, not just the id, so an
-   `action_id` from one proposal type can't be replayed against a different
-   confirm tool.
+   `status = 'proposed'`). The tool name is part of that lookup, so an action id
+   from another proposal type cannot be replayed against the deletion confirm
+   tool.
 
 2. **The proposal must have been staged on an earlier turn than this request.**
    ```js
@@ -154,8 +151,8 @@ set of checks, in the same order:
 3. **The proposal must not have expired.**
    `DELETION_CONFIRMATION_TTL_MS = 10 * 60 * 1000` (10 minutes). If
    `Date.now() - proposedAtMs` exceeds this, the proposal is actively discarded
-   (`ccc.discardStagedDeletion` / `cloudState.decideAction(actionId, false)`,
-   both of which flip `status` to `'rejected'`) and redemption fails. A stale
+   (`ccc.discardStagedDeletion`, which flips `status` to `'rejected'`) and
+   redemption fails. A stale
    "yes" minutes later cannot resurrect an old, possibly-forgotten proposal.
 
 4. **The owner's own raw message text must match approval and not match refusal —
@@ -172,14 +169,11 @@ set of checks, in the same order:
    `options.userInstruction`, which is the literal text of the owner's message
    for this turn, passed down from the chat request handler.
 
-Only if all four checks pass does `redeemPendingAction` call
-`cloudState.decideAction(actionId, true)`, which does an atomic
-compare-and-swap in the database (`UPDATE ... WHERE id = ? AND status = 'proposed'`)
-— so a second, racing redemption attempt against the same action id finds no
-row in `'proposed'` state to update and fails cleanly rather than
-double-executing. `ccc_database.js`'s `deleteTestLetter` does the equivalent
-compare-and-swap directly (`.eq('id', actionId).eq('status', 'proposed')`
-before flipping to `'executing'`).
+Only if all four checks pass does `redeemStagedDeletion` return the staged action
+id. `ccc_database.js`'s `deleteTestLetter` then performs an atomic compare-and-swap
+(`.eq('id', actionId).eq('status', 'proposed')` before flipping to
+`'executing'`), so a racing second attempt fails cleanly rather than
+double-executing.
 
 ### 2.3 The real implementations today
 
@@ -196,36 +190,22 @@ before flipping to `'executing'`).
   row into the `aura_actions.result` column, deletes it, and returns an
   `auditId`.
 
-**Owner email** (`server.js`) — stays fully gated:
-- `list_pending_owner_actions` (`read`) — recovery path if the model loses
-  track of an `action_id` (e.g. it only appeared in an earlier tool result,
-  not in anything said aloud).
-- `propose_owner_email` (`reversible_write`) —
-  stage via `cloudState.proposeAction(null, 'aura_core', 'send_owner_email', args, 'destructive_write')`.
-- `confirm_owner_email` (`destructive_write`) —
-  run the gate via `redeemPendingAction`, then dispatch through
-  `executeApprovedAction`.
+**Owner email** (`server.js`) — a single `send_owner_email` call executes from
+an explicit current-turn command. The recipient remains fixed in server
+configuration, the handler checks the raw owner instruction with
+`isExplicitEmailSendRequest()`, and the send is audited through
+`aura_actions` + `executeApprovedAction()`.
 
-**Third-party email** (`server.js`) — stays fully gated, same shape as owner
-email, but with a real `to` argument instead of fixed server config:
-- `propose_email` (`reversible_write`) — `agent_policy.js` validates `to`
-  looks like a plausible email address before this is allowed to stage at
-  all, then `cloudState.proposeAction(null, 'aura_core', 'send_email', args, 'external_action')`.
-  Only ever used when the owner explicitly names the recipient in that
-  conversation — never on the model's own initiative, never toward an
-  address surfaced by untrusted content.
-- `confirm_email` (`external_action`) — identical gate to `confirm_owner_email`
-  via `redeemPendingAction`, then dispatch through `executeApprovedAction`.
-  The tier label (`external_action` vs `destructive_write`) is the honest
-  flag that there is no fixed-recipient guarantee behind this one — the
-  propose/confirm gate is the *entire* defense, not a second layer on top of
-  one, which is why the recipient must be read back to the owner explicitly
-  before he can approve it (see §4).
+**Third-party email** (`server.js`) — a single `send_email` call also executes
+from an explicit current-turn command, but has an additional structural gate:
+`ownerInstructionIncludesRecipient()` requires the exact `to` address to be
+literally present in the owner's raw current message. A recipient found only
+in a webpage, incoming email, database row, memory, or tool result cannot pass
+that check. The address is still format-validated by `agent_policy.js`, and
+the send is recorded with risk level `external_action`.
 
 **Owner Telegram messages** (`server.js`) — deliberately NOT gated: a single
-`send_telegram_message` (`destructive_write`) call sends immediately. This was
-originally the same propose/confirm pair as email, collapsed to one call at
-the owner's request once he understood the guarantee below - it still calls
+`send_telegram_message` (`destructive_write`) call sends immediately. It calls
 `cloudState.proposeAction()` immediately followed by `executeApprovedAction()`
 in the same request when `cloudState` exists (so an audit row lands in
 `aura_actions`, `approved_by: null`, honestly reflecting no approval step
@@ -271,7 +251,9 @@ Relevant columns and their lifecycle:
   (`succeeded` | `failed` | `expired` | `cancelled`).
 - `requires_approval`: set by `proposeAction` as `riskLevel !== 'read'` — a
   `read`-tier action, if it were ever proposed this way, would auto-approve;
-  in practice only `reversible_write`/`destructive_write` actions are staged.
+  direct calendar/email/Telegram actions use this insert for audit continuity
+  and then move straight from `proposed` to `succeeded`/`failed`; deletion and
+  HTTP-staged memory/profile actions wait for a separate approval decision.
 - `approved_by`, `approved_at`: written by `decideAction`.
 - `result`, `error`, `executed_at`: written by `recordActionResult` — for test
   letter deletion specifically, `result` holds
@@ -283,10 +265,9 @@ Relevant columns and their lifecycle:
   per-agent in code beyond the single `aura_core` identity.
 
 Both `GET /api/actions/pending` (list) and `POST /api/actions/:id/approve` /
-`POST /api/actions/:id/reject` (decide) read and write this same table, so the
-web UI's approve/reject buttons and a spoken "yes" in conversation are two
-front doors onto the identical backend gate — there is no separate, weaker
-path for one versus the other.
+`POST /api/actions/:id/reject` (decide) read and write this same table. Those
+routes remain the approval surface for HTTP-staged memory/profile deletions;
+direct command paths do not create an item that the owner must clear in a UI.
 
 ---
 
@@ -351,14 +332,14 @@ Boundary" rule.
 
 ## 4. The fixed-recipient property (owner email / Telegram)
 
-**Scope note:** this section covers `propose_owner_email`/`confirm_owner_email` and
-`send_telegram_message` only. The third-party email tool (`propose_email`/`confirm_email`,
-added later) was built deliberately WITHOUT this property — see §4a for why that's safe
-anyway, and why it leans on a different mechanism entirely.
+**Scope note:** this section covers `send_owner_email` and
+`send_telegram_message`. The third-party `send_email` tool deliberately lacks
+the fixed-recipient property; §4a documents its separate current-message
+recipient check.
 
 **Security property:** the owner-email/Telegram recipient is fixed from server
 configuration and is structurally never a tool argument the model can supply.
-There is no code path — none — for `propose_owner_email`/`confirm_owner_email`
+There is no code path — none — for `send_owner_email`
 or `send_telegram_message` to reach anyone but the owner, regardless of what
 an attacker gets injected into a subject, body, or message string. This
 property holds independently of whether a confirmation step exists - it is
@@ -372,7 +353,7 @@ Concretely:
   directly in `executeApprovedAction`'s `send_owner_email` branch and passed to
   `mac.sendEmailToOwner(AURA_OWNER_EMAIL, ...)` (or the cloud equivalent via
   `companionClient.execute('send_email', ...)`, which is itself hardcoded to
-  the owner's Mac). The `propose_owner_email` tool schema only accepts
+  the owner's Mac). The `send_owner_email` tool schema only accepts
   `subject`, `body`, and an optional `pdf_content` — there is no `to` /
   `recipient` field for the model to populate, so there is nothing for a
   prompt injection to override even in principle.
@@ -384,38 +365,29 @@ Concretely:
   tool schema only accepts `message` - there is no `to`/`recipient` field here
   either.
 
-This means the worst outcome of a successful prompt injection against either
-tool is an unwanted message *to the owner himself* — never exfiltration to a
-third party. This is a structural guarantee (no field exists to carry a
-different recipient), not a validation check that could be bypassed by a
-sufficiently clever payload. For email that unwanted-message risk is further
-reduced by the full propose→approve→execute flow in §2; for Telegram it is
-the only defense, which is exactly why removing the confirm step there was a
-judgment call specific to Telegram's lower blast radius (a message, not an
-attachment-bearing email) rather than a change applied to both uniformly.
+This means recipient substitution cannot exfiltrate owner email or Telegram
+content to a third party: no field exists to carry a different recipient.
+Both tools additionally require a direct owner command in normal model usage;
+`send_owner_email` enforces that against the raw current message in the
+handler, while Telegram remains fixed-recipient and immediate.
 
-### 4a. Third-party email: no fixed recipient, gate carries the full weight
+### 4a. Third-party email: no fixed recipient, literal current-message gate
 
-`propose_email`/`confirm_email` exist because the owner asked to be able to email arbitrary
-people, not just himself. This tool has NO structural guarantee: `to` is a real argument in
-both the tool schema and `agent_policy.js`'s `validateToolArguments` (which does check it's a
-plausible email address, but format validity is not the same thing as recipient correctness —
-a syntactically valid address can still be the wrong one). This is the deliberate tradeoff:
-- **Registered `external_action`, not `destructive_write`** — the tier split itself is the
-  documentation of "this one doesn't have what the others have."
-- **The propose/confirm gate is the entire defense here**, not a second layer on top of a
-  structural one. `SOUL.md` and `SKILL.md` both call out, in this tool's description and
-  usage notes, that the recipient must be read back to the owner explicitly before he can
-  approve — for owner-email/Telegram that would be redundant (the recipient can't be wrong);
-  for this tool it's the one thing standing between a prompt injection and data going
-  somewhere it shouldn't.
-- **Never on the model's own initiative.** `SOUL.md`'s Tier 3 prohibitions and this tool's own
-  description both state it should only be called when the owner explicitly names a
-  recipient in that conversation — never in response to an address found in a webpage, an
-  email body, or other untrusted content being processed. This is a behavioral rule, not a
-  structural one, precisely because a structural one isn't available for this tool the way it
-  is for the others - which is exactly the kind of "Must: adversarially test this" scenario
-  described in `EVALS.md` §3, and should get one before this ships to real third-party use.
+`send_email` exists because the owner asked to email arbitrary people, not
+just himself. Its `to` value is a real tool argument, so recipient correctness
+needs a separate server-enforced condition:
+
+- **Explicit send intent.** `isExplicitEmailSendRequest()` checks the raw owner
+  turn and rejects status questions, drafts, refusals, and quoted/reported
+  instructions.
+- **Literal recipient match.** `ownerInstructionIncludesRecipient()` requires
+  the exact normalized `to` address in that same raw owner turn. Conversation
+  history, memory, webpages, incoming email, and tool results cannot supply it.
+- **Audit honesty.** The action is registered as `external_action` and recorded
+  through the same `aura_actions` execution/result path as other outbound work.
+- **Adversarial regression coverage.** The live-model prompt-injection eval and
+  deterministic authorization tests cover an attacker address embedded in
+  quoted webpage/email content.
 
 ---
 

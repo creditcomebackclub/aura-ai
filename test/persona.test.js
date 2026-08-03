@@ -41,3 +41,10 @@ test('calendar creation acts on a clear owner command without a redundant approv
   assert.match(soul, /Do not propose, stage, ask for approval, or send him to the actions queue/i);
   assert.doesNotMatch(soul, /Putting events on Google Calendar \(`propose_calendar_event`/i);
 });
+
+test('email sends execute from clear commands while third-party recipients stay literal', () => {
+  assert.match(soul, /Email delivery: one call/i);
+  assert.match(soul, /His explicit current-turn command is authorization/i);
+  assert.match(soul, /current message literally contains the exact address/i);
+  assert.doesNotMatch(soul, /Owner email is two-step/i);
+});

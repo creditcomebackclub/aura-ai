@@ -33,8 +33,8 @@ constraint on `aura_actions` (`read`, `reversible_write`, `external_action`,
 |---|---|---|
 | `read` | No state change. Safe to call freely, no approval needed. | None |
 | `reversible_write` | Writes something, but the write is either non-destructive (a goal, a finance log, a memory) or is itself only a *staging* step that changes nothing observable until a paired destructive/external step runs. | None (called directly) |
-| `destructive_write` | Permanently deletes data, or sends something externally to a recipient that is fixed server-side (owner email, Telegram) and so cannot be misdirected. | Requires the propose → approve → execute pattern — see §3 (Telegram excepted, see its own tool entry) |
-| `external_action` | Sends something externally to a recipient that is a real tool argument, not fixed server config — currently just `confirm_email` (arbitrary-recipient email). The recipient itself has no structural guarantee, so this tier leans entirely on the propose → approve → execute gate rather than on top of it. | Requires the propose → approve → execute pattern — see §3 |
+| `destructive_write` | Permanently deletes data, or sends externally to a recipient fixed server-side. Deletion remains approval-gated; direct owner commands authorize owner email and Telegram. | Per-tool: deletion gate or explicit-current-command execution |
+| `external_action` | Sends externally to a recipient supplied as a real tool argument. | Explicit current-turn send command plus exact literal recipient address |
 
 `validateToolArguments()` (also in `agent_policy.js`) applies per-tool
 argument shape/length checks (e.g. table names must match
@@ -69,7 +69,6 @@ sees in the `tools` array; "underlying tables" are what the executor in
 | `check_blackboard` | Scrapes/reads upcoming Blackboard assignment deadlines. | none | `scraper.js::checkBlackboardAssignments()` — see §5 for the two code paths |
 | `search_web` | Live public web search + sourced answer, for public information only — never for private CCC records. Rate-limited to 2 attempts per chat turn and gated so it cannot be mixed with private-data tool calls in the same round (privacy boundary enforced in `/api/chat`). | `query` | OpenAI Responses API `web_search` tool via `web_search.js::createOpenAIWebSearch()`; daily quota enforced by `createDailyWebSearchLimiter()` against `aura_state` key `web_search_daily_usage` |
 | `list_deletable_test_letters` | Lists unmailed letters whose client name AND furnisher both match the test-record pattern — the only letters eligible for deletion. | none | `letters` table, via `ccc_database.js::listDeletableTestLetters()` (pattern: `/\b(test|delete me|dummy|sample)\b/i`) |
-| `list_pending_owner_actions` | Lists staged-but-unapproved emails with their `action_id`, so AURA can recover an id that fell out of context instead of guessing. Calendar events and Telegram messages are never staged. | none | `aura_actions` where `status = 'proposed'` and `tool_name` is `send_owner_email` or `send_email`, via `cloudState.listPendingActions()` |
 
 ### 2.2 `reversible_write` tools
 
@@ -80,41 +79,29 @@ sees in the `tools` array; "underlying tables" are what the executor in
 | `log_finance` | Logs an expense (negative) or income (positive) entry. | `amount` (≤ 100,000,000 in magnitude), `category`, `description` | SQLite `finances` table (local-only) |
 | `save_semantic_memory` | Saves a fact/preference/event for long-term semantic recall. | `fact` | `aura_memories` (cloud) or local `MemoryStore`, via `MemoryV2.learnFromUserMessage()` |
 | `propose_test_letter_deletion` | **Step 1 of 2** for deleting a test letter. Re-validates eligibility and *stages* the deletion; deletes nothing. | `letter_id` | Inserts a `proposed` row into `aura_actions` (`tool_name: 'confirm_test_letter_deletion'`) |
-| `propose_owner_email` | **Step 1 of 2** for emailing the owner. Stages subject/body/optional PDF content; sends nothing. | `subject`, `body`, `pdf_content` (optional) | Inserts a `proposed` row into `aura_actions` (`tool_name: 'send_owner_email'`) via `cloudState.proposeAction()` |
-| `propose_email` | **Step 1 of 2** for emailing anyone OTHER than the owner - only used when the owner explicitly names a recipient. Stages `to`/subject/body/optional PDF content; sends nothing. `to` is validated as a plausible email address by `agent_policy.js` before staging. | `to`, `subject`, `body`, `pdf_content` (optional) | Inserts a `proposed` row into `aura_actions` (`tool_name: 'send_email'`, `risk_level: 'external_action'`) via `cloudState.proposeAction()` |
 | `create_calendar_event` | Immediately creates a Google Calendar event from an explicit scheduling command in the owner's current message. Optional explicitly named attendees receive invitations. Missing or ambiguous details require a short follow-up before the call. | `summary`, `start`, `end?`, `duration_minutes?`, `description?`, `location?`, `attendees[]?`, `time_zone?` | Validates the raw owner instruction, grounds relative dates, inserts an audited `aura_actions` row (`risk_level: 'reversible_write'`), then executes `google_calendar.js::createGoogleCalendarEvent()` in the same turn |
 
-`send_telegram_message` is NOT a propose/confirm pair - see the `read`/single-call
-notes below. It was originally built as a two-step `propose_telegram_message`/
-`confirm_telegram_message` pattern identical to email, then deliberately
-collapsed to one immediate call at the owner's request: the recipient is fixed
-from config either way, so a confirmation step was protecting against nothing
-that Telegram-specific staging didn't already prevent by construction. Email
-kept the two-step version because it can carry a generated PDF attachment.
-
-Note the comment in `agent_policy.js`: staging a deletion or a message
-"changes nothing on its own" — it is registered `reversible_write` precisely
-*because* it has no observable effect until the paired `destructive_write`
-confirm tool runs.
+`send_telegram_message`, `send_owner_email`, `send_email`, and
+`create_calendar_event` are single-call tools authorized by the owner's current
+message. Test-letter deletion remains the chat tool that deliberately stages a
+proposal before its paired destructive confirm step.
 
 ### 2.3 `destructive_write` tools
 
-Every tool in this tier is a "step 2" confirm tool. Each is gated by the
-propose → approve → execute pattern described in §3 — none of them execute
-purely because the model called them; each independently re-verifies staging,
-turn-passage, and the owner's own words before doing anything irreversible.
+This tier includes both the approval-gated test-letter deletion and immediate
+fixed-recipient sends backed by explicit current-turn owner commands.
 
 | Tool | Purpose | Key arguments | Effect when redeemed |
 |---|---|---|---|
 | `confirm_test_letter_deletion` | **Step 2.** Permanently deletes a staged test letter. | `letter_id` | `DELETE` from `letters` table; full row snapshot retained in `aura_actions.result` for reconstruction (`ccc_database.js::deleteTestLetter()`) |
-| `confirm_owner_email` | **Step 2.** Actually sends a staged email to the owner. | `action_id` | Dispatched by `executeApprovedAction()` → `companionClient.execute('send_email', …)` (cloud) or `mac.sendEmailToOwner()` (local) — see §5 |
+| `send_owner_email` | Immediately sends email to the fixed owner address after an explicit current-turn owner command. No recipient argument exists. | `subject`, `body`, `pdf_content?` | Audited through `aura_actions`, then `executeApprovedAction()` → direct provider / companion owner-email path |
 | `send_telegram_message` | Sends a Telegram message to the owner immediately - no propose/confirm pair, listed here only because it shares the `destructive_write` tier label for audit-honesty (an unsendable message is unrecoverable), not because it goes through the gate. Calls `cloudState.proposeAction()` immediately followed by `executeApprovedAction()` in the same request (so the audit row still lands in `aura_actions`, with `approved_by: null` - accurately reflecting that no human approval step occurred) when `cloudState` exists, or `telegram.js::sendTelegramMessage()` directly otherwise. | `message` | Sends immediately via `telegram.js::sendTelegramMessage()` |
 
 ### 2.4 `external_action` tools
 
 | Tool | Purpose | Key arguments | Effect when redeemed |
 |---|---|---|---|
-| `confirm_email` | **Step 2.** Actually sends a staged email to an arbitrary, owner-approved recipient. Registered `external_action` rather than `destructive_write` because the recipient is a real tool argument here, not fixed server config - there is no structural guarantee behind this one, only the propose/confirm gate itself. Same re-verification (staged, turn-passage, owner's own words) as every other confirm tool. | `action_id` | Dispatched by `executeApprovedAction()` → `companionClient.execute('send_email_to_recipient', …)` (cloud) or `mac.sendEmailToOwner(args.to, …)` (local) — see §5 |
+| `send_email` | Immediately sends to a third party only when the raw current owner message explicitly commands email and literally contains the exact `to` address. | `to`, `subject`, `body`, `pdf_content?` | Audited as `external_action`, then `executeApprovedAction()` → direct provider / companion arbitrary-recipient path |
 
 Two additional `destructive_write` actions exist in the **same** `aura_actions`
 approval queue but are staged from HTTP routes rather than chat tools (no
@@ -136,24 +123,16 @@ guessed at — nothing runs without an explicit handler.
 
 ---
 
-## 3. The propose → approve → execute pattern (mechanics, not rationale)
+## 3. The staged propose → approve → execute pattern (mechanics, not rationale)
 
-Two independent implementations exist, both ultimately writing to
-`aura_actions`:
+Test-letter deletion uses bespoke staging in `ccc_database.js`
+(`stageTestLetterDeletion`, `findStagedDeletion`, `discardStagedDeletion`) and is
+redeemed by `redeemStagedDeletion()` in `server.js`. HTTP memory/profile deletion
+uses the generic `aura_actions` approval routes. Email, Telegram, and calendar
+writes instead execute directly from an explicit current-turn owner command while
+still recording an audit row.
 
-1. **Test-letter deletion** — bespoke staging in `ccc_database.js`
-   (`stageTestLetterDeletion`, `findStagedDeletion`, `discardStagedDeletion`),
-   redeemed by `redeemStagedDeletion()` in `server.js`.
-2. **Owner email / Telegram** — generic staging via
-   `cloudState.proposeAction()` / `cloudState.listPendingActions()` /
-   `cloudState.decideAction()` (`supabase_state_store.js`), redeemed by
-   `redeemPendingAction()` in `server.js`. This is the same queue backing the
-   HTTP routes `GET /api/actions/pending`, `POST /api/actions/:id/approve`,
-   `POST /api/actions/:id/reject` — a chat-driven confirmation goes through
-   the identical `decideAction()` call the "click approve" button uses, with
-   an added voice-turn gate in front of it.
-
-Both redemption functions require, in order:
+Deletion redemption requires, in order:
 
 1. **A later turn.** The staged row's `created_at` (or, for letters, the
    `proposed_at_ms` stashed in `aura_actions.arguments`) must be *earlier*
@@ -303,8 +282,8 @@ then direct `mac_integration.js` call.
 | Supabase-backed state (cloud) | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `AURA_OWNER_ID`, `AURA_STATE_BACKEND=supabase` | Falls back to local SQLite (`aura.db`) + in-process `localProfileStore` |
 | Mac companion (cloud → Mac) | `AURA_RUNTIME=cloud`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `AURA_OWNER_ID`, `AURA_COMPANION_DEVICE` (default `chriss-macbook-pro`) | `CompanionClient` is only constructed under `AURA_RUNTIME=cloud`; on local runtime `mac_integration.js` is called directly instead |
 | Companion worker (on the Mac) | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `AURA_OWNER_ID`, `AURA_COMPANION_DEVICE`, `AURA_COMPANION_POLL_MS` (default 5000), `AURA_OWNER_EMAIL` (required specifically for `send_email`; NOT required for `send_email_to_recipient`, which reads its address from the job payload instead) | Throws at startup without `AURA_OWNER_ID`; `send_email` throws `"AURA_OWNER_EMAIL is not configured on the Mac companion."` |
-| Owner email (send) | `AURA_OWNER_EMAIL` — fixed recipient, **never** a tool argument the model can supply | `propose_owner_email` returns "Email is not configured" without ever staging anything |
-| Third-party email (send) | No dedicated env var — reuses whatever Mac Mail / companion path is already configured for owner email; the recipient comes from the staged `to` argument instead of `AURA_OWNER_EMAIL`. | `propose_email` still requires `cloudState` (the approval queue) to stage anything, same as `propose_owner_email` |
+| Owner email (send) | `AURA_OWNER_EMAIL` — fixed recipient, **never** a tool argument the model can supply | `send_owner_email` returns "Email is not configured" without sending |
+| Third-party email (send) | No dedicated env var — reuses the direct email or Mac companion path; the recipient comes from `to` and must literally appear in the owner's current command. | `send_email` fails closed if the audited cloud action store is unavailable |
 | Direct cloud email (bypasses Mac) | `EMAIL_PROVIDER=gmail\|outlook` plus matching OAuth vars: Gmail — `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`; Outlook — `OUTLOOK_TENANT_ID`, `OUTLOOK_CLIENT_ID`, `OUTLOOK_CLIENT_SECRET`, `OUTLOOK_REFRESH_TOKEN` | `isDirectEmailConfigured()` returns false; `check_email` falls through to the companion/mac path |
 | Google Calendar write | `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN` (OAuth scope `calendar.events`); optional `GOOGLE_CALENDAR_ID` (default `primary`). Falls back to `GMAIL_*` if the dedicated vars are unset. | `create_calendar_event` returns a not-configured message without creating anything |
 | Telegram (send) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — fixed chat id, **never** a tool argument | `send_telegram_message` returns "Telegram is not configured" without sending anything |
@@ -326,25 +305,22 @@ read:
   count_database_rows, get_outstanding_balances, calculate_financial_metrics,
   get_client_snapshot, get_client_current_phase, check_email, check_calendar,
   get_goals, query_finances, check_blackboard, search_web,
-  list_deletable_test_letters, list_pending_owner_actions
+  list_deletable_test_letters
 
 reversible_write:
   add_goal, update_goal_status, log_finance, save_semantic_memory,
-  propose_test_letter_deletion, propose_owner_email, propose_email,
-  create_calendar_event
+  propose_test_letter_deletion, create_calendar_event
 
 destructive_write:
-  confirm_test_letter_deletion, confirm_owner_email, send_telegram_message
+  confirm_test_letter_deletion, send_owner_email, send_telegram_message
   (+ delete_memory, delete_profile_entry — staged via HTTP routes, not chat tools)
   # send_telegram_message is tagged destructive_write for audit honesty (an
-  # unsendable message) but is NOT gated by the propose/confirm pattern -
-  # it sends immediately, since the fixed recipient makes a confirm step
-  # redundant. Every other destructive_write tool here IS gated.
+  # unsendable message) but is NOT gated by the propose/confirm pattern.
+  # send_owner_email is also immediate after a raw-command authorization check.
 
 external_action:
-  confirm_email
-  # The email recipient is a real argument, not fixed server config — safety
-  # rests on the propose/confirm gate.
+  send_email
+  # Requires explicit current-turn send intent and the literal recipient.
 
 (anything else): blocked
 ```

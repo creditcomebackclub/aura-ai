@@ -91,35 +91,31 @@ test('create_calendar_event is a validated reversible write', () => {
   assert.deepEqual(parsed.args.attendees, ['client@example.com']);
 });
 
-test('propose_email requires a valid recipient address, unlike the fixed-recipient owner tools', () => {
-  // The asymmetry itself is the safety-relevant fact here: propose_owner_email
+test('send_email requires a valid recipient address, unlike the fixed-recipient owner tools', () => {
+  // The asymmetry itself is the safety-relevant fact here: send_owner_email
   // and send_telegram_message deliberately have no recipient argument at all
-  // (fixed server-side), while propose_email is the one tool where a
+  // (fixed server-side), while send_email is the one tool where a
   // recipient is a real argument - so it's the one place format validation
   // actually matters.
-  assert.equal(getToolPolicy('propose_email'), 'reversible_write');
-  assert.equal(getToolPolicy('confirm_email'), 'external_action');
+  assert.equal(getToolPolicy('send_owner_email'), 'destructive_write');
+  assert.equal(getToolPolicy('send_email'), 'external_action');
   assert.throws(
-    () => parseAndAuthorizeToolCall(toolCall('propose_email', {
+    () => parseAndAuthorizeToolCall(toolCall('send_email', {
       to: 'not-an-email', subject: 'hi', body: 'hello'
     })),
     /not a valid email address/
   );
   assert.throws(
-    () => parseAndAuthorizeToolCall(toolCall('propose_email', {
+    () => parseAndAuthorizeToolCall(toolCall('send_email', {
       subject: 'hi', body: 'hello'
     })),
     /to is required/
   );
-  const parsed = parseAndAuthorizeToolCall(toolCall('propose_email', {
+  const parsed = parseAndAuthorizeToolCall(toolCall('send_email', {
     to: 'admin@blackboard.example.edu', subject: 'hi', body: 'hello'
   }));
   assert.equal(parsed.args.to, 'admin@blackboard.example.edu');
 
-  assert.throws(
-    () => parseAndAuthorizeToolCall(toolCall('confirm_email', { action_id: 'not-a-uuid!!' })),
-    /Invalid action_id/
-  );
 });
 
 test('tool limits are clamped', () => {

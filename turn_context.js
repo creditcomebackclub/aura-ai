@@ -19,20 +19,12 @@ const BUSINESS_INTEL_TOOL_NAMES = new Set([
 ]);
 
 const OUTBOUND_EMAIL_TOOL_NAMES = new Set([
-  'propose_owner_email',
-  'confirm_owner_email',
-  'propose_email',
-  'confirm_email'
+  'send_owner_email',
+  'send_email'
 ]);
 
 const CALENDAR_WRITE_TOOL_NAMES = new Set([
   'create_calendar_event'
-]);
-
-// Recovery helper for staged email flows. Calendar writes execute directly
-// from an explicit owner scheduling command and never enter this queue.
-const STAGED_ACTION_TOOL_NAMES = new Set([
-  'list_pending_owner_actions'
 ]);
 
 const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
@@ -47,7 +39,7 @@ const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
   'i'
 );
 
-const OUTBOUND_EMAIL_KEYWORD_PATTERN = /\b(email|e-?mail|send|propose|approve|confirm|draft|pending action)\b/i;
+const OUTBOUND_EMAIL_KEYWORD_PATTERN = /\b(email|e-?mail|send)\b/i;
 const CALENDAR_WRITE_KEYWORD_PATTERN = /\b(schedule|scheduling|scheduled|book|booking|invite|invitation|calendar event|add (?:this |it |an? )?to (?:my )?calendar|put .+ on (?:my )?calendar|block off|hold on my calendar)\b/i;
 const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|search|remember|memory|profile|mail|consult|consultation|schedule|book|invite)\b/i;
 
@@ -95,9 +87,6 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
   if (!needsCalendarWriteTools) {
     selected = selected.filter(tool => !CALENDAR_WRITE_TOOL_NAMES.has(tool.function.name));
   }
-  if (!needsEmailTools) {
-    selected = selected.filter(tool => !STAGED_ACTION_TOOL_NAMES.has(tool.function.name));
-  }
   return selected;
 }
 
@@ -109,7 +98,6 @@ module.exports = {
   BUSINESS_INTEL_TOOL_NAMES,
   OUTBOUND_EMAIL_TOOL_NAMES,
   CALENDAR_WRITE_TOOL_NAMES,
-  STAGED_ACTION_TOOL_NAMES,
   BUSINESS_INTEL_KEYWORD_PATTERN,
   OUTBOUND_EMAIL_KEYWORD_PATTERN,
   CALENDAR_WRITE_KEYWORD_PATTERN,
