@@ -60,6 +60,7 @@ const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
 const { isDirectEmailConfigured, isDirectSendConfigured, sendGmailMessage, getDirectUnreadEmails } = require('./email_provider');
 const { isDirectCalendarConfigured, getDirectCalendarText } = require('./calendar_feed');
+const { buildTemporalContext, groundCalendarEventArgs } = require('./calendar_time');
 const {
   isGoogleCalendarWriteConfigured,
   createGoogleCalendarEvent,
@@ -1871,17 +1872,22 @@ async function handleToolCall(toolCall, options = {}) {
         result = 'The staged-approval queue is not available in this runtime, so calendar events cannot be staged safely here.';
         break;
       }
+      const grounded = groundCalendarEventArgs(args, options.userInstruction, {
+        now: new Date(options.requestStartedAtMs ?? Date.now()),
+        timeZone: args.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'
+      });
+      const eventArgs = grounded.eventArgs;
       let stagedEvent;
       try {
         stagedEvent = buildGoogleCalendarEvent({
-          summary: args.summary,
-          start: args.start,
-          end: args.end || null,
-          duration_minutes: args.duration_minutes ?? null,
-          description: args.description || null,
-          location: args.location || null,
-          attendees: args.attendees || [],
-          timeZone: args.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'
+          summary: eventArgs.summary,
+          start: eventArgs.start,
+          end: eventArgs.end || null,
+          duration_minutes: eventArgs.duration_minutes ?? null,
+          description: eventArgs.description || null,
+          location: eventArgs.location || null,
+          attendees: eventArgs.attendees || [],
+          timeZone: eventArgs.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'
         });
       } catch (error) {
         result = `Could not stage that event: ${error.message}`;
@@ -1892,12 +1898,12 @@ async function handleToolCall(toolCall, options = {}) {
         'aura_core',
         'create_calendar_event',
         {
-          summary: args.summary,
-          start: args.start,
-          end: args.end || null,
-          duration_minutes: args.duration_minutes ?? null,
-          description: args.description || null,
-          location: args.location || null,
+          summary: eventArgs.summary,
+          start: eventArgs.start,
+          end: eventArgs.end || null,
+          duration_minutes: eventArgs.duration_minutes ?? null,
+          description: eventArgs.description || null,
+          location: eventArgs.location || null,
           attendees: stagedEvent.attendeeEmails,
           time_zone: stagedEvent.timeZone
         },
@@ -1912,9 +1918,13 @@ async function handleToolCall(toolCall, options = {}) {
         stagedEvent.attendeeEmails.length
           ? 'Attendees will receive Google Calendar invitations after confirm.'
           : 'No attendees — this only adds the event to the owner\'s calendar.',
+        grounded.correction
+          ? `Date grounded from the owner\'s phrase "${grounded.correction.phrase}" using the server clock.`
+          : '',
+        'The date and time above are authoritative. Repeat the exact calendar date back; do not replace it with only a relative word like "tomorrow".',
         'Read this back to the owner and ask them to confirm, then STOP and wait for their reply.',
         `On a later turn, once they approve, call confirm_calendar_event with action_id "${calendarAction.id}".`
-      ].join('\n');
+      ].filter(Boolean).join('\n');
       break;
     }
     case 'confirm_calendar_event': {
@@ -2171,7 +2181,13 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       // Same turn-start timestamp as the live path so propose+confirm inside
       // one isolated exchange still fails the later-turn gate.
       const requestStartedAtMs = Date.now();
-      const chatHistory = [{ role: 'system', content: AURA_SOUL }, { role: 'user', content: text }];
+      const chatHistory = [{
+        role: 'system',
+        content: AURA_SOUL + buildTemporalContext({
+          now: new Date(requestStartedAtMs),
+          timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
+        })
+      }, { role: 'user', content: text }];
       const turnTools = selectToolsForTurn(text);
       const availableToolNames = turnTools.map(tool => tool.function.name);
       const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
@@ -2454,6 +2470,10 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     const systemPrompt = {
       role: 'system',
       content: AURA_SOUL +
+        buildTemporalContext({
+          now: new Date(requestStartedAtMs),
+          timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
+        }) +
         memoryContext.profileContext +
         relatedMemoryContext +
         summaryContext

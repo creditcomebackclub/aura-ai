@@ -47,24 +47,17 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Finish Google Calendar write OAuth on Render** so `propose_calendar_event` /
-  `confirm_calendar_event` can create real events. Code path already shipped (#24). Owner action:
-  run `npm run google:calendar-oauth` (script in `scripts/google-calendar-oauth.js`), paste the
-  four `GOOGLE_CALENDAR_*` values into Render, redeploy, live-test "Schedule X tomorrow at 2pm →
-  yes". See Blocked for the exact credential gap.
+- **Fix and redeploy Google Calendar relative-date grounding.** OAuth write is live and Google
+  accepts creates, but the first live "tomorrow" test exposed that Grok was not given the current
+  date and the backend trusted its ISO timestamp. `calendar_time.js` now supplies an authoritative
+  Phoenix clock and corrects relative dates before the action is staged. Deploy and repeat the live
+  "Schedule X tomorrow at 2pm → yes" test.
 
 ## Blocked
 
 *Waiting on something outside the codebase — a human decision, a credential, a permission grant.
 Name exactly what's needed and from whom.*
 
-- **Google Calendar write OAuth — BLOCKED on Chris.** Read works via `CALENDAR_ICAL_URL`. Write
-  needs a refresh token with scope `https://www.googleapis.com/auth/calendar.events`. Existing
-  Gmail token was read-only. **Needs from Chris:** (1) enable Calendar API + add redirect
-  `http://127.0.0.1:8787/callback` on the OAuth client, (2) `npm run google:calendar-oauth` on
-  Mac with `GMAIL_CLIENT_ID`/`GMAIL_CLIENT_SECRET` in `.env`, (3) set on Render:
-  `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN`,
-  `GOOGLE_CALENDAR_ID=primary`, (4) redeploy + live test.
 - **Mac-companion permission grants.** `companion_worker.js` (running as the `com.aura.companion`
   launchd service) drives Apple Mail/Calendar via `mac_integration.js`'s AppleScript calls.
   Some operations need macOS Automation/Accessibility grants to the worker process. Can't be
@@ -74,8 +67,8 @@ Name exactly what's needed and from whom.*
 
 *Last handful of shipped items. Prune older entries — this is not a permanent changelog; git log is.*
 
-- Google Calendar event create via propose/confirm (#24) — `google_calendar.js` + Calendar API;
-  still needs write-scope refresh token on Render.
+- Google Calendar write OAuth configured on Render and verified against the Calendar API. The API
+  returned real event ids/links; the remaining failure was incorrect relative-date grounding.
 - Morning brief reformatted (#23): "Good morning, Chris", multi-line Telegram, optional voice note.
 - Voice latency chase (#18–22): TTFA harness, `gpt-4o-mini-transcribe`, early-clause TTS + 24kHz,
   Grok `reasoning_effort=low`, chit-chat fast path. Measured TTFA ~7940ms → ~4696ms.
@@ -89,8 +82,8 @@ Name exactly what's needed and from whom.*
 *Not started, but known and roughly prioritized. Not a backlog dump — only things someone has
 actually decided are coming next.*
 
-- Live-test calendar write end-to-end once Render has the write-scope refresh token.
-- Optionally rotate `CALENDAR_ICAL_URL` if the secret iCal URL was ever pasted in chat.
+- Add enforced GitHub CI checks; current PRs have no status checks and rely on locally reported
+  `npm test` / `npm run check` results.
 - `aura_agents` persona routing — only if scoped personas are wanted; schema exists, no router
   (see `AGENTS.md`).
 

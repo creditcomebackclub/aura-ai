@@ -755,6 +755,13 @@ test('findFalseCapabilityDenial only fires when the denied capability was actual
   );
   assert.ok(emailDenial);
   assert.deepEqual(emailDenial.tools, ['check_email']);
+
+  const calendarWriteDenial = findFalseCapabilityDenial(
+    "I don't actually have the calendar create tools available right now — only read. So I can't stage or put lunch with Mike on the calendar from here.",
+    ['check_calendar', 'propose_calendar_event', 'confirm_calendar_event']
+  );
+  assert.ok(calendarWriteDenial);
+  assert.ok(calendarWriteDenial.tools.includes('propose_calendar_event'));
 });
 
 test('search secret patterns catch common cloud and VCS tokens', () => {

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildGoogleCalendarEvent,
+  formatEventSummary,
   normalizeAttendees,
   isGoogleCalendarWriteConfigured
 } = require('../google_calendar');
@@ -19,6 +20,20 @@ test('buildGoogleCalendarEvent creates a timed event with default 60 minute end'
     new Date(built.event.end.dateTime) - new Date(built.event.start.dateTime),
     60 * 60 * 1000
   );
+});
+
+test('formatEventSummary reads back an exact human date in the event timezone', () => {
+  const built = buildGoogleCalendarEvent({
+    summary: 'Lunch with Mike',
+    start: '2026-08-04T14:00:00-07:00',
+    timeZone: 'America/Phoenix'
+  });
+  const summary = formatEventSummary({
+    event: built.event,
+    attendeeEmails: []
+  });
+  assert.match(summary, /Tuesday, August 4, 2026 at 2:00 PM MST/);
+  assert.match(summary, /Tuesday, August 4, 2026 at 3:00 PM MST/);
 });
 
 test('buildGoogleCalendarEvent supports all-day events and attendees', () => {

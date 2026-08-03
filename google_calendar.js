@@ -178,13 +178,29 @@ function buildGoogleCalendarEvent({
   };
 }
 
+function formatCalendarDateTime(value, timeZone) {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timeZone || process.env.AURA_TIMEZONE || 'America/Phoenix',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  }).format(parsed);
+}
+
 function formatEventSummary({ event, attendeeEmails, htmlLink = null }) {
+  const zone = event.start.timeZone || process.env.AURA_TIMEZONE || 'America/Phoenix';
   const when = event.start.date
     ? `${event.start.date} (all day)`
-    : `${event.start.dateTime} ${event.start.timeZone || ''}`.trim();
+    : formatCalendarDateTime(event.start.dateTime, zone);
   const until = event.end.date
-    ? event.end.date
-    : `${event.end.dateTime} ${event.end.timeZone || ''}`.trim();
+    ? `${event.end.date} (exclusive)`
+    : formatCalendarDateTime(event.end.dateTime, event.end.timeZone || zone);
   const lines = [
     `Title: ${event.summary}`,
     `Starts: ${when}`,
@@ -238,6 +254,7 @@ module.exports = {
   refreshCalendarAccessToken,
   normalizeAttendees,
   buildGoogleCalendarEvent,
+  formatCalendarDateTime,
   formatEventSummary,
   createGoogleCalendarEvent
 };
