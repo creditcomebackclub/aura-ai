@@ -5,8 +5,7 @@ const {
   buildWavHeader,
   concatWavBuffers,
   splitIntoSentences,
-  splitSpeakable,
-  splitLeadingClause,
+  createSpeechChunkAccumulator,
   advancePastEmitted
 } = require('../wav_utils');
 
@@ -78,28 +77,35 @@ test('splitIntoSentences handles empty/whitespace input without throwing', () =>
   assert.deepEqual(splitIntoSentences('   '), []);
 });
 
-test('splitLeadingClause peels a comma clause once more text has arrived', () => {
-  assert.deepEqual(
-    splitLeadingClause('Yeah, I checked the calendar for Monday.'),
-    ['Yeah,', 'I checked the calendar for Monday.']
-  );
-  // Incomplete - nothing after the comma yet - keep as one piece.
-  assert.deepEqual(splitLeadingClause('Yeah,'), ['Yeah,']);
+test('speech chunking emits one complete opening sentence, never a leading fragment', () => {
+  const emitted = [];
+  const chunks = createSpeechChunkAccumulator(text => emitted.push(text));
+  chunks.add('Yeah, I checked the calendar for Monday.');
+  assert.deepEqual(emitted, ['Yeah, I checked the calendar for Monday.']);
+  assert.equal(emitted.includes('Yeah,'), false);
 });
 
-test('splitSpeakable only clause-splits before the first sentence completes', () => {
-  assert.deepEqual(
-    splitSpeakable('Yeah, I checked Monday.', { earlyClause: true }),
-    ['Yeah,', 'I checked Monday.']
-  );
-  assert.deepEqual(
-    splitSpeakable('Yeah, I checked Monday. Next bit.', { earlyClause: true }),
-    ['Yeah, I checked Monday.', 'Next bit.']
-  );
-  assert.deepEqual(
-    splitSpeakable('Yeah, I checked Monday.', { earlyClause: false }),
-    ['Yeah, I checked Monday.']
-  );
+test('speech chunking pairs the remainder for connected Cartesia prosody', () => {
+  const emitted = [];
+  const chunks = createSpeechChunkAccumulator(text => emitted.push(text));
+  chunks.add('The first sentence starts quickly.');
+  chunks.add('The second stays buffered.');
+  assert.deepEqual(emitted, ['The first sentence starts quickly.']);
+  chunks.add('The third completes the group.');
+  assert.deepEqual(emitted, [
+    'The first sentence starts quickly.',
+    'The second stays buffered. The third completes the group.'
+  ]);
+});
+
+test('speech chunking flushes a final unpaired sentence', () => {
+  const emitted = [];
+  const chunks = createSpeechChunkAccumulator(text => emitted.push(text));
+  chunks.add('First.');
+  chunks.add('Last.');
+  assert.equal(chunks.pendingCount(), 1);
+  chunks.flush();
+  assert.deepEqual(emitted, ['First.', 'Last.']);
 });
 
 test('advancePastEmitted skips the chunk and following whitespace', () => {

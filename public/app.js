@@ -226,6 +226,8 @@ const orb = document.getElementById('orb');
 const statusText = document.getElementById('status-text');
 const conversationToggle = document.getElementById('conversation-toggle');
 const volumeToggle = document.getElementById('volume-toggle');
+const transcriptPanel = document.getElementById('transcript-panel');
+const transcriptContent = document.getElementById('transcript-content');
 const sourcePanel = document.getElementById('source-panel');
 const sourceLabel = document.getElementById('source-label');
 const webAnswer = document.getElementById('web-answer');
@@ -572,6 +574,51 @@ function appendCitedBlock(block) {
   webAnswer.appendChild(paragraph);
 }
 
+function hideTranscript() {
+  if (!transcriptPanel) return;
+  transcriptPanel.classList.remove('visible');
+  transcriptPanel.setAttribute('aria-hidden', 'true');
+}
+
+// Loads recent user/assistant turns into the left (desktop) / top (mobile)
+// transcript panel. Shown when idle; hidden while listening or speaking so
+// the orb stays the primary surface.
+async function refreshTranscript() {
+  if (!transcriptPanel || !transcriptContent) return;
+  if (isListening || isSpeaking || isProcessing) {
+    hideTranscript();
+    return;
+  }
+  try {
+    const res = await authenticatedFetch('/api/messages?limit=12');
+    if (!res.ok) return;
+    const body = await res.json();
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    transcriptContent.replaceChildren();
+    for (const msg of messages) {
+      if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+      const text = String(msg.content || '').trim();
+      if (!text) continue;
+      const entry = document.createElement('div');
+      entry.className = `transcript-entry transcript-entry--${msg.role}`;
+      const role = document.createElement('span');
+      role.className = 'transcript-role';
+      role.textContent = msg.role === 'user' ? 'You' : 'AURA';
+      const paragraph = document.createElement('p');
+      paragraph.className = 'transcript-text';
+      paragraph.textContent = text;
+      entry.append(role, paragraph);
+      transcriptContent.appendChild(entry);
+    }
+    const hasContent = transcriptContent.childElementCount > 0;
+    transcriptPanel.classList.toggle('visible', hasContent);
+    transcriptPanel.setAttribute('aria-hidden', String(!hasContent));
+    if (hasContent) transcriptPanel.scrollTop = transcriptPanel.scrollHeight;
+  } catch (error) {
+    console.error('Failed to load transcript:', error);
+  }
+}
+
 // Ear for talk, panel for receipts: show search citations/sources, or a
 // number-heavy business reply (balances, counts, MRR). Plain chit-chat stays
 // voice-only so the side rail doesn't compete with conversation mode.
@@ -726,6 +773,7 @@ function stopSpeaking() {
   stopVoiceWave();
   setOrbState('idle', idleStatusText());
   showSearchEvidence([], []);
+  refreshTranscript();
 }
 
 function releaseAudioUrl() {
@@ -735,15 +783,12 @@ function releaseAudioUrl() {
   }
 }
 
-// Chained playback queue for streamed replies: each reply is now spoken as
-// a sequence of per-sentence audio clips instead of one blob, so she can
-// start talking as soon as the first sentence is ready rather than waiting
-// for the whole reply to finish generating. voiceQueueTail is a running
-// promise chain - each call appends "wait for this clip's TTS, then play
-// it and wait for it to finish" as a new link, which guarantees clips play
-// in order even though their TTS fetches all fire concurrently (sentence 2
-// starts synthesizing while sentence 1 is still playing, so it's usually
-// ready the instant sentence 1 ends).
+// Chained playback queue for streamed replies: the first complete sentence
+// starts promptly, then later sentences arrive in connected speech groups.
+// voiceQueueTail is a running promise chain - each call appends "wait for
+// this group's TTS, then play it and wait for it to finish." TTS fetches still
+// overlap playback, but Cartesia gets enough connected text to keep natural
+// cadence instead of restarting its performance sentence by sentence.
 let voiceQueueTail = Promise.resolve();
 
 function resetVoiceQueue() {
@@ -794,12 +839,12 @@ function playBlobAndWait(blob, { onPlayStart = null } = {}) {
   });
 }
 
-// Fetches TTS for one sentence immediately (so synthesis overlaps with
+// Fetches TTS for one speech group immediately (so synthesis overlaps with
 // whatever's currently playing) and appends its playback as the next link
 // in the queue. isFirst puts the orb into "speaking" state right away,
 // matching the old single-blob behavior of setting state before playback
 // starts rather than waiting for audio to actually begin.
-function enqueueSentenceAudio(text, isFirst, timing = null) {
+function enqueueSpeechAudio(text, isFirst, timing = null) {
   if (isFirst) {
     setOrbState('speaking', 'Speaking... Tap to stop');
     isSpeaking = true;
@@ -867,6 +912,7 @@ function finishVoiceQueue() {
       }
     }
     setOrbState('idle', idleStatusText());
+    refreshTranscript();
   });
 }
 
@@ -983,6 +1029,7 @@ async function startListening({ fromConversation = false } = {}) {
   discardNextRecording = false;
   listeningFromConversation = fromConversation;
   showSearchEvidence([], []);
+  hideTranscript();
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -1108,13 +1155,10 @@ async function processAudio(audioBlob) {
     setOrbState('thinking', 'Thinking...');
 
     // 2. Send text to the chat backend. The response is newline-delimited
-    // JSON, not one object - a `sentence` event per completed sentence of
-    // the reply (as soon as the model has generated it, before the rest of
-    // the reply even exists), then one final `done` event carrying
-    // everything a single JSON response used to carry. Each sentence is
-    // queued for TTS/playback as it arrives (see enqueueSentenceAudio) so
-    // she starts speaking the first sentence while later ones are still
-    // being generated, instead of waiting for the whole reply.
+    // JSON, not one object - legacy `sentence` events now carry the first
+    // complete sentence followed by connected speech groups, then one final
+    // `done` event. The opening sentence begins TTS while the rest of the
+    // reply is still being generated; later groups preserve voice continuity.
     const chatStartedAt = performance.now();
     const chatRes = await authenticatedFetch('/api/chat', {
       method: 'POST',
@@ -1129,7 +1173,7 @@ async function processAudio(audioBlob) {
     const reader = chatRes.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let sentenceCount = 0;
+    let speechChunkCount = 0;
     let finalResult = null;
 
     while (true) {
@@ -1144,11 +1188,11 @@ async function processAudio(audioBlob) {
         const event = JSON.parse(line);
         if (event.type === 'sentence') {
           if (stale()) continue;
-          sentenceCount += 1;
-          if (sentenceCount === 1) {
+          speechChunkCount += 1;
+          if (speechChunkCount === 1) {
             timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
           }
-          enqueueSentenceAudio(event.text, sentenceCount === 1, timing);
+          enqueueSpeechAudio(event.text, speechChunkCount === 1, timing);
         } else if (event.type === 'done') {
           finalResult = event;
           // Arrives after the tool loop finishes — later than TTFA, but this is
@@ -1177,9 +1221,9 @@ async function processAudio(audioBlob) {
     // Fallback for the rare case nothing streamed as sentences (e.g. an
     // empty reply) - still speak the full reply as one clip rather than
     // silently saying nothing.
-    if (sentenceCount === 0 && reply) {
+    if (speechChunkCount === 0 && reply) {
       timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
-      enqueueSentenceAudio(reply, true, timing);
+      enqueueSpeechAudio(reply, true, timing);
     }
 
     // Evidence is shown once the reply is fully known, which lands close to
@@ -1197,9 +1241,13 @@ async function processAudio(audioBlob) {
     audioPlayer.pause();
     releaseAudioUrl();
     showSearchEvidence([], []);
+    hideTranscript();
     setOrbState('error', 'Error occurred. Tap to retry.');
     isSpeaking = false;
-    setTimeout(() => setOrbState('idle', idleStatusText()), 3000);
+    setTimeout(() => {
+      setOrbState('idle', idleStatusText());
+      refreshTranscript();
+    }, 3000);
   } finally {
     isProcessing = false;
   }
@@ -1208,4 +1256,7 @@ async function processAudio(audioBlob) {
 syncConversationToggle();
 if (!isListening && !isSpeaking && !isProcessing) {
   setOrbState(orb.className || 'idle', idleStatusText());
+}
+if (auraSessionToken || auraAccessToken) {
+  refreshTranscript();
 }

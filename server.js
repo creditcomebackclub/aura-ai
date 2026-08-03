@@ -24,9 +24,8 @@ const { runDailyGoalsDigest } = require('./daily_goals_digest');
 const { runMorningBrief, filterUpcomingAssignments } = require('./morning_brief');
 const { parseDueAt } = require('./due_date');
 const {
-  concatWavBuffers,
   splitIntoSentences,
-  splitSpeakable,
+  createSpeechChunkAccumulator,
   advancePastEmitted
 } = require('./wav_utils');
 const { MemoryStore } = require('./memory_store');
@@ -60,6 +59,7 @@ const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
 const { isDirectEmailConfigured, isDirectSendConfigured, sendGmailMessage, getDirectUnreadEmails } = require('./email_provider');
 const { isDirectCalendarConfigured, getDirectCalendarText } = require('./calendar_feed');
+const { buildTemporalContext, groundCalendarEventArgs } = require('./calendar_time');
 const {
   isGoogleCalendarWriteConfigured,
   createGoogleCalendarEvent,
@@ -472,13 +472,12 @@ function createBrainCompletion({ _traceLabel, ...requestOptions } = {}) {
 // and returns an object shaped exactly like a non-streaming SDK response
 // (`choices[0].message.{content,tool_calls}`), so every existing call site
 // in processOwnerText's tool loop works unchanged regardless of which one
-// it gets back. onSentence (optional) fires once per complete speakable
-// chunk as soon as it's recognizable in the accumulating text. The first
-// clip may be a leading clause (not a full sentence) so Cartesia can start
-// sooner; later clips use normal sentence boundaries. Everything except
-// the LAST piece is guaranteed complete (more text followed it). If the
-// model calls tools instead, no sentence ever fires - tool-call content is
-// not conversational text.
+// it gets back. onSentence (optional) fires as complete spoken chunks become
+// available. The first complete sentence goes immediately; later sentences
+// are paired so Cartesia can preserve cadence across them instead of starting
+// a new performance at every comma or sentence boundary. If the model calls
+// tools instead, no sentence fires - tool-call content is not conversational
+// text.
 async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...requestOptions } = {}) {
   const startedAtMs = Date.now();
   const stream = await openai.chat.completions.create({
@@ -491,19 +490,19 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...reque
   let firstDeltaAtMs = null;
   const toolCallsByIndex = new Map();
   let finishReason = null;
+  const speechChunks = createSpeechChunkAccumulator(onSentence);
 
   const drainSpeakable = ({ final = false } = {}) => {
     if (!onSentence) return;
     const remainder = contentBuffer.slice(emittedLength);
     if (!remainder.trim()) return;
-    const parts = final
-      ? splitIntoSentences(remainder)
-      : splitSpeakable(remainder, { earlyClause: emittedLength === 0 });
+    const parts = splitIntoSentences(remainder);
     const completeCount = final ? parts.length : Math.max(0, parts.length - 1);
     for (let i = 0; i < completeCount; i += 1) {
-      onSentence(parts[i]);
+      speechChunks.add(parts[i]);
       emittedLength = advancePastEmitted(contentBuffer, emittedLength, parts[i]);
     }
+    if (final) speechChunks.flush();
   };
 
   for await (const chunk of stream) {
@@ -577,10 +576,9 @@ function scheduleConversationSummary() {
 }
 
 async function synthesizeAlertVoice(spokenText) {
-  const sentences = splitIntoSentences(spokenText);
-  if (!sentences.length) return null;
-  const chunks = await Promise.all(sentences.map(synthesizeSpeechChunk));
-  return chunks.length > 1 ? concatWavBuffers(chunks) : chunks[0];
+  const text = String(spokenText || '').trim();
+  if (!text) return null;
+  return synthesizeSpeechChunk(text);
 }
 
 async function sendProactiveAlert(text, category = 'general', urgency = 'normal', options = {}) {
@@ -1871,17 +1869,22 @@ async function handleToolCall(toolCall, options = {}) {
         result = 'The staged-approval queue is not available in this runtime, so calendar events cannot be staged safely here.';
         break;
       }
+      const grounded = groundCalendarEventArgs(args, options.userInstruction, {
+        now: new Date(options.requestStartedAtMs ?? Date.now()),
+        timeZone: args.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'
+      });
+      const eventArgs = grounded.eventArgs;
       let stagedEvent;
       try {
         stagedEvent = buildGoogleCalendarEvent({
-          summary: args.summary,
-          start: args.start,
-          end: args.end || null,
-          duration_minutes: args.duration_minutes ?? null,
-          description: args.description || null,
-          location: args.location || null,
-          attendees: args.attendees || [],
-          timeZone: args.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'
+          summary: eventArgs.summary,
+          start: eventArgs.start,
+          end: eventArgs.end || null,
+          duration_minutes: eventArgs.duration_minutes ?? null,
+          description: eventArgs.description || null,
+          location: eventArgs.location || null,
+          attendees: eventArgs.attendees || [],
+          timeZone: eventArgs.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'
         });
       } catch (error) {
         result = `Could not stage that event: ${error.message}`;
@@ -1892,12 +1895,12 @@ async function handleToolCall(toolCall, options = {}) {
         'aura_core',
         'create_calendar_event',
         {
-          summary: args.summary,
-          start: args.start,
-          end: args.end || null,
-          duration_minutes: args.duration_minutes ?? null,
-          description: args.description || null,
-          location: args.location || null,
+          summary: eventArgs.summary,
+          start: eventArgs.start,
+          end: eventArgs.end || null,
+          duration_minutes: eventArgs.duration_minutes ?? null,
+          description: eventArgs.description || null,
+          location: eventArgs.location || null,
           attendees: stagedEvent.attendeeEmails,
           time_zone: stagedEvent.timeZone
         },
@@ -1912,9 +1915,13 @@ async function handleToolCall(toolCall, options = {}) {
         stagedEvent.attendeeEmails.length
           ? 'Attendees will receive Google Calendar invitations after confirm.'
           : 'No attendees — this only adds the event to the owner\'s calendar.',
+        grounded.correction
+          ? `Date grounded from the owner\'s phrase "${grounded.correction.phrase}" using the server clock.`
+          : '',
+        'The date and time above are authoritative. Repeat the exact calendar date back; do not replace it with only a relative word like "tomorrow".',
         'Read this back to the owner and ask them to confirm, then STOP and wait for their reply.',
         `On a later turn, once they approve, call confirm_calendar_event with action_id "${calendarAction.id}".`
-      ].join('\n');
+      ].filter(Boolean).join('\n');
       break;
     }
     case 'confirm_calendar_event': {
@@ -2171,7 +2178,13 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       // Same turn-start timestamp as the live path so propose+confirm inside
       // one isolated exchange still fails the later-turn gate.
       const requestStartedAtMs = Date.now();
-      const chatHistory = [{ role: 'system', content: AURA_SOUL }, { role: 'user', content: text }];
+      const chatHistory = [{
+        role: 'system',
+        content: AURA_SOUL + buildTemporalContext({
+          now: new Date(requestStartedAtMs),
+          timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
+        })
+      }, { role: 'user', content: text }];
       const turnTools = selectToolsForTurn(text);
       const availableToolNames = turnTools.map(tool => tool.function.name);
       const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
@@ -2454,6 +2467,10 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     const systemPrompt = {
       role: 'system',
       content: AURA_SOUL +
+        buildTemporalContext({
+          now: new Date(requestStartedAtMs),
+          timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
+        }) +
         memoryContext.profileContext +
         relatedMemoryContext +
         summaryContext
@@ -2802,9 +2819,7 @@ app.post('/telegram/webhook', rateLimit, async (req, res) => {
     const wantsTextToo = !isVoiceInput || /\btext\b/i.test(text);
     if (wantsTextToo) await sendTelegramMessage(result.reply);
     try {
-      const sentences = splitIntoSentences(result.reply);
-      const chunks = await Promise.all(sentences.map(synthesizeSpeechChunk));
-      const combined = chunks.length > 1 ? concatWavBuffers(chunks) : chunks[0];
+      const combined = await synthesizeSpeechChunk(result.reply.trim());
       await sendTelegramAudio(combined);
     } catch (voiceError) {
       // If voice-out was the only reply planned, a synthesis failure would
@@ -2876,6 +2891,20 @@ app.delete('/api/memories/:id', async (req, res) => {
 app.get('/api/profile', async (req, res) => {
   const profile = await (cloudState || localProfileStore).getOwnerProfile();
   res.json({ profile });
+});
+
+// Recent conversation turns for the PWA transcript panel. Same source the
+// model already reads via recentConversationMessages() — user/assistant only,
+// oldest-first, capped so a phone panel stays readable.
+app.get('/api/messages', async (req, res) => {
+  const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 12));
+  try {
+    const messages = await recentConversationMessages(limit);
+    res.json({ messages: messages || [] });
+  } catch (error) {
+    console.error('Error fetching messages:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Human-readable snapshot of everything AURA currently "believes" - the pinned
@@ -3073,20 +3102,15 @@ app.post('/api/tts', async (req, res) => {
     if (typeof text !== 'string' || !text.trim() || text.length > 12000) {
       return res.status(400).json({ error: 'TTS text must be between 1 and 12,000 characters.' });
     }
-    // Synthesize sentence-by-sentence, concurrently, instead of one call for
-    // the whole reply - real latency win on multi-sentence replies (Cartesia
-    // time roughly scales with text length, so N parallel shorter calls
-    // finish sooner than one long serial one), with zero client-visible
-    // change: still one WAV blob in, played exactly as before. A one-sentence
-    // reply is a single Cartesia call either way, identical to the prior
-    // behavior - this only does extra work when there's real parallelism to
-    // gain from.
+    // The browser already sends bounded speech groups (the first complete
+    // sentence, then connected sentence pairs). Keep each group in ONE
+    // Cartesia request so pacing and intonation carry through naturally.
+    // Splitting again here was faster on paper but reset the performance at
+    // every sentence and introduced audible WAV seams.
     const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
-    const sentences = splitIntoSentences(text);
-    const chunks = await Promise.all(sentences.map(synthesizeSpeechChunk));
-    const combined = chunks.length > 1 ? concatWavBuffers(chunks) : chunks[0];
+    const combined = await synthesizeSpeechChunk(text.trim());
     if (process.env.AURA_TIMING_TRACE) {
-      console.log(`[timing] tts (${sentences.length} chunk${sentences.length === 1 ? '' : 's'}): ${Date.now() - startedAtMs}ms`);
+      console.log(`[timing] tts (continuous group): ${Date.now() - startedAtMs}ms`);
     }
     res.set('Content-Type', 'audio/wav');
     res.send(combined);
