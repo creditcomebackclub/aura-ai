@@ -391,10 +391,10 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
     ]
   },
   {
-    tools: ['propose_calendar_event', 'confirm_calendar_event', 'list_pending_owner_actions'],
+    tools: ['create_calendar_event'],
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not)\s+have\b[^.]{0,60}\bcalendar\b[^.]{0,40}\b(?:create|write|scheduling?)\s+tools?\b/i,
-      /\b(?:i\s+)?(?:can'?t|cannot|unable to)\b[^.]{0,60}\b(?:stage|schedule|book|create|add|put)\b[^.]{0,60}\b(?:calendar|event)\b/i,
+      /\b(?:i\s+)?(?:can'?t|cannot|unable to)\b[^.]{0,60}\b(?:schedule|book|create|add|put)\b[^.]{0,60}\b(?:calendar|event)\b/i,
       /\b(?:calendar|event)\b[^.]{0,60}\b(?:create|write|scheduling?)\s+tools?\b[^.]{0,40}\b(?:aren'?t|are\s+not|unavailable|not\s+available)\b/i
     ]
   },

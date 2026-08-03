@@ -88,15 +88,14 @@ test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
     'Schedule a consult with David on Monday at 9'
   );
   const names = new Set(selected.map(tool => tool.function.name));
-  assert.equal(names.has('propose_calendar_event'), true);
-  assert.equal(names.has('confirm_calendar_event'), true);
-  assert.equal(names.has('list_pending_owner_actions'), true);
+  assert.equal(names.has('create_calendar_event'), true);
+  assert.equal(names.has('list_pending_owner_actions'), false);
   assert.equal(names.has('propose_owner_email'), false);
 });
 
 test('selectToolsForTurn drops calendar write tools on plain chit-chat', () => {
   const selected = selectToolsForTurn(fakeTools(ALL_NAMES), "Hey, what's up?");
   const names = new Set(selected.map(tool => tool.function.name));
-  assert.equal(names.has('propose_calendar_event'), false);
+  assert.equal(names.has('create_calendar_event'), false);
   assert.equal(names.has('list_pending_owner_actions'), false);
 });

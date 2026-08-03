@@ -15,6 +15,29 @@ const WEEKDAYS = {
   sat: 6, saturday: 6
 };
 
+// A calendar write is allowed to execute immediately only when the owner's
+// current message is itself a scheduling instruction. This is deliberately
+// checked against the raw owner turn rather than model-composed arguments, so
+// retrieved text, memories, or a mistaken tool choice cannot authorize a
+// calendar mutation.
+function isExplicitCalendarWriteRequest(instruction) {
+  const text = String(instruction || '').trim().toLowerCase();
+  if (!text) return false;
+  // Questions about whether scheduling happened, and instructions merely
+  // quoted from external content, are not owner authorization to create one.
+  if (/^(?:did|does|has|have|is|are|was|were|what|when|where|why|how|who)\b.{0,160}\b(?:schedule|book)\b/.test(text)) {
+    return false;
+  }
+  if (/\b(?:email|message|webpage|website|document|note)\b.{0,60}\b(?:says?|said|asks?|asked|tells?|told)\b.{0,100}\b(?:schedule|book)\b/.test(text)) {
+    return false;
+  }
+  if (/\b(?:schedule|book)\b/.test(text)) return true;
+  if (/\bblock\s+off\b/.test(text)) return true;
+  if (/\binvite\b.{0,160}\b(?:to|for|on|at)\b/.test(text)) return true;
+  if (/\b(?:add|put)\b.{0,160}\b(?:calendar|schedule)\b/.test(text)) return true;
+  return /\b(?:create|make|set\s+up)\b.{0,100}\b(?:calendar\s+)?(?:event|appointment|meeting|call)\b/.test(text);
+}
+
 function zonedParts(date, timeZone) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
@@ -221,6 +244,7 @@ module.exports = {
   buildTemporalContext,
   dateKey,
   groundCalendarEventArgs,
+  isExplicitCalendarWriteRequest,
   resolveRelativeCalendarDate,
   utcFromZoned,
   zonedParts

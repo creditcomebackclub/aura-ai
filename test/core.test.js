@@ -75,25 +75,20 @@ test('tool arguments reject unsafe identifiers and invalid writes', () => {
   );
 });
 
-test('propose_calendar_event validates times and attendees; confirm needs action_id', () => {
-  assert.equal(getToolPolicy('propose_calendar_event'), 'reversible_write');
-  assert.equal(getToolPolicy('confirm_calendar_event'), 'external_action');
+test('create_calendar_event is a validated reversible write', () => {
+  assert.equal(getToolPolicy('create_calendar_event'), 'reversible_write');
   assert.throws(
-    () => parseAndAuthorizeToolCall(toolCall('propose_calendar_event', {
+    () => parseAndAuthorizeToolCall(toolCall('create_calendar_event', {
       summary: 'Consult', start: '2026-08-04T09:00:00-07:00', attendees: ['nope']
     })),
     /valid email/
   );
-  const parsed = parseAndAuthorizeToolCall(toolCall('propose_calendar_event', {
+  const parsed = parseAndAuthorizeToolCall(toolCall('create_calendar_event', {
     summary: 'Consult',
     start: '2026-08-04T09:00:00-07:00',
     attendees: ['client@example.com']
   }));
   assert.deepEqual(parsed.args.attendees, ['client@example.com']);
-  assert.throws(
-    () => parseAndAuthorizeToolCall(toolCall('confirm_calendar_event', { action_id: '!!!' })),
-    /Invalid action_id/
-  );
 });
 
 test('propose_email requires a valid recipient address, unlike the fixed-recipient owner tools', () => {
@@ -757,11 +752,11 @@ test('findFalseCapabilityDenial only fires when the denied capability was actual
   assert.deepEqual(emailDenial.tools, ['check_email']);
 
   const calendarWriteDenial = findFalseCapabilityDenial(
-    "I don't actually have the calendar create tools available right now — only read. So I can't stage or put lunch with Mike on the calendar from here.",
-    ['check_calendar', 'propose_calendar_event', 'confirm_calendar_event']
+    "I don't actually have the calendar create tools available right now — only read. So I can't put lunch with Mike on the calendar from here.",
+    ['check_calendar', 'create_calendar_event']
   );
   assert.ok(calendarWriteDenial);
-  assert.ok(calendarWriteDenial.tools.includes('propose_calendar_event'));
+  assert.ok(calendarWriteDenial.tools.includes('create_calendar_event'));
 });
 
 test('search secret patterns catch common cloud and VCS tokens', () => {

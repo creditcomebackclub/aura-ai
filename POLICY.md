@@ -24,7 +24,7 @@ Every tool AURA can call is assigned exactly one risk tier in the
 | Tier | Meaning | Examples (from `TOOL_POLICIES`) |
 |---|---|---|
 | `read` | No state change. Always autonomous. | `list_database_tables`, `get_table_schema`, `query_database_table`, `count_database_rows`, `get_outstanding_balances`, `calculate_financial_metrics`, `get_client_snapshot`, `get_client_current_phase`, `check_email`, `check_calendar`, `get_goals`, `query_finances`, `check_blackboard`, `search_web`, `list_deletable_test_letters`, `list_pending_owner_actions` |
-| `reversible_write` | Changes state, but non-destructively (or only *stages* a later destructive step — staging itself changes nothing observable). | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `propose_test_letter_deletion`, `propose_owner_email`, `propose_email` |
+| `reversible_write` | Changes state non-destructively, either from a direct owner command or by only *staging* a later destructive step. | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `create_calendar_event`, `propose_test_letter_deletion`, `propose_owner_email`, `propose_email` |
 | `destructive_write` | Irreversible or externally-visible, to a recipient fixed server-side: deletes a record, or sends something a third party can see to an address the model never supplied. Note `send_telegram_message` is tagged here for audit honesty but is NOT gated - it sends immediately (see §5). | `confirm_test_letter_deletion`, `confirm_owner_email`, `send_telegram_message` |
 | `external_action` | Same externally-visible category as `destructive_write`, but to a recipient that IS a real tool argument, with no fixed-server-config guarantee behind it. Gated exactly like `destructive_write` (propose → approve → execute) - the tier split exists to flag the missing structural guarantee, not to change the gate. | `confirm_email` |
 
@@ -230,6 +230,17 @@ the owner's request once he understood the guarantee below - it still calls
 in the same request when `cloudState` exists (so an audit row lands in
 `aura_actions`, `approved_by: null`, honestly reflecting no approval step
 occurred), or `telegram.js::sendTelegramMessage()` directly otherwise.
+
+**Owner calendar creation** (`server.js`) — deliberately NOT gated by a
+second approval turn. `create_calendar_event` is available only on
+calendar-write-relevant turns, and its handler independently checks the raw
+current owner message with `isExplicitCalendarWriteRequest()` before it can
+mutate Google Calendar. A clear instruction such as “Schedule lunch tomorrow
+at 1:30” is already authorization; asking the owner to approve the same command
+again adds friction without adding meaningful intent evidence. The write still
+lands in `aura_actions` and executes through `executeApprovedAction()` for a
+durable audit result. Missing or ambiguous scheduling details require a short
+follow-up before the tool call, not a staged half-specified event.
 
 **Also staged into this same queue, not executed immediately:** memory and
 profile deletion. `DELETE /api/memories/:id` and `DELETE /api/profile/:key`
