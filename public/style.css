@@ -540,7 +540,111 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   }
 }
 
-/* Search-results HUD panel. Non-persistent by design: hidden by default via
+/* Conversation transcript — left rail on desktop (mirrors #source-panel on
+   the right). RIGHT edge is pinned to the wave's left edge minus a gutter so
+   excess width spills off-screen leftward, never into the wave. Shown when
+   idle; hidden while listening/speaking so the orb stays primary. */
+#transcript-panel {
+  position: fixed;
+  top: max(18px, env(safe-area-inset-top));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  left: max(14px, env(safe-area-inset-left));
+  right: calc(50% - var(--wave-width) / 2 - 12px);
+  width: auto;
+  max-width: 280px;
+  overflow-y: auto;
+  transform: translateX(-24px);
+  padding: 16px 14px 12px;
+  border: 1px solid rgba(0, 170, 255, 0.4);
+  border-radius: 16px;
+  background: rgba(6, 10, 16, 0.86);
+  box-shadow:
+    0 0 0 1px rgba(0, 170, 255, 0.08) inset,
+    0 0 26px rgba(0, 140, 255, 0.22),
+    0 20px 60px rgba(0, 0, 0, 0.45);
+  text-align: left;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  -webkit-overflow-scrolling: touch;
+  z-index: 10;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 320ms ease, transform 320ms ease;
+}
+
+#transcript-panel.visible {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+#transcript-panel::before {
+  content: '';
+  display: block;
+  height: 1px;
+  margin: -2px 0 12px;
+  background: linear-gradient(90deg, rgba(0, 170, 255, 0.9), transparent 85%);
+  box-shadow: 0 0 8px rgba(0, 170, 255, 0.6);
+}
+
+#transcript-label {
+  margin-bottom: 10px;
+  color: rgba(140, 224, 255, 0.85);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  text-shadow: 0 0 10px rgba(0, 170, 255, 0.5);
+}
+
+#transcript-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: rgba(230, 245, 255, 0.88);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  user-select: text;
+}
+
+.transcript-entry {
+  padding: 8px 10px;
+  border-left: 2px solid rgba(0, 170, 255, 0.35);
+  border-radius: 4px;
+  background: rgba(0, 140, 255, 0.06);
+}
+
+.transcript-entry--user {
+  border-left-color: rgba(120, 210, 255, 0.55);
+  background: rgba(100, 200, 255, 0.08);
+}
+
+.transcript-entry--assistant {
+  border-left-color: rgba(255, 150, 60, 0.45);
+  background: rgba(255, 140, 40, 0.06);
+}
+
+.transcript-role {
+  display: block;
+  margin-bottom: 3px;
+  color: rgba(140, 224, 255, 0.75);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.transcript-entry--assistant .transcript-role {
+  color: rgba(255, 180, 120, 0.8);
+}
+
+.transcript-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Search/receipt HUD panel. Non-persistent by design: hidden by default via
    opacity/transform (not display:none, so it can transition) and only made
    visible by app.js adding .visible - which it does exactly when a search
    actually returned content, and removes again on the next turn if not. */
@@ -670,28 +774,41 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
 }
 
 @media (prefers-reduced-motion: reduce) {
+  #transcript-panel,
   #source-panel {
     transition: none;
   }
 }
 
-/* On a phone, the right-side rail above is too narrow to read - it's a
-   sliver next to the wave rather than a real panel. Below the orb/wave
-   instead of beside them: full-width bottom sheet, still non-overlapping
-   by construction (the orb/wave stack is vertically centered by `body`'s
-   flex layout above, so a bottom-pinned panel sits in the space below it
-   rather than needing to share horizontal room with the wave the way the
-   desktop rail does). Same breakpoint as --wave-width's own mobile
-   adjustment above, so both changes land together. */
+/* On a phone the side rails are unreadably narrow. Transcript docks as a
+   top sheet; search/receipt panel docks as a bottom sheet ABOVE #orb-controls
+   (conversation + volume toggles), so the two never sit on the same pixels.
+   Same 700px breakpoint as --wave-width's mobile adjustment. */
 @media (max-width: 700px) {
+  #transcript-panel {
+    top: max(12px, env(safe-area-inset-top));
+    bottom: auto;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    max-height: 28vh;
+    transform: translateY(-24px);
+  }
+
+  #transcript-panel.visible {
+    transform: translateY(0);
+  }
+
   #source-panel {
     top: auto;
     left: 12px;
     right: 12px;
-    bottom: max(18px, env(safe-area-inset-bottom));
+    /* Clear #orb-controls (~44px buttons + bottom padding + safe area). */
+    bottom: max(72px, calc(env(safe-area-inset-bottom) + 58px));
     width: auto;
     max-width: none;
-    max-height: 32vh;
+    max-height: 28vh;
     transform: translateY(24px);
   }
 

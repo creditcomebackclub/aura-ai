@@ -226,6 +226,8 @@ const orb = document.getElementById('orb');
 const statusText = document.getElementById('status-text');
 const conversationToggle = document.getElementById('conversation-toggle');
 const volumeToggle = document.getElementById('volume-toggle');
+const transcriptPanel = document.getElementById('transcript-panel');
+const transcriptContent = document.getElementById('transcript-content');
 const sourcePanel = document.getElementById('source-panel');
 const sourceLabel = document.getElementById('source-label');
 const webAnswer = document.getElementById('web-answer');
@@ -572,6 +574,51 @@ function appendCitedBlock(block) {
   webAnswer.appendChild(paragraph);
 }
 
+function hideTranscript() {
+  if (!transcriptPanel) return;
+  transcriptPanel.classList.remove('visible');
+  transcriptPanel.setAttribute('aria-hidden', 'true');
+}
+
+// Loads recent user/assistant turns into the left (desktop) / top (mobile)
+// transcript panel. Shown when idle; hidden while listening or speaking so
+// the orb stays the primary surface.
+async function refreshTranscript() {
+  if (!transcriptPanel || !transcriptContent) return;
+  if (isListening || isSpeaking || isProcessing) {
+    hideTranscript();
+    return;
+  }
+  try {
+    const res = await authenticatedFetch('/api/messages?limit=12');
+    if (!res.ok) return;
+    const body = await res.json();
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    transcriptContent.replaceChildren();
+    for (const msg of messages) {
+      if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+      const text = String(msg.content || '').trim();
+      if (!text) continue;
+      const entry = document.createElement('div');
+      entry.className = `transcript-entry transcript-entry--${msg.role}`;
+      const role = document.createElement('span');
+      role.className = 'transcript-role';
+      role.textContent = msg.role === 'user' ? 'You' : 'AURA';
+      const paragraph = document.createElement('p');
+      paragraph.className = 'transcript-text';
+      paragraph.textContent = text;
+      entry.append(role, paragraph);
+      transcriptContent.appendChild(entry);
+    }
+    const hasContent = transcriptContent.childElementCount > 0;
+    transcriptPanel.classList.toggle('visible', hasContent);
+    transcriptPanel.setAttribute('aria-hidden', String(!hasContent));
+    if (hasContent) transcriptPanel.scrollTop = transcriptPanel.scrollHeight;
+  } catch (error) {
+    console.error('Failed to load transcript:', error);
+  }
+}
+
 // Ear for talk, panel for receipts: show search citations/sources, or a
 // number-heavy business reply (balances, counts, MRR). Plain chit-chat stays
 // voice-only so the side rail doesn't compete with conversation mode.
@@ -726,6 +773,7 @@ function stopSpeaking() {
   stopVoiceWave();
   setOrbState('idle', idleStatusText());
   showSearchEvidence([], []);
+  refreshTranscript();
 }
 
 function releaseAudioUrl() {
@@ -867,6 +915,7 @@ function finishVoiceQueue() {
       }
     }
     setOrbState('idle', idleStatusText());
+    refreshTranscript();
   });
 }
 
@@ -983,6 +1032,7 @@ async function startListening({ fromConversation = false } = {}) {
   discardNextRecording = false;
   listeningFromConversation = fromConversation;
   showSearchEvidence([], []);
+  hideTranscript();
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -1197,9 +1247,13 @@ async function processAudio(audioBlob) {
     audioPlayer.pause();
     releaseAudioUrl();
     showSearchEvidence([], []);
+    hideTranscript();
     setOrbState('error', 'Error occurred. Tap to retry.');
     isSpeaking = false;
-    setTimeout(() => setOrbState('idle', idleStatusText()), 3000);
+    setTimeout(() => {
+      setOrbState('idle', idleStatusText());
+      refreshTranscript();
+    }, 3000);
   } finally {
     isProcessing = false;
   }
@@ -1208,4 +1262,7 @@ async function processAudio(audioBlob) {
 syncConversationToggle();
 if (!isListening && !isSpeaking && !isProcessing) {
   setOrbState(orb.className || 'idle', idleStatusText());
+}
+if (auraSessionToken || auraAccessToken) {
+  refreshTranscript();
 }

@@ -90,15 +90,32 @@ test('the search panel sits right of the wave, never over it, and syncs to speec
 test('on a phone the panel docks below the orb/wave instead of beside them', () => {
   // The desktop side-rail is unreadably narrow on a phone - a real
   // breakpoint override, not just a smaller version of the same rail.
-  const mobileBlock = css.slice(css.indexOf('@media (max-width: 700px) {\n  #source-panel'));
+  const mobileBlock = css.slice(css.indexOf('@media (max-width: 700px)'));
   assert.match(mobileBlock, /#source-panel\s*\{[^}]*top:\s*auto/s);
-  assert.match(mobileBlock, /#source-panel\s*\{[^}]*bottom:/s);
+  // Lifted above #orb-controls so conversation/volume toggles stay tappable.
+  assert.match(mobileBlock, /#source-panel\s*\{[^}]*bottom:\s*max\(72px/s);
   assert.match(mobileBlock, /#source-panel\s*\{[^}]*max-width:\s*none/s);
   assert.match(mobileBlock, /#source-panel\s*\{[^}]*transform:\s*translateY\(/s);
   // Reveal transform on mobile must match the mobile hide transform's axis -
   // sliding in on Y, not the desktop rail's X, or .visible would snap
   // instead of animate on a phone.
   assert.match(mobileBlock, /#source-panel\.visible\s*\{[^}]*transform:\s*translateY\(0\)/s);
+});
+
+test('conversation transcript panel loads from /api/messages when idle', () => {
+  const transcriptTag = html.match(/<section id="transcript-panel"[^>]*>/)[0];
+  assert.match(transcriptTag, /aria-hidden="true"/);
+  assert.match(css, /#transcript-panel\s*\{[^}]*opacity:\s*0;/s);
+  // Desktop: left of the wave (right edge pinned to wave's left - gutter).
+  assert.match(css, /#transcript-panel\s*\{[^}]*right:\s*calc\(50% - var\(--wave-width\)\s*\/\s*2/s);
+  assert.match(app, /async function refreshTranscript\(/);
+  assert.match(app, /authenticatedFetch\('\/api\/messages\?limit=12'\)/);
+  assert.match(app, /function hideTranscript\(/);
+  // Hidden while listening; refreshed when a turn returns to idle.
+  const startListeningFn = app.slice(app.indexOf('async function startListening'), app.indexOf('async function startListening') + 500);
+  assert.match(startListeningFn, /hideTranscript\(\)/);
+  const finishVoiceQueueFn = app.slice(app.indexOf('function finishVoiceQueue()'), app.indexOf('function finishVoiceQueue()') + 700);
+  assert.match(finishVoiceQueueFn, /refreshTranscript\(\)/);
 });
 
 test('waveform is driven by the actual AURA audio element', () => {

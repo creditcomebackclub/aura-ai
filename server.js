@@ -2878,6 +2878,20 @@ app.get('/api/profile', async (req, res) => {
   res.json({ profile });
 });
 
+// Recent conversation turns for the PWA transcript panel. Same source the
+// model already reads via recentConversationMessages() — user/assistant only,
+// oldest-first, capped so a phone panel stays readable.
+app.get('/api/messages', async (req, res) => {
+  const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 12));
+  try {
+    const messages = await recentConversationMessages(limit);
+    res.json({ messages: messages || [] });
+  } catch (error) {
+    console.error('Error fetching messages:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Human-readable snapshot of everything AURA currently "believes" - the pinned
 // profile, durable memories, and the rolling conversation summary - rendered as
 // one plain-English document. Exists because diagnosing a poisoned summary
