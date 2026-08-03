@@ -1,10 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {
-  createSentenceGate,
-  emitToolWorkingBeat,
-  pickToolWorkingBeat
-} = require('../reply_stream');
+const { createSentenceGate } = require('../reply_stream');
 
 test('sentence gate streams clean replies immediately', () => {
   const spoken = [];
@@ -49,16 +45,4 @@ test('sentence gate ignores denials for tools that were not offered', () => {
   gate.onSentence("I don't have access to the client database.");
   assert.deepEqual(spoken, ["I don't have access to the client database."]);
   assert.equal(gate.wasSuppressed(), false);
-});
-
-test('tool working beat is tool-aware and emits once via onSentence', () => {
-  assert.equal(pickToolWorkingBeat(['search_web']), 'Looking that up.');
-  assert.equal(pickToolWorkingBeat(['get_client_snapshot']), 'Pulling that up.');
-  assert.equal(pickToolWorkingBeat(['check_email']), 'Checking now.');
-  assert.equal(pickToolWorkingBeat(['add_goal']), 'One sec.');
-
-  const spoken = [];
-  assert.equal(emitToolWorkingBeat(s => spoken.push(s), ['get_client_current_phase']), true);
-  assert.deepEqual(spoken, ['Pulling that up.']);
-  assert.equal(emitToolWorkingBeat(null, ['get_client_snapshot']), false);
 });

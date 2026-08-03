@@ -50,10 +50,7 @@ const {
   selectToolsForTurn: selectToolsForTurnBase,
   historyLimitForTurn
 } = require('./turn_context');
-const {
-  createSentenceGate,
-  emitToolWorkingBeat
-} = require('./reply_stream');
+const { createSentenceGate } = require('./reply_stream');
 const { CompanionClient } = require('./companion_client');
 const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
@@ -2062,16 +2059,9 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       const webSources = [];
       const webResults = [];
       const seenWebSources = new Set();
-      let workingBeatEmitted = false;
       for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
         const responseMessage = response.choices[0].message;
         chatHistory.push(responseMessage);
-        if (!workingBeatEmitted) {
-          workingBeatEmitted = emitToolWorkingBeat(
-            streamSentence,
-            responseMessage.tool_calls.map(call => call?.function?.name).filter(Boolean)
-          );
-        }
         for (const toolCall of responseMessage.tool_calls) {
           let functionResult;
           let webSearchUnitReserved = false;
@@ -2364,19 +2354,12 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     let webSearchAttempts = 0;
     let webSearchBilledSearches = 0;
     let webSearchSucceeded = false;
-    let workingBeatEmitted = false;
     for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
       const responseMessage = response.choices[0].message;
       chatHistory.push(responseMessage);
       const roundToolNames = new Set(
         responseMessage.tool_calls.map(call => call?.function?.name).filter(Boolean)
       );
-      // Fill the silence before the first tool round so voice doesn't hang
-      // while lookups run. Emitted only via onSentence (TTS/NDJSON), never
-      // written into the persisted assistant reply.
-      if (!workingBeatEmitted) {
-        workingBeatEmitted = emitToolWorkingBeat(streamSentence, roundToolNames);
-      }
       const roundMixesSearchAndPrivateData =
         roundToolNames.has('search_web') &&
         [...roundToolNames].some(name => PRIVATE_CONTEXT_TOOLS.has(name));
