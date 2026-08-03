@@ -384,6 +384,13 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
     ]
   },
   {
+    tools: ['send_owner_email', 'send_email'],
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:send|email|e-mail)\b[^.]{0,50}\b(?:email|message|you|them|recipient)\b/i,
+      /\bno\s+(?:way|tool|ability)\s+to\b[^.]{0,40}\b(?:send|email)\b/i
+    ]
+  },
+  {
     tools: ['check_calendar'],
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:read|check|access|see)\b[^.]{0,40}\bcalendar\b/i,

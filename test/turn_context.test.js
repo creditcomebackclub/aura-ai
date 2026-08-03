@@ -19,7 +19,6 @@ const ALL_NAMES = [
   ...BUSINESS_INTEL_TOOL_NAMES,
   ...OUTBOUND_EMAIL_TOOL_NAMES,
   ...CALENDAR_WRITE_TOOL_NAMES,
-  'list_pending_owner_actions',
   'check_email',
   'check_calendar',
   'get_goals',
@@ -61,7 +60,7 @@ test('selectToolsForTurn keeps business tools when the turn mentions clients', (
   assert.equal(names.has('get_client_snapshot'), true);
   assert.equal(names.has('calculate_financial_metrics'), true);
   // No email wording → outbound tools still dropped.
-  assert.equal(names.has('propose_owner_email'), false);
+  assert.equal(names.has('send_owner_email'), false);
 });
 
 test('selectToolsForTurn inherits business relevance from recent history', () => {
@@ -77,9 +76,8 @@ test('selectToolsForTurn inherits business relevance from recent history', () =>
 test('selectToolsForTurn keeps outbound email tools when the turn asks to send', () => {
   const selected = selectToolsForTurn(fakeTools(ALL_NAMES), 'Email me a summary of today');
   const names = new Set(selected.map(tool => tool.function.name));
-  assert.equal(names.has('propose_owner_email'), true);
-  assert.equal(names.has('confirm_owner_email'), true);
-  assert.equal(names.has('list_pending_owner_actions'), true);
+  assert.equal(names.has('send_owner_email'), true);
+  assert.equal(names.has('send_email'), true);
 });
 
 test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
@@ -89,13 +87,11 @@ test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
   );
   const names = new Set(selected.map(tool => tool.function.name));
   assert.equal(names.has('create_calendar_event'), true);
-  assert.equal(names.has('list_pending_owner_actions'), false);
-  assert.equal(names.has('propose_owner_email'), false);
+  assert.equal(names.has('send_owner_email'), false);
 });
 
 test('selectToolsForTurn drops calendar write tools on plain chit-chat', () => {
   const selected = selectToolsForTurn(fakeTools(ALL_NAMES), "Hey, what's up?");
   const names = new Set(selected.map(tool => tool.function.name));
   assert.equal(names.has('create_calendar_event'), false);
-  assert.equal(names.has('list_pending_owner_actions'), false);
 });

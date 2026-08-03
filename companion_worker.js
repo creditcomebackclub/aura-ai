@@ -45,10 +45,9 @@ async function executeCapability(capability, request = {}) {
     }
     // Distinct from 'send_email' above: this one sends to whatever address
     // the server passes in request.to, for the arbitrary-recipient tool
-    // (propose_email/confirm_email). Safety here lives entirely in the
-    // server's mandatory propose/confirm gate before this ever gets queued,
-    // not in this function - unlike 'send_email' above, which is safe by
-    // construction because it never reads a recipient off the request.
+    // (send_email). Safety lives in the server's explicit-current-command and
+    // literal-recipient checks before this ever gets queued, not in this
+    // worker. The owner-only path above is fixed-recipient by construction.
     case 'send_email_to_recipient': {
       if (!request.to) throw new Error('send_email_to_recipient requires a "to" address.');
       let attachmentPath = null;

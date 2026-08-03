@@ -114,7 +114,7 @@ async function getTodaysCalendar() {
 
 // Escapes a string for safe interpolation into an AppleScript double-quoted
 // literal. AppleScript has no parameterized-query equivalent, so this is the
-// only thing standing between owner-approved email content and a broken (or
+// only thing standing between owner-commanded email content and a broken (or
 // injected) script - escape backslashes first, then quotes, then strip
 // characters AppleScript string literals cannot represent directly.
 function escapeAppleScriptString(value) {

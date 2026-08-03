@@ -14,7 +14,6 @@ const TOOL_POLICIES = Object.freeze({
   check_blackboard: 'read',
   search_web: 'read',
   list_deletable_test_letters: 'read',
-  list_pending_owner_actions: 'read',
   add_goal: 'reversible_write',
   update_goal_status: 'reversible_write',
   log_finance: 'reversible_write',
@@ -22,17 +21,11 @@ const TOOL_POLICIES = Object.freeze({
   // Staging a deletion changes nothing on its own; only the confirm step destroys data.
   propose_test_letter_deletion: 'reversible_write',
   confirm_test_letter_deletion: 'destructive_write',
-  // Same shape: staging an email changes nothing, only confirm sends it.
-  propose_owner_email: 'reversible_write',
-  confirm_owner_email: 'destructive_write',
-  // Arbitrary recipient, unlike propose_owner_email above - the recipient IS
-  // a real tool argument here, so external_action (not destructive_write)
-  // is the honest label: this can affect something outside AURA's own data,
-  // not just destroy a record within it. Safety comes entirely from the
-  // mandatory propose/confirm gate, since there is no fixed-recipient
-  // guarantee to fall back on.
-  propose_email: 'reversible_write',
-  confirm_email: 'external_action',
+  // A clear current-turn owner command authorizes immediate email delivery.
+  // Owner mail has a fixed configured recipient; arbitrary-recipient mail is
+  // additionally checked against the exact address in the raw owner message.
+  send_owner_email: 'destructive_write',
+  send_email: 'external_action',
   // A direct owner scheduling command authorizes this reversible write in the
   // same turn. The handler independently checks the raw owner instruction;
   // model-composed arguments alone can never authorize a calendar mutation.
@@ -143,18 +136,12 @@ function validateToolArguments(name, args) {
   if (name === 'propose_test_letter_deletion' || name === 'confirm_test_letter_deletion') {
     requireString('letter_id', 300);
   }
-  if (name === 'propose_owner_email') {
+  if (name === 'send_owner_email') {
     requireString('subject', 300);
     requireString('body', 8000);
     if (args.pdf_content !== undefined) requireString('pdf_content', 20000);
   }
-  if (name === 'confirm_owner_email') {
-    requireString('action_id', 100);
-    if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
-      throw new Error(`Invalid action_id for ${name}.`);
-    }
-  }
-  if (name === 'propose_email') {
+  if (name === 'send_email') {
     requireString('to', 320);
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.to.trim())) {
       throw new Error(`Invalid arguments for ${name}: to is not a valid email address.`);
@@ -162,12 +149,6 @@ function validateToolArguments(name, args) {
     requireString('subject', 300);
     requireString('body', 8000);
     if (args.pdf_content !== undefined) requireString('pdf_content', 20000);
-  }
-  if (name === 'confirm_email') {
-    requireString('action_id', 100);
-    if (!/^[0-9a-f-]{8,100}$/i.test(args.action_id)) {
-      throw new Error(`Invalid action_id for ${name}.`);
-    }
   }
   if (name === 'create_calendar_event') {
     requireString('summary', 500);
