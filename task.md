@@ -47,11 +47,11 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Fix and redeploy Google Calendar relative-date grounding.** OAuth write is live and Google
-  accepts creates, but the first live "tomorrow" test exposed that Grok was not given the current
-  date and the backend trusted its ISO timestamp. `calendar_time.js` now supplies an authoritative
-  Phoenix clock and corrects relative dates before the action is staged. Deploy and repeat the live
-  "Schedule X tomorrow at 2pm → yes" test.
+- **Deploy and live-test calendar grounding plus smoother voice.** `calendar_time.js` now supplies
+  an authoritative Phoenix clock and corrects relative dates before staging. The voice pipeline now
+  waits for one complete opening sentence, groups the remainder for connected Cartesia prosody, and
+  avoids sentence-by-sentence WAV seams across PWA, Telegram, and proactive voice. After deploy,
+  repeat the calendar test and compare conversational cadence/TTFA on a two-or-three-sentence reply.
 
 ## Blocked
 
@@ -69,6 +69,9 @@ Name exactly what's needed and from whom.*
 
 - Google Calendar write OAuth configured on Render and verified against the Calendar API. The API
   returned real event ids/links; the remaining failure was incorrect relative-date grounding.
+- Voice smoothness pass: removed comma/dash/six-word early fragments, kept a fast complete first
+  sentence, grouped later sentences into continuous Cartesia performances, and refined `SOUL.md`
+  so compact replies stay connected rather than telegraphic.
 - Morning brief reformatted (#23): "Good morning, Chris", multi-line Telegram, optional voice note.
 - Voice latency chase (#18–22): TTFA harness, `gpt-4o-mini-transcribe`, early-clause TTS + 24kHz,
   Grok `reasoning_effort=low`, chit-chat fast path. Measured TTFA ~7940ms → ~4696ms.

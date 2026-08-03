@@ -783,15 +783,12 @@ function releaseAudioUrl() {
   }
 }
 
-// Chained playback queue for streamed replies: each reply is now spoken as
-// a sequence of per-sentence audio clips instead of one blob, so she can
-// start talking as soon as the first sentence is ready rather than waiting
-// for the whole reply to finish generating. voiceQueueTail is a running
-// promise chain - each call appends "wait for this clip's TTS, then play
-// it and wait for it to finish" as a new link, which guarantees clips play
-// in order even though their TTS fetches all fire concurrently (sentence 2
-// starts synthesizing while sentence 1 is still playing, so it's usually
-// ready the instant sentence 1 ends).
+// Chained playback queue for streamed replies: the first complete sentence
+// starts promptly, then later sentences arrive in connected speech groups.
+// voiceQueueTail is a running promise chain - each call appends "wait for
+// this group's TTS, then play it and wait for it to finish." TTS fetches still
+// overlap playback, but Cartesia gets enough connected text to keep natural
+// cadence instead of restarting its performance sentence by sentence.
 let voiceQueueTail = Promise.resolve();
 
 function resetVoiceQueue() {
@@ -842,12 +839,12 @@ function playBlobAndWait(blob, { onPlayStart = null } = {}) {
   });
 }
 
-// Fetches TTS for one sentence immediately (so synthesis overlaps with
+// Fetches TTS for one speech group immediately (so synthesis overlaps with
 // whatever's currently playing) and appends its playback as the next link
 // in the queue. isFirst puts the orb into "speaking" state right away,
 // matching the old single-blob behavior of setting state before playback
 // starts rather than waiting for audio to actually begin.
-function enqueueSentenceAudio(text, isFirst, timing = null) {
+function enqueueSpeechAudio(text, isFirst, timing = null) {
   if (isFirst) {
     setOrbState('speaking', 'Speaking... Tap to stop');
     isSpeaking = true;
@@ -1158,13 +1155,10 @@ async function processAudio(audioBlob) {
     setOrbState('thinking', 'Thinking...');
 
     // 2. Send text to the chat backend. The response is newline-delimited
-    // JSON, not one object - a `sentence` event per completed sentence of
-    // the reply (as soon as the model has generated it, before the rest of
-    // the reply even exists), then one final `done` event carrying
-    // everything a single JSON response used to carry. Each sentence is
-    // queued for TTS/playback as it arrives (see enqueueSentenceAudio) so
-    // she starts speaking the first sentence while later ones are still
-    // being generated, instead of waiting for the whole reply.
+    // JSON, not one object - legacy `sentence` events now carry the first
+    // complete sentence followed by connected speech groups, then one final
+    // `done` event. The opening sentence begins TTS while the rest of the
+    // reply is still being generated; later groups preserve voice continuity.
     const chatStartedAt = performance.now();
     const chatRes = await authenticatedFetch('/api/chat', {
       method: 'POST',
@@ -1179,7 +1173,7 @@ async function processAudio(audioBlob) {
     const reader = chatRes.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let sentenceCount = 0;
+    let speechChunkCount = 0;
     let finalResult = null;
 
     while (true) {
@@ -1194,11 +1188,11 @@ async function processAudio(audioBlob) {
         const event = JSON.parse(line);
         if (event.type === 'sentence') {
           if (stale()) continue;
-          sentenceCount += 1;
-          if (sentenceCount === 1) {
+          speechChunkCount += 1;
+          if (speechChunkCount === 1) {
             timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
           }
-          enqueueSentenceAudio(event.text, sentenceCount === 1, timing);
+          enqueueSpeechAudio(event.text, speechChunkCount === 1, timing);
         } else if (event.type === 'done') {
           finalResult = event;
           // Arrives after the tool loop finishes — later than TTFA, but this is
@@ -1227,9 +1221,9 @@ async function processAudio(audioBlob) {
     // Fallback for the rare case nothing streamed as sentences (e.g. an
     // empty reply) - still speak the full reply as one clip rather than
     // silently saying nothing.
-    if (sentenceCount === 0 && reply) {
+    if (speechChunkCount === 0 && reply) {
       timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
-      enqueueSentenceAudio(reply, true, timing);
+      enqueueSpeechAudio(reply, true, timing);
     }
 
     // Evidence is shown once the reply is fully known, which lands close to

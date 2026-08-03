@@ -7,6 +7,7 @@ const publicDir = path.join(__dirname, '..', 'public');
 const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(publicDir, 'style.css'), 'utf8');
 const app = fs.readFileSync(path.join(publicDir, 'app.js'), 'utf8');
+const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 
 test('voice surface shows only the wordmark and an accessible reactive wave', () => {
   assert.match(html, /<canvas id="voice-wave"[^>]+aria-hidden="true"/);
@@ -151,4 +152,11 @@ test('voice path logs wall-clock TTFA marks in the browser console', () => {
   assert.match(app, /timing\.firstSentenceMs/);
   assert.match(app, /timing\.ttfaMs/);
   assert.match(app, /audioBitsPerSecond:\s*48000/);
+});
+
+test('streamed voice uses connected TTS groups instead of resetting every sentence', () => {
+  assert.match(app, /function enqueueSpeechAudio/);
+  assert.match(server, /createSpeechChunkAccumulator\(onSentence\)/);
+  assert.match(server, /await synthesizeSpeechChunk\(text\.trim\(\)\)/);
+  assert.doesNotMatch(server, /Promise\.all\(sentences\.map\(synthesizeSpeechChunk\)\)/);
 });

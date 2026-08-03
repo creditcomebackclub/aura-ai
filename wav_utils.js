@@ -100,32 +100,49 @@ function splitIntoSentences(text) {
     .filter(Boolean);
 }
 
-// Early first-audio helper: if the model hasn't finished a sentence yet, still
-// peel off a leading clause (comma/dash) or a ~6-word breath once more text
-// has arrived after it. Same "keep the last piece" contract as
-// splitIntoSentences — caller only emits parts.slice(0, -1).
-function splitLeadingClause(text) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed) return [];
+// Keeps the first complete sentence fast, then groups later sentences into
+// connected TTS performances. A fresh TTS request for every sentence resets
+// prosody and introduces media-file boundaries; pairing the remainder lets
+// Cartesia carry cadence across sentences while synthesis overlaps playback
+// of the first sentence.
+function createSpeechChunkAccumulator(onChunk, {
+  maxSentences = 2,
+  maxChars = 320
+} = {}) {
+  const emit = typeof onChunk === 'function' ? onChunk : null;
+  const sentenceLimit = Math.max(1, Math.trunc(Number(maxSentences)) || 2);
+  const charLimit = Math.max(80, Math.trunc(Number(maxChars)) || 320);
+  let emittedFirst = false;
+  let pending = [];
 
-  // Non-greedy to the first clause mark. Require whitespace after the mark so
-  // thousands separators like "$1,000" stay intact. Short openers ("Yeah,")
-  // are intentionally allowed — they're the whole point of early first audio.
-  const clause = trimmed.match(/^([\s\S]{2,}?[,;:—–])\s+(\S[\s\S]*)$/);
-  if (clause) return [clause[1].trim(), clause[2]];
-
-  // Breath group: at least six words, then more text still arriving.
-  const breath = trimmed.match(/^((?:\S+\s+){5,}\S+)\s+(\S[\s\S]*)$/);
-  if (breath && breath[1].length >= 36) {
-    return [breath[1].trim(), breath[2]];
+  function flush() {
+    if (!pending.length) return null;
+    const chunk = pending.join(' ');
+    pending = [];
+    if (emit) emit(chunk);
+    return chunk;
   }
-  return [trimmed];
-}
 
-function splitSpeakable(text, { earlyClause = false } = {}) {
-  const sentences = splitIntoSentences(text);
-  if (!earlyClause || sentences.length !== 1) return sentences;
-  return splitLeadingClause(sentences[0]);
+  return {
+    add(sentence) {
+      const text = String(sentence || '').trim();
+      if (!text) return null;
+      if (!emittedFirst) {
+        emittedFirst = true;
+        if (emit) emit(text);
+        return text;
+      }
+      pending.push(text);
+      if (pending.length >= sentenceLimit || pending.join(' ').length >= charLimit) {
+        return flush();
+      }
+      return null;
+    },
+    flush,
+    pendingCount() {
+      return pending.length;
+    }
+  };
 }
 
 // After emitting `chunk` from `full` starting at `start`, return the index
@@ -146,7 +163,6 @@ module.exports = {
   buildWavHeader,
   concatWavBuffers,
   splitIntoSentences,
-  splitSpeakable,
-  splitLeadingClause,
+  createSpeechChunkAccumulator,
   advancePastEmitted
 };
