@@ -1,7 +1,11 @@
 'use strict';
 
+const crypto = require('crypto');
+const { parseDueAt } = require('./due_date');
+
 const EXECUTIVE_LOOP_STATE_KEY = 'executive_loop_v1';
 const MAX_TRACKED_EMAILS = 500;
+const MAX_TRACKED_SENT_EMAILS = 500;
 const MAX_TRACKED_EVENTS = 250;
 const MAX_BRIEFED_MEETINGS = 250;
 
@@ -34,12 +38,62 @@ function classifyEmail(email = {}) {
   const actionPattern = /\?|\b(?:please|can you|could you|would you|need you|let me know|reply|respond|review|sign|approve|confirm|schedule|availability|invoice|balance|due|follow up|follow-up)\b/i;
 
   if (urgentPattern.test(combined)) {
-    return { actionable: true, urgency: 'high', reason: 'This looks time-sensitive.' };
+    return { category: 'urgent', actionable: true, urgency: 'high', reason: 'This looks time-sensitive.' };
   }
   if (!automated && actionPattern.test(combined)) {
-    return { actionable: true, urgency: 'normal', reason: 'This appears to need a response or decision.' };
+    return { category: 'action', actionable: true, urgency: 'normal', reason: 'This appears to need a response or decision.' };
   }
-  return { actionable: false, urgency: 'low', reason: null };
+  return {
+    category: automated ? 'automated' : 'informational',
+    actionable: false,
+    urgency: 'low',
+    reason: null
+  };
+}
+
+function deterministicCommitmentId(messageId) {
+  const hex = crypto.createHash('sha256')
+    .update(`aura-email-commitment:${messageId}`)
+    .digest('hex')
+    .slice(0, 32)
+    .split('');
+  hex[12] = '5';
+  hex[16] = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const value = hex.join('');
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
+
+function extractOwnerCommitment(email = {}, {
+  now = new Date(),
+  timeZone = 'America/Phoenix'
+} = {}) {
+  // Gmail snippets can append quoted history. Only inspect the owner-authored
+  // prefix and never treat a subject line or quoted correspondent promise as
+  // the owner's commitment.
+  const content = compactText(email.snippet, 900)
+    .split(/\b(?:on .{0,180} wrote:|[- ]{4,}forwarded message[- ]{4,}|from:\s+.{0,180})/i)[0];
+  const promise = content.match(/\b(?:i['’]?ll|i\s+will|i(?:'m| am)\s+going\s+to)\s+([^.!?]{3,260})/i);
+  if (!promise) return null;
+
+  const clause = compactText(promise[1], 260);
+  const deadline = clause.match(
+    /\b(?:by|before|on)\s+((?:next\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|today|tomorrow|next\s+week)\b|\bin\s+(\d{1,3})\s+days?\b|\b(today|tomorrow|next\s+week)\b/i
+  );
+  if (!deadline) return null;
+  const duePhrase = deadline[1] || (deadline[2] ? `in ${deadline[2]} days` : deadline[3]);
+  const dueAt = parseDueAt(duePhrase, { now, timeZone });
+  if (!dueAt) return null;
+
+  const action = compactText(clause.slice(0, deadline.index).replace(/\b(?:by|before|on)\s*$/i, ''), 180);
+  if (action.length < 3) return null;
+  return {
+    id: deterministicCommitmentId(email.id),
+    title: `Follow through: ${action}`,
+    due_at: dueAt,
+    recipient: compactText(email.to, 200) || null,
+    source_message_id: email.id,
+    source_thread_id: email.thread_id || null
+  };
 }
 
 function zonedHour(date, timeZone) {
@@ -145,8 +199,11 @@ function trimObjectEntries(object, limit) {
 
 function createExecutiveLoop({
   listUnreadEmails,
+  listSentEmails,
+  getEmailIdentity,
   listCalendarEvents,
   listOpenTasks,
+  createCommitment,
   getState,
   setState,
   sendAlert,
@@ -169,14 +226,18 @@ function createExecutiveLoop({
     const quiet = isQuietTime(currentTime, { timeZone, quietStartHour, quietEndHour });
     const previous = await getState(EXECUTIVE_LOOP_STATE_KEY);
     const initialized = Boolean(previous?.initialized_at);
-    const emailInitialized = Boolean(previous?.email_initialized_at);
+    let emailInitialized = Boolean(previous?.email_initialized_at);
+    let sentEmailInitialized = Boolean(previous?.sent_email_initialized_at);
     const calendarInitialized = Boolean(previous?.calendar_initialized_at);
     const state = {
-      version: 1,
+      version: 2,
       initialized_at: previous?.initialized_at || currentTime.toISOString(),
       email_initialized_at: previous?.email_initialized_at || null,
+      email_account: previous?.email_account || null,
+      sent_email_initialized_at: previous?.sent_email_initialized_at || null,
       calendar_initialized_at: previous?.calendar_initialized_at || null,
       known_email_ids: Array.isArray(previous?.known_email_ids) ? previous.known_email_ids : [],
+      known_sent_email_ids: Array.isArray(previous?.known_sent_email_ids) ? previous.known_sent_email_ids : [],
       calendar_events: previous?.calendar_events && typeof previous.calendar_events === 'object'
         ? previous.calendar_events
         : {},
@@ -187,10 +248,14 @@ function createExecutiveLoop({
     const sent = [];
 
     let emails = [];
+    let sentEmails = [];
+    let emailAccount = state.email_account;
     let events = [];
     let tasks = [];
-    const [emailResult, calendarResult, taskResult] = await Promise.allSettled([
+    const [emailResult, sentEmailResult, emailIdentityResult, calendarResult, taskResult] = await Promise.allSettled([
       typeof listUnreadEmails === 'function' ? listUnreadEmails() : [],
+      typeof listSentEmails === 'function' ? listSentEmails() : [],
+      typeof getEmailIdentity === 'function' ? getEmailIdentity() : null,
       typeof listCalendarEvents === 'function'
         ? listCalendarEvents({
             timeMin: new Date(currentMs - 86400000).toISOString(),
@@ -201,6 +266,22 @@ function createExecutiveLoop({
     ]);
     if (emailResult.status === 'fulfilled') emails = Array.isArray(emailResult.value) ? emailResult.value : [];
     else errors.push(`email:${emailResult.reason?.message || emailResult.reason}`);
+    if (sentEmailResult.status === 'fulfilled') sentEmails = Array.isArray(sentEmailResult.value) ? sentEmailResult.value : [];
+    else errors.push(`sent_email:${sentEmailResult.reason?.message || sentEmailResult.reason}`);
+    if (emailIdentityResult.status === 'fulfilled') {
+      emailAccount = compactText(emailIdentityResult.value, 320) || null;
+      if (state.email_account && emailAccount && state.email_account !== emailAccount) {
+        state.email_initialized_at = null;
+        state.sent_email_initialized_at = null;
+        state.known_email_ids = [];
+        state.known_sent_email_ids = [];
+        emailInitialized = false;
+        sentEmailInitialized = false;
+      }
+      state.email_account = emailAccount;
+    } else {
+      errors.push(`email_identity:${emailIdentityResult.reason?.message || emailIdentityResult.reason}`);
+    }
     if (calendarResult.status === 'fulfilled') events = Array.isArray(calendarResult.value) ? calendarResult.value : [];
     else errors.push(`calendar:${calendarResult.reason?.message || calendarResult.reason}`);
     if (taskResult.status === 'fulfilled') tasks = Array.isArray(taskResult.value) ? taskResult.value : [];
@@ -238,6 +319,43 @@ function createExecutiveLoop({
       }
     }
     state.known_email_ids = [...knownEmails].slice(-MAX_TRACKED_EMAILS);
+
+    const knownSentEmails = new Set(state.known_sent_email_ids);
+    if (sentEmailResult.status === 'fulfilled' && !sentEmailInitialized) {
+      for (const email of sentEmails) if (email?.id) knownSentEmails.add(email.id);
+      state.sent_email_initialized_at = currentTime.toISOString();
+    } else {
+      for (const email of sentEmails) {
+        if (!email?.id || knownSentEmails.has(email.id)) continue;
+        const commitment = extractOwnerCommitment(email, { now: currentTime, timeZone });
+        if (commitment && quiet) continue;
+        knownSentEmails.add(email.id);
+        if (!commitment || typeof createCommitment !== 'function') continue;
+
+        const task = await createCommitment(commitment);
+        const dueLabel = new Intl.DateTimeFormat('en-US', {
+          timeZone,
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric'
+        }).format(new Date(commitment.due_at));
+        const alert = await sendAlert(
+          `Commitment captured\n${commitment.title.replace(/^Follow through:\s*/i, '')}\nDue ${dueLabel}.`,
+          'commitment_captured',
+          'normal',
+          {
+            dedupeKey: `commitment-captured:${email.id}`,
+            metadata: {
+              task_id: task?.id || commitment.id,
+              source_message_id: email.id,
+              due_at: commitment.due_at
+            }
+          }
+        );
+        if (!alert?.deduplicated) sent.push('captured');
+      }
+    }
+    state.known_sent_email_ids = [...knownSentEmails].slice(-MAX_TRACKED_SENT_EMAILS);
 
     const previousEvents = state.calendar_events;
     const nextEvents = { ...previousEvents };
@@ -333,6 +451,8 @@ function createExecutiveLoop({
       sent: sent.length,
       categories: sent,
       emails: emails.length,
+      sent_emails: sentEmails.length,
+      email_account: emailAccount,
       events: events.length,
       tasks: tasks.length,
       quiet,
@@ -355,6 +475,8 @@ module.exports = {
   senderLabel,
   senderAddress,
   classifyEmail,
+  deterministicCommitmentId,
+  extractOwnerCommitment,
   isQuietTime,
   eventFingerprint,
   eventStartMs,

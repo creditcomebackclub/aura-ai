@@ -59,7 +59,9 @@ const {
   isDirectSendConfigured,
   sendGmailMessage,
   getDirectUnreadEmails,
-  listDirectUnreadEmailItems
+  listDirectUnreadEmailItems,
+  listDirectSentEmailItems,
+  getDirectEmailIdentity
 } = require('./email_provider');
 const {
   isExplicitEmailSendRequest,
@@ -903,10 +905,30 @@ const runExecutiveLoop = createExecutiveLoop({
   listUnreadEmails: () => isDirectEmailConfigured()
     ? listDirectUnreadEmailItems({ maxResults: 30 })
     : [],
+  listSentEmails: () => isDirectEmailConfigured()
+    ? listDirectSentEmailItems({ maxResults: 30 })
+    : [],
+  getEmailIdentity: () => isDirectEmailConfigured()
+    ? getDirectEmailIdentity()
+    : null,
   listCalendarEvents: options => isGoogleCalendarWriteConfigured()
     ? listGoogleCalendarEvents(options)
     : [],
   listOpenTasks: listOpenGoals,
+  createCommitment: commitment => {
+    if (!cloudState) return null;
+    return cloudState.addTask(commitment.title, {
+      id: commitment.id,
+      dueAt: commitment.due_at,
+      priority: 'normal',
+      input: {
+        source: 'sent_email',
+        source_message_id: commitment.source_message_id,
+        source_thread_id: commitment.source_thread_id,
+        recipient: commitment.recipient
+      }
+    });
+  },
   getState: getAlertState,
   setState: setAlertState,
   sendAlert: sendProactiveAlert,
@@ -923,8 +945,8 @@ app.post('/internal/scheduled/executive-loop', authenticateCron, rateLimit, asyn
   }
   try {
     const result = await runExecutiveLoop();
-    // Operational counts only: private email, calendar, and task content never
-    // enters pg_net response logs.
+    // Operational counts and authenticated mailbox identity only: private
+    // email, calendar, and task content never enters pg_net response logs.
     res.json({ ok: true, ...result });
   } catch (error) {
     console.error('[Executive Loop] Scheduled run failed:', error.message || error);

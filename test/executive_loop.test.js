@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   EXECUTIVE_LOOP_STATE_KEY,
   classifyEmail,
+  extractOwnerCommitment,
   isQuietTime,
   buildMeetingBrief,
   createExecutiveLoop
@@ -15,7 +16,7 @@ const TZ = 'America/Phoenix';
 test('email triage surfaces action and urgency while ignoring newsletter noise', () => {
   assert.deepEqual(
     classifyEmail({ from: 'Mike <mike@example.com>', subject: 'Can you review this?', snippet: 'Let me know.' }),
-    { actionable: true, urgency: 'normal', reason: 'This appears to need a response or decision.' }
+    { category: 'action', actionable: true, urgency: 'normal', reason: 'This appears to need a response or decision.' }
   );
   assert.equal(
     classifyEmail({ from: 'Security <no-reply@example.com>', subject: 'Urgent security alert' }).urgency,
@@ -25,6 +26,40 @@ test('email triage surfaces action and urgency while ignoring newsletter noise',
     classifyEmail({ from: 'Newsletter <no-reply@example.com>', subject: 'Weekly digest', snippet: 'Unsubscribe' }).actionable,
     false
   );
+});
+
+test('sent email commitments require both an owner promise and a concrete deadline', () => {
+  const commitment = extractOwnerCommitment({
+    id: 'sent-123',
+    to: 'Mike <mike@example.com>',
+    subject: 'Re: documents',
+    snippet: "I'll send the updated packet by Friday. Thanks."
+  }, {
+    now: new Date('2026-08-03T16:00:00Z'),
+    timeZone: TZ
+  });
+
+  assert.equal(commitment.title, 'Follow through: send the updated packet');
+  assert.equal(commitment.due_at, '2026-08-08T00:00:00.000Z');
+  assert.equal(commitment.recipient, 'Mike <mike@example.com>');
+  assert.match(commitment.id, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(extractOwnerCommitment({
+    id: 'sent-124',
+    snippet: "I'll send the updated packet soon."
+  }, { now: new Date('2026-08-03T16:00:00Z'), timeZone: TZ }), null);
+  assert.equal(extractOwnerCommitment({
+    id: 'incoming-1',
+    snippet: 'Please send the packet by Friday.'
+  }, { now: new Date('2026-08-03T16:00:00Z'), timeZone: TZ }), null);
+  assert.equal(extractOwnerCommitment({
+    id: 'quoted-1',
+    snippet: "Sounds good. On Monday, Mike wrote: I'll send the packet by Friday."
+  }, { now: new Date('2026-08-03T16:00:00Z'), timeZone: TZ }), null);
+  assert.equal(extractOwnerCommitment({
+    id: 'subject-only-1',
+    subject: "I'll send the packet by Friday",
+    snippet: 'Sounds good.'
+  }, { now: new Date('2026-08-03T16:00:00Z'), timeZone: TZ }), null);
 });
 
 test('quiet hours cross midnight in the configured timezone', () => {
@@ -66,18 +101,26 @@ function createHarness({ now = new Date('2026-08-03T16:00:00Z') } = {}) {
   let currentTime = now;
   let state = null;
   let emails = [];
+  let sentEmails = [];
   let events = [];
   let tasks = [];
   const alerts = [];
   const dedupe = new Set();
+  const commitments = [];
   const run = createExecutiveLoop({
     listUnreadEmails: async () => emails,
+    listSentEmails: async () => sentEmails,
+    getEmailIdentity: async () => 'creditcomebackclub@gmail.com',
     listCalendarEvents: async () => events,
     listOpenTasks: async () => tasks,
     getState: async key => key === EXECUTIVE_LOOP_STATE_KEY ? state : null,
     setState: async (key, value) => {
       assert.equal(key, EXECUTIVE_LOOP_STATE_KEY);
       state = structuredClone(value);
+    },
+    createCommitment: async commitment => {
+      commitments.push(structuredClone(commitment));
+      return { id: commitment.id };
     },
     sendAlert: async (text, category, urgency, options) => {
       const duplicate = dedupe.has(options.dedupeKey);
@@ -91,9 +134,11 @@ function createHarness({ now = new Date('2026-08-03T16:00:00Z') } = {}) {
   return {
     run,
     alerts,
+    commitments,
     getState: () => state,
     setNow: value => { currentTime = new Date(value); },
     setEmails: value => { emails = value; },
+    setSentEmails: value => { sentEmails = value; },
     setEvents: value => { events = value; },
     setTasks: value => { tasks = value; }
   };
@@ -153,6 +198,39 @@ test('first run baselines old data, then alerts once for new executive events', 
 
   const repeated = await harness.run();
   assert.equal(repeated.sent, 0);
+});
+
+test('sent promises are baselined, then captured once as durable commitments', async () => {
+  const harness = createHarness();
+  harness.setSentEmails([{
+    id: 'old-sent',
+    to: 'Mike <mike@example.com>',
+    snippet: "I'll send this by Friday."
+  }]);
+  await harness.run();
+  assert.equal(harness.commitments.length, 0);
+
+  harness.setSentEmails([{
+    id: 'new-sent',
+    thread_id: 'thread-1',
+    to: 'Mike <mike@example.com>',
+    subject: 'Re: packet',
+    snippet: "I'll send the corrected packet tomorrow."
+  }, {
+    id: 'old-sent',
+    to: 'Mike <mike@example.com>',
+    snippet: "I'll send this by Friday."
+  }]);
+  const result = await harness.run();
+  assert.deepEqual(result.categories, ['captured']);
+  assert.equal(harness.commitments.length, 1);
+  assert.equal(harness.commitments[0].title, 'Follow through: send the corrected packet');
+  assert.equal(harness.commitments[0].source_thread_id, 'thread-1');
+  assert.equal(harness.alerts.at(-1).category, 'commitment_captured');
+
+  const repeated = await harness.run();
+  assert.equal(repeated.sent, 0);
+  assert.equal(harness.commitments.length, 1);
 });
 
 test('quiet hours defer routine email but still surface urgent mail', async () => {
