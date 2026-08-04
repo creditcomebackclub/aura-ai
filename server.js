@@ -906,7 +906,7 @@ const runExecutiveLoop = createExecutiveLoop({
     ? listDirectUnreadEmailItems({ maxResults: 30 })
     : [],
   listSentEmails: () => isDirectEmailConfigured()
-    ? listDirectSentEmailItems({ maxResults: 30 })
+    ? listDirectSentEmailItems({ maxResults: 20 })
     : [],
   getEmailIdentity: () => isDirectEmailConfigured()
     ? getDirectEmailIdentity()
