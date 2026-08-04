@@ -4,7 +4,8 @@ const {
   buildGoogleCalendarEvent,
   formatEventSummary,
   normalizeAttendees,
-  isGoogleCalendarWriteConfigured
+  isGoogleCalendarWriteConfigured,
+  listGoogleCalendarEvents
 } = require('../google_calendar');
 
 test('buildGoogleCalendarEvent creates a timed event with default 60 minute end', () => {
@@ -89,6 +90,61 @@ test('isGoogleCalendarWriteConfigured reads dedicated or Gmail fallback env', ()
     process.env.GOOGLE_CALENDAR_REFRESH_TOKEN = 'cal-refresh';
     assert.equal(isGoogleCalendarWriteConfigured(), true);
   } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+});
+
+test('listGoogleCalendarEvents requests structured upcoming and cancelled events', async () => {
+  const keys = [
+    'GOOGLE_CALENDAR_CLIENT_ID',
+    'GOOGLE_CALENDAR_CLIENT_SECRET',
+    'GOOGLE_CALENDAR_REFRESH_TOKEN',
+    'GOOGLE_CALENDAR_ID'
+  ];
+  const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  const originalFetch = global.fetch;
+  const urls = [];
+  try {
+    process.env.GOOGLE_CALENDAR_CLIENT_ID = 'id';
+    process.env.GOOGLE_CALENDAR_CLIENT_SECRET = 'secret';
+    process.env.GOOGLE_CALENDAR_REFRESH_TOKEN = 'refresh';
+    process.env.GOOGLE_CALENDAR_ID = 'primary';
+    global.fetch = async (url) => {
+      urls.push(String(url));
+      if (String(url).includes('oauth2.googleapis.com/token')) {
+        return { ok: true, json: async () => ({ access_token: 'token' }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          items: [{
+            id: 'event-1',
+            status: 'confirmed',
+            summary: 'Review',
+            start: { dateTime: '2026-08-04T16:00:00Z' },
+            end: { dateTime: '2026-08-04T17:00:00Z' },
+            attendees: [{ email: 'mike@example.com', displayName: 'Mike', responseStatus: 'accepted' }]
+          }, { id: 'deleted-1', status: 'cancelled' }]
+        })
+      };
+    };
+
+    const events = await listGoogleCalendarEvents({
+      timeMin: '2026-08-03T00:00:00Z',
+      timeMax: '2026-08-10T00:00:00Z'
+    });
+    assert.equal(events.length, 2);
+    assert.equal(events[0].attendees[0].email, 'mike@example.com');
+    assert.equal(events[1].status, 'cancelled');
+    const listUrl = new URL(urls[1]);
+    assert.equal(listUrl.searchParams.get('singleEvents'), 'true');
+    assert.equal(listUrl.searchParams.get('showDeleted'), 'true');
+    assert.equal(listUrl.searchParams.get('orderBy'), 'startTime');
+  } finally {
+    global.fetch = originalFetch;
     for (const key of keys) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];

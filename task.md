@@ -46,11 +46,10 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Deploy and live-test direct command execution.** Calendar creation is already immediate. Email
-  now follows the same executive-assistant model: a clear current-turn command sends immediately,
-  records the audit result, and confirms afterward. Third-party delivery additionally requires the
-  exact recipient address in Chris's current message; missing or ambiguous details get one short
-  follow-up instead of an approval queue.
+- **Deploy and baseline the Executive Loop.** Durable five-minute monitoring now covers newly
+  actionable email, calendar cancellations/reschedules, 8–20 minute meeting briefs with matching
+  unread attendee context, and due commitments. The first production run must initialize its
+  inbox/calendar cursor without replaying old data; then verify provider counts and zero errors.
 
 ## Blocked
 
@@ -80,6 +79,8 @@ Name exactly what's needed and from whom.*
 - PWA conversation transcript panel + mobile search panel lifted above orb controls; `/api/messages`
   endpoint; `scripts/google-calendar-oauth.js` + `npm run google:calendar-oauth`.
 - Third-party `send_email` prompt-injection eval case lives in `eval/cases.json` (`forbiddenTools`).
+- Direct calendar and email commands execute immediately (#26–27); hardcoded spoken tool-working
+  filler was removed so voice waits for the real result (#28).
 
 ## Next up
 

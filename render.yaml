@@ -53,6 +53,16 @@ services:
         value: "60"
       - key: AURA_SCHEDULER_ENABLED
         value: "true"
+      - key: AURA_EXECUTIVE_LOOP
+        value: "true"
+      - key: AURA_EXECUTIVE_QUIET_START
+        value: "21"
+      - key: AURA_EXECUTIVE_QUIET_END
+        value: "7"
+      - key: AURA_MEETING_BRIEF_MIN_MINUTES
+        value: "8"
+      - key: AURA_MEETING_BRIEF_MAX_MINUTES
+        value: "20"
       - key: AURA_CRON_SECRET
         sync: false
       - key: AURA_COMPANION_DEVICE
