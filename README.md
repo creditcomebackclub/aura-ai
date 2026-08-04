@@ -3,8 +3,8 @@
 AURA is a local, voice-first personal assistant with long-term memory, proactive
 notifications, Apple Mail and Calendar access, Blackboard monitoring, and
 business intelligence for Credit Comeback Club. Its Executive Loop monitors
-new actionable email, calendar changes, upcoming meetings, and due commitments
-without waiting for the owner to ask.
+new actionable email, calendar changes, upcoming meetings, due commitments,
+and promises the owner makes in sent mail without waiting to be asked.
 
 ## Setup
 
@@ -144,6 +144,8 @@ The Executive Loop runs every five minutes when `AURA_EXECUTIVE_LOOP` is not
 enabling it does not replay old mail or events. Later runs surface:
 
 - newly actionable or urgent unread email;
+- explicit sent-mail promises such as “I'll send the packet by Friday,” captured
+  once as an internal task with the stated deadline;
 - calendar cancellations and reschedules;
 - meeting briefs 8–20 minutes before timed events, including matching unread
   mail from attendees when available; and
@@ -154,7 +156,15 @@ Phoenix by default); urgent email and calendar cancellations still surface.
 Configure `AURA_EXECUTIVE_QUIET_START`, `AURA_EXECUTIVE_QUIET_END`,
 `AURA_MEETING_BRIEF_MIN_MINUTES`, and `AURA_MEETING_BRIEF_MAX_MINUTES` to tune
 the behavior. The protected `POST /internal/scheduled/executive-loop` route can
-also trigger an operational run and returns counts only, never private content.
+also trigger an operational run and returns provider counts plus the authenticated
+mailbox identity, never message content.
+
+The Gmail account identity is stored with the durable baseline. Switching OAuth
+to a different mailbox automatically resets only the inbox and sent-mail cursors;
+calendar and task history stay intact. Incoming mail can alert the owner but can
+never create tasks or authorize external actions. Commitment capture reads only
+the owner's Sent folder and requires both first-person promise language and a
+concrete, deterministically parsed deadline.
 
 ## Blackboard
 

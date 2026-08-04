@@ -336,7 +336,7 @@ class SupabaseStateStore {
   }
 
   async addTask(title, options = {}) {
-    const { data, error } = await this.client.from('aura_tasks').insert({
+    const row = {
       owner_id: this.ownerId,
       assigned_agent: options.assignedAgent || null,
       title,
@@ -344,9 +344,22 @@ class SupabaseStateStore {
       priority: options.priority || 'normal',
       due_at: options.dueAt || null,
       input: options.input || {}
-    }).select('*').single();
+    };
+    if (options.id) row.id = options.id;
+
+    const query = options.id
+      ? this.client.from('aura_tasks').upsert(row, { onConflict: 'id', ignoreDuplicates: true })
+      : this.client.from('aura_tasks').insert(row);
+    const { data, error } = await query.select('*').maybeSingle();
     if (error) throw error;
-    return data;
+    if (data) return data;
+    if (options.id) {
+      const { data: existing, error: findError } = await this.client.from('aura_tasks')
+        .select('*').eq('owner_id', this.ownerId).eq('id', options.id).single();
+      if (findError) throw findError;
+      return existing;
+    }
+    return null;
   }
 
   async updateTaskStatus(id, status) {

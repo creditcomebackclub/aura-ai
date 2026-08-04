@@ -46,10 +46,9 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Deploy and baseline the Executive Loop.** Durable five-minute monitoring now covers newly
-  actionable email, calendar cancellations/reschedules, 8–20 minute meeting briefs with matching
-  unread attendee context, and due commitments. The first production run must initialize its
-  inbox/calendar cursor without replaying old data; then verify provider counts and zero errors.
+- **Ship Executive Loop follow-through.** The active build adds mailbox-aware baselines, richer
+  deterministic triage, and automatic internal tasks for explicit promises Chris makes in sent
+  email with concrete deadlines. Test, merge, deploy, and verify against the CCC mailbox.
 
 ## Blocked
 
@@ -65,6 +64,11 @@ Name exactly what's needed and from whom.*
 
 *Last handful of shipped items. Prune older entries — this is not a permanent changelog; git log is.*
 
+- Gmail monitoring switched from `aura.ai.brain@gmail.com` to
+  `creditcomebackclub@gmail.com`; production and local OAuth identity were verified and the CCC
+  inbox was baselined without replaying old unread messages. Calendar OAuth remained untouched.
+- Executive Loop v1 deployed and baselined: actionable email, calendar changes, meeting briefs,
+  and due commitments now run every five minutes with durable deduplication and quiet hours.
 - Calendar grounding and smoother connected voice shipped in #25; the mistaken April 8 and April 15
   test events were deleted and verified as cancelled through the Calendar API.
 - Google Calendar write OAuth configured on Render and verified against the Calendar API. The API

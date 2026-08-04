@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.local
+.gmail-oauth-token.json
 eval/compare-results.json
 .DS_Store
 *.log

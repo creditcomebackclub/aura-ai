@@ -33,6 +33,7 @@ test('structured Gmail reads preserve stable ids and safe metadata for the Execu
           payload: {
             headers: [
               { name: 'From', value: 'Mike <mike@example.com>' },
+              { name: 'To', value: 'Chris <creditcomebackclub@gmail.com>' },
               { name: 'Subject', value: 'Review request' },
               { name: 'Date', value: 'Mon, 3 Aug 2026 09:00:00 -0700' }
             ]
@@ -47,6 +48,7 @@ test('structured Gmail reads preserve stable ids and safe metadata for the Execu
       thread_id: 'thread-1',
       received: 'Mon, 3 Aug 2026 09:00:00 -0700',
       from: 'Mike <mike@example.com>',
+      to: 'Chris <creditcomebackclub@gmail.com>',
       subject: 'Review request',
       snippet: 'Can you review the attached numbers?',
       internal_date: new Date(1785772800000).toISOString()

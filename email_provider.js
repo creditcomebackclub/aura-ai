@@ -30,7 +30,7 @@ async function listGmailMessageItems({ query = 'is:unread', maxResults = 10 } = 
 
   return Promise.all(list.messages.map(async item => {
     const response = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
       { headers }
     );
     if (!response.ok) throw new Error(`Gmail message read failed (${response.status}).`);
@@ -43,6 +43,7 @@ async function listGmailMessageItems({ query = 'is:unread', maxResults = 10 } = 
       thread_id: message.threadId || null,
       received: messageHeaders.date || '',
       from: messageHeaders.from || '',
+      to: messageHeaders.to || '',
       subject: messageHeaders.subject || '(No subject)',
       snippet: message.snippet || '',
       internal_date: message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null
@@ -103,6 +104,34 @@ async function listOutlookUnreadItems({ maxResults = 10 } = {}) {
   }));
 }
 
+async function listOutlookSentItems({ maxResults = 20 } = {}) {
+  const token = await refreshMicrosoftToken();
+  const query = new URLSearchParams({
+    '$top': String(Math.max(1, Math.min(50, Number(maxResults) || 20))),
+    '$orderby': 'sentDateTime desc',
+    '$select': 'id,sentDateTime,toRecipients,subject,bodyPreview'
+  });
+  const response = await fetch(
+    `https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?${query}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!response.ok) throw new Error(`Outlook sent message read failed (${response.status}).`);
+  const data = await response.json();
+  return (data.value || []).map(message => ({
+    id: message.id,
+    thread_id: null,
+    received: message.sentDateTime || '',
+    from: '',
+    to: (message.toRecipients || [])
+      .map(item => item.emailAddress?.address || '')
+      .filter(Boolean)
+      .join(', '),
+    subject: message.subject || '(No subject)',
+    snippet: message.bodyPreview || '',
+    internal_date: message.sentDateTime || null
+  }));
+}
+
 async function getOutlookUnread() {
   const messages = await listOutlookUnreadItems({ maxResults: 10 });
   if (!messages.length) return 'No unread emails.';
@@ -135,6 +164,47 @@ async function listDirectUnreadEmailItems({ maxResults = 20 } = {}) {
     return listOutlookUnreadItems({ maxResults });
   }
   return [];
+}
+
+async function listDirectSentEmailItems({ maxResults = 30 } = {}) {
+  if (process.env.EMAIL_PROVIDER === 'gmail') {
+    return listGmailMessageItems({ query: 'in:sent newer_than:30d', maxResults });
+  }
+  if (process.env.EMAIL_PROVIDER === 'outlook') {
+    return listOutlookSentItems({ maxResults });
+  }
+  return [];
+}
+
+let directEmailIdentityPromise = null;
+
+async function getDirectEmailIdentity() {
+  if (!directEmailIdentityPromise) {
+    directEmailIdentityPromise = (async () => {
+      if (process.env.EMAIL_PROVIDER === 'gmail') {
+        const token = await refreshGoogleToken();
+        const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) throw new Error(`Gmail profile lookup failed (${response.status}).`);
+        return (await response.json()).emailAddress || null;
+      }
+      if (process.env.EMAIL_PROVIDER === 'outlook') {
+        const token = await refreshMicrosoftToken();
+        const response = await fetch('https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) throw new Error(`Outlook profile lookup failed (${response.status}).`);
+        const profile = await response.json();
+        return profile.mail || profile.userPrincipalName || null;
+      }
+      return null;
+    })().catch(error => {
+      directEmailIdentityPromise = null;
+      throw error;
+    });
+  }
+  return directEmailIdentityPromise;
 }
 
 // Only Gmail send is implemented - it's the provider AURA already has a
@@ -206,10 +276,13 @@ module.exports = {
   listGmailMessageItems,
   getGmailUnread,
   listOutlookUnreadItems,
+  listOutlookSentItems,
   getOutlookUnread,
   isDirectEmailConfigured,
   isDirectSendConfigured,
   sendGmailMessage,
   getDirectUnreadEmails,
-  listDirectUnreadEmailItems
+  listDirectUnreadEmailItems,
+  listDirectSentEmailItems,
+  getDirectEmailIdentity
 };

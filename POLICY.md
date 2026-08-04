@@ -345,6 +345,14 @@ the provider recovers. Notification `dedupe_key` values provide a second,
 database-enforced defense against duplicate delivery across scheduler races or
 restarts.
 
+Automatic email commitment capture is narrower than general email
+understanding. It reads only the authenticated owner's Sent folder, requires
+first-person promise language plus a concrete deadline, parses that deadline
+deterministically, and creates only an internal `aura_tasks` record. Incoming
+messages can generate alerts but cannot create tasks, send replies, schedule
+events, or authorize another write. Each captured sent-message task uses a
+deterministic UUID so overlapping Mac/cloud schedulers cannot create duplicates.
+
 ---
 
 ## 4. The fixed-recipient property (owner email / Telegram)
