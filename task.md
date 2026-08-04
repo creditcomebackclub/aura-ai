@@ -46,9 +46,7 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Ship Executive Loop follow-through.** The active build adds mailbox-aware baselines, richer
-  deterministic triage, and automatic internal tasks for explicit promises Chris makes in sent
-  email with concrete deadlines. Test, merge, deploy, and verify against the CCC mailbox.
+- No active engineering work. Executive Loop follow-through is deployed and verified.
 
 ## Blocked
 
@@ -67,6 +65,9 @@ Name exactly what's needed and from whom.*
 - Gmail monitoring switched from `aura.ai.brain@gmail.com` to
   `creditcomebackclub@gmail.com`; production and local OAuth identity were verified and the CCC
   inbox was baselined without replaying old unread messages. Calendar OAuth remained untouched.
+- Mailbox-aware follow-through shipped in #30–31: AURA monitors recent sent mail, turns explicit
+  owner promises with concrete deadlines into deduplicated internal tasks, ignores quoted mail,
+  and throttles Gmail metadata reads across the Mac/cloud schedulers.
 - Executive Loop v1 deployed and baselined: actionable email, calendar changes, meeting briefs,
   and due commitments now run every five minutes with durable deduplication and quiet hours.
 - Calendar grounding and smoother connected voice shipped in #25; the mistaken April 8 and April 15
