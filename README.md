@@ -82,6 +82,10 @@ structured SQLite memory table at startup.
 
 AURA keeps an always-loaded owner profile for stable identity facts, people and
 relationships, communication preferences, pronunciations, and business rules.
+People records can also preserve directly stated aliases, email addresses,
+phone numbers, organization/role, preferences, commitments, and recent context.
+Later mentions merge into the existing person instead of discarding previously
+learned contact details.
 Other durable facts remain searchable through hybrid exact and vector retrieval.
 Conversation continuity is maintained with rolling summaries in Supabase.
 
