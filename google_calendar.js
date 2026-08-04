@@ -1,7 +1,8 @@
 'use strict';
 
-// Google Calendar write path for AURA. Reads use the private iCal feed
-// (calendar_feed.js); writes use Calendar API + OAuth refresh token.
+// Google Calendar API path for AURA. Conversational reads can still use the
+// private iCal feed (calendar_feed.js); structured Executive Loop reads and
+// event writes use Calendar API + OAuth refresh token.
 // Prefers GOOGLE_CALENDAR_* credentials, falls back to GMAIL_* when the same
 // Google Cloud OAuth client was re-consented with calendar.events scope.
 
@@ -248,6 +249,50 @@ async function createGoogleCalendarEvent(args = {}) {
   };
 }
 
+async function listGoogleCalendarEvents({
+  timeMin = new Date().toISOString(),
+  timeMax = new Date(Date.now() + 7 * 86400000).toISOString(),
+  maxResults = 50
+} = {}) {
+  const token = await refreshCalendarAccessToken();
+  const { calendarId } = calendarOAuthConfig();
+  const url = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
+  );
+  url.searchParams.set('timeMin', new Date(timeMin).toISOString());
+  url.searchParams.set('timeMax', new Date(timeMax).toISOString());
+  url.searchParams.set('singleEvents', 'true');
+  url.searchParams.set('showDeleted', 'true');
+  url.searchParams.set('orderBy', 'startTime');
+  url.searchParams.set('maxResults', String(Math.max(1, Math.min(250, Number(maxResults) || 50))));
+
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Google Calendar list failed (${response.status}): ${errText}`);
+  }
+  const data = await response.json();
+  return (data.items || []).map(item => ({
+    id: item.id,
+    status: item.status || 'confirmed',
+    summary: item.summary || '(Untitled event)',
+    description: item.description || '',
+    location: item.location || '',
+    start: item.start || {},
+    end: item.end || {},
+    attendees: (item.attendees || []).map(attendee => ({
+      email: attendee.email || '',
+      displayName: attendee.displayName || '',
+      responseStatus: attendee.responseStatus || ''
+    })),
+    organizer: item.organizer || null,
+    updated: item.updated || null,
+    htmlLink: item.htmlLink || null
+  }));
+}
+
 module.exports = {
   calendarOAuthConfig,
   isGoogleCalendarWriteConfigured,
@@ -256,5 +301,6 @@ module.exports = {
   buildGoogleCalendarEvent,
   formatCalendarDateTime,
   formatEventSummary,
-  createGoogleCalendarEvent
+  createGoogleCalendarEvent,
+  listGoogleCalendarEvents
 };

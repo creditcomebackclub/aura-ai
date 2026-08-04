@@ -54,7 +54,13 @@ const { createSentenceGate } = require('./reply_stream');
 const { CompanionClient } = require('./companion_client');
 const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
-const { isDirectEmailConfigured, isDirectSendConfigured, sendGmailMessage, getDirectUnreadEmails } = require('./email_provider');
+const {
+  isDirectEmailConfigured,
+  isDirectSendConfigured,
+  sendGmailMessage,
+  getDirectUnreadEmails,
+  listDirectUnreadEmailItems
+} = require('./email_provider');
 const {
   isExplicitEmailSendRequest,
   ownerInstructionIncludesRecipient
@@ -68,9 +74,11 @@ const {
 const {
   isGoogleCalendarWriteConfigured,
   createGoogleCalendarEvent,
+  listGoogleCalendarEvents,
   buildGoogleCalendarEvent,
   formatEventSummary
 } = require('./google_calendar');
+const { createExecutiveLoop } = require('./executive_loop');
 const { brainRequestOptions, resolveModelConfig, resolveTranscribeModel } = require('./model_router');
 const {
   WebSearchError,
@@ -131,6 +139,11 @@ app.get('/healthz', (req, res) => {
       transcribe_model: resolveTranscribeModel(),
       // Vector recall is always OpenAI embeddings, independent of chat provider.
       embeddings: process.env.OPENAI_API_KEY ? 'openai:text-embedding-3-small' : null
+    },
+    executive_loop: {
+      enabled: process.env.AURA_EXECUTIVE_LOOP !== 'false',
+      email_monitoring: isDirectEmailConfigured(),
+      calendar_monitoring: isGoogleCalendarWriteConfigured()
     },
     timestamp: new Date().toISOString()
   });
@@ -885,8 +898,42 @@ async function deliverDailyGoalsDigest() {
   });
 }
 
-// Morning brief (goals + calendar + Blackboard). Supabase Cron hits this on
-// sleeping Render Free the same way Blackboard deadlines do.
+const executiveLoopEnabled = process.env.AURA_EXECUTIVE_LOOP !== 'false';
+const runExecutiveLoop = createExecutiveLoop({
+  listUnreadEmails: () => isDirectEmailConfigured()
+    ? listDirectUnreadEmailItems({ maxResults: 30 })
+    : [],
+  listCalendarEvents: options => isGoogleCalendarWriteConfigured()
+    ? listGoogleCalendarEvents(options)
+    : [],
+  listOpenTasks: listOpenGoals,
+  getState: getAlertState,
+  setState: setAlertState,
+  sendAlert: sendProactiveAlert,
+  timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
+  quietStartHour: process.env.AURA_EXECUTIVE_QUIET_START || 21,
+  quietEndHour: process.env.AURA_EXECUTIVE_QUIET_END || 7,
+  meetingBriefMinMinutes: process.env.AURA_MEETING_BRIEF_MIN_MINUTES || 8,
+  meetingBriefMaxMinutes: process.env.AURA_MEETING_BRIEF_MAX_MINUTES || 20
+});
+
+app.post('/internal/scheduled/executive-loop', authenticateCron, rateLimit, async (req, res) => {
+  if (!executiveLoopEnabled) {
+    return res.json({ ok: true, status: 'disabled' });
+  }
+  try {
+    const result = await runExecutiveLoop();
+    // Operational counts only: private email, calendar, and task content never
+    // enters pg_net response logs.
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error('[Executive Loop] Scheduled run failed:', error.message || error);
+    res.status(500).json({ ok: false, error: 'Executive Loop failed.' });
+  }
+});
+
+// Morning brief (goals + calendar + Blackboard). Supabase Cron can invoke this
+// protected route as a durable backup to the in-process Starter scheduler.
 app.post('/internal/scheduled/daily-goals', authenticateCron, rateLimit, async (req, res) => {
   try {
     const result = await deliverDailyGoalsDigest();
@@ -3005,6 +3052,27 @@ const schedulerEnabled = process.env.AURA_SCHEDULER_ENABLED !== 'false';
 const schedulerOptions = {
   timezone: process.env.AURA_TIMEZONE || 'America/Phoenix'
 };
+
+// Executive Loop: new actionable email, calendar changes, meeting briefs,
+// and due commitments. The first run baselines existing inbox/calendar state
+// so enabling the feature never blasts old items.
+if (schedulerEnabled && executiveLoopEnabled) cron.schedule('*/5 * * * *', async () => {
+  console.log('[Cron] Running Executive Loop...');
+  try {
+    const result = await runExecutiveLoop();
+    console.log(
+      '[Cron] Executive Loop:',
+      result.status,
+      `sent=${result.sent}`,
+      `email=${result.emails}`,
+      `events=${result.events}`,
+      `tasks=${result.tasks}`,
+      `errors=${result.errors.length}`
+    );
+  } catch (error) {
+    console.error('[Executive Loop] Run failed:', error.message || error);
+  }
+}, schedulerOptions);
 
 // Business health check, twice daily: newly-overdue clients + meaningful
 // swings in outstanding balance / MRR since the last check.

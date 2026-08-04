@@ -17,18 +17,18 @@ async function refreshGoogleToken() {
   return (await response.json()).access_token;
 }
 
-async function getGmailUnread() {
+async function listGmailMessageItems({ query = 'is:unread', maxResults = 10 } = {}) {
   const token = await refreshGoogleToken();
   const headers = { Authorization: `Bearer ${token}` };
-  const listResponse = await fetch(
-    'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is%3Aunread&maxResults=10',
-    { headers }
-  );
+  const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+  listUrl.searchParams.set('q', String(query || 'is:unread'));
+  listUrl.searchParams.set('maxResults', String(Math.max(1, Math.min(50, Number(maxResults) || 10))));
+  const listResponse = await fetch(listUrl, { headers });
   if (!listResponse.ok) throw new Error(`Gmail message list failed (${listResponse.status}).`);
   const list = await listResponse.json();
-  if (!list.messages?.length) return 'No unread emails.';
+  if (!list.messages?.length) return [];
 
-  const messages = await Promise.all(list.messages.map(async item => {
+  return Promise.all(list.messages.map(async item => {
     const response = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
       { headers }
@@ -40,12 +40,19 @@ async function getGmailUnread() {
     );
     return {
       id: message.id,
+      thread_id: message.threadId || null,
       received: messageHeaders.date || '',
       from: messageHeaders.from || '',
       subject: messageHeaders.subject || '(No subject)',
-      snippet: message.snippet || ''
+      snippet: message.snippet || '',
+      internal_date: message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null
     };
   }));
+}
+
+async function getGmailUnread() {
+  const messages = await listGmailMessageItems({ query: 'is:unread', maxResults: 10 });
+  if (!messages.length) return 'No unread emails.';
   return messages.map(message =>
     `Received: ${message.received}\nFrom: ${message.from}\nSubject: ${message.subject}\nContent Snippet: ${message.snippet}\nMessage ID: ${message.id}\n---`
   ).join('\n');
@@ -71,11 +78,11 @@ async function refreshMicrosoftToken() {
   return (await response.json()).access_token;
 }
 
-async function getOutlookUnread() {
+async function listOutlookUnreadItems({ maxResults = 10 } = {}) {
   const token = await refreshMicrosoftToken();
   const query = new URLSearchParams({
     '$filter': 'isRead eq false',
-    '$top': '10',
+    '$top': String(Math.max(1, Math.min(50, Number(maxResults) || 10))),
     '$orderby': 'receivedDateTime desc',
     '$select': 'id,receivedDateTime,from,subject,bodyPreview'
   });
@@ -85,9 +92,22 @@ async function getOutlookUnread() {
   );
   if (!response.ok) throw new Error(`Outlook message read failed (${response.status}).`);
   const data = await response.json();
-  if (!data.value?.length) return 'No unread emails.';
-  return data.value.map(message =>
-    `Received: ${message.receivedDateTime}\nFrom: ${message.from?.emailAddress?.name || ''} <${message.from?.emailAddress?.address || ''}>\nSubject: ${message.subject || '(No subject)'}\nContent Snippet: ${message.bodyPreview || ''}\nMessage ID: ${message.id}\n---`
+  return (data.value || []).map(message => ({
+    id: message.id,
+    thread_id: null,
+    received: message.receivedDateTime || '',
+    from: `${message.from?.emailAddress?.name || ''} <${message.from?.emailAddress?.address || ''}>`.trim(),
+    subject: message.subject || '(No subject)',
+    snippet: message.bodyPreview || '',
+    internal_date: message.receivedDateTime || null
+  }));
+}
+
+async function getOutlookUnread() {
+  const messages = await listOutlookUnreadItems({ maxResults: 10 });
+  if (!messages.length) return 'No unread emails.';
+  return messages.map(message =>
+    `Received: ${message.received}\nFrom: ${message.from}\nSubject: ${message.subject}\nContent Snippet: ${message.snippet}\nMessage ID: ${message.id}\n---`
   ).join('\n');
 }
 
@@ -105,6 +125,16 @@ async function getDirectUnreadEmails() {
   if (process.env.EMAIL_PROVIDER === 'gmail') return getGmailUnread();
   if (process.env.EMAIL_PROVIDER === 'outlook') return getOutlookUnread();
   throw new Error('No direct email provider is configured.');
+}
+
+async function listDirectUnreadEmailItems({ maxResults = 20 } = {}) {
+  if (process.env.EMAIL_PROVIDER === 'gmail') {
+    return listGmailMessageItems({ query: 'is:unread', maxResults });
+  }
+  if (process.env.EMAIL_PROVIDER === 'outlook') {
+    return listOutlookUnreadItems({ maxResults });
+  }
+  return [];
 }
 
 // Only Gmail send is implemented - it's the provider AURA already has a
@@ -173,10 +203,13 @@ async function sendGmailMessage(to, subject, body, attachment = null) {
 
 module.exports = {
   decodeBase64Url,
+  listGmailMessageItems,
   getGmailUnread,
+  listOutlookUnreadItems,
   getOutlookUnread,
   isDirectEmailConfigured,
   isDirectSendConfigured,
   sendGmailMessage,
-  getDirectUnreadEmails
+  getDirectUnreadEmails,
+  listDirectUnreadEmailItems
 };

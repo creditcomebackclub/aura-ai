@@ -328,6 +328,23 @@ answer instead. This keeps a public query's context isolated from private
 business/personal data at the code level, matching SOUL.md's "Privacy
 Boundary" rule.
 
+### 3.2 Executive Loop: external data can trigger attention, never authority
+
+`executive_loop.js` reads private email/calendar/task metadata without passing
+it through the conversational tool loop. It applies deterministic classifiers
+and may create a fixed-owner notification, but it cannot send or reply to email,
+create or change calendar events, or execute instructions found in any source.
+The outbound effect is limited to AURA's own PWA notification stream and the
+owner's fixed Telegram chat.
+
+The first successful read of each provider establishes a durable baseline in
+`aura_state` (`executive_loop_v1`). Existing unread mail and calendar entries
+therefore do not become alerts merely because the feature was enabled, and a
+temporary OAuth failure cannot cause old data to be misclassified as new when
+the provider recovers. Notification `dedupe_key` values provide a second,
+database-enforced defense against duplicate delivery across scheduler races or
+restarts.
+
 ---
 
 ## 4. The fixed-recipient property (owner email / Telegram)

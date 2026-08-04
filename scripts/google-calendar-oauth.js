@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-// One-time helper: get a Google refresh token with calendar write scope.
+// One-time helper: get a Google refresh token for Calendar event read/write
+// plus Gmail read/send. The same grant supports direct commands and the
+// proactive Executive Loop.
 //
 // Usage (on your Mac, in the repo):
 //   1. Put GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET in .env (or export them)
@@ -31,7 +33,7 @@ const CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET ||
 const REDIRECT_URI = 'http://127.0.0.1:8787/callback';
 const PORT = 8787;
 
-// Calendar write. Add Gmail scopes here too if you want ONE token for mail + calendar.
+// One grant for Calendar event read/write plus Gmail read/send.
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/gmail.readonly',
@@ -104,7 +106,7 @@ function printSuccess(tokens) {
   console.log('GOOGLE_CALENDAR_CLIENT_SECRET=' + CLIENT_SECRET);
   console.log('GOOGLE_CALENDAR_REFRESH_TOKEN=' + tokens.refresh_token);
   console.log('GOOGLE_CALENDAR_ID=primary');
-  console.log('\nThen redeploy. Test: ask AURA to schedule something, say yes on the next turn.\n');
+  console.log('\nThen redeploy. Test: ask AURA to schedule something; a clear command executes immediately.\n');
   console.log('(Optional: you can put the same three values in GMAIL_* instead if you prefer one token for mail+calendar.)\n');
 }
 
@@ -152,7 +154,7 @@ async function main() {
 
   server.listen(PORT, '127.0.0.1', () => {
     console.log([
-      'Google Calendar write — OAuth setup',
+      'Google Calendar + Executive Loop — OAuth setup',
       '===================================',
       '',
       'Step A (once, in browser): https://console.cloud.google.com',

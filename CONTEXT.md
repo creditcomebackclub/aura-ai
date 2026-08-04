@@ -163,15 +163,13 @@ simply never complete.
 
 ## 4. Deploy mechanism (cloud)
 
-- **Deploy trigger:** pushing a commit to the **`codex/aura-cloud-brain`**
-  branch. `render.yaml` sets `autoDeployTrigger: commit`, so Render watches that
-  branch specifically and redeploys on every push to it.
-- **`main` is a synced backup ref only** — it is not what Render builds from.
-  Do not expect a push to `main` to deploy anything, and do not assume
-  `codex/aura-cloud-brain` and `main` are interchangeable when reasoning about
-  "what's live."
+- **Deploy trigger:** merging a commit to **`main`**. `render.yaml` sets
+  `branch: main` and `autoDeployTrigger: commit`, so Render rebuilds every new
+  main commit.
+- Feature branches do not deploy. GitHub checks run on the PR first; after the
+  merge, verify Render reports the exact squash commit as `live`.
 - **Build:** Render builds the Docker image from the repo's `Dockerfile`
-  (`runtime: docker` in `render.yaml`), on the `free` plan, health-checked at
+  (`runtime: docker` in `render.yaml`), on the Starter plan, health-checked at
   `/healthz`.
 - **What the container serves:** the same Express process serves both the
   static PWA frontend (`public/`) and the API — there is no separate frontend
@@ -182,18 +180,16 @@ simply never complete.
   `npm ci --omit=dev --ignore-scripts` skips native builds Linux doesn't need
   (e.g. `better-sqlite3`'s prebuilt binary is not compiled from source; it's
   unused anyway once `AURA_STATE_BACKEND=supabase` is set).
-- **Free-tier sleep:** Render's free plan sleeps the service after 15 minutes
-  with no inbound HTTP/WebSocket traffic; the next request wakes it (roughly a
-  minute of cold-start latency). All durable state lives in Supabase, so
-  sleep/redeploy cycles don't lose conversations, memories, tasks, or
-  notifications. The in-process 7am deadline-check cron cannot fire while the
-  service is asleep — see `supabase_free_scheduler.sql` / `AURA_CRON_SECRET`
-  for the Supabase-side pinger that works around this (documented in
-  `README.md`, "Cloud brain migration").
+- **Service lifecycle:** production currently runs on Render Starter, so the
+  in-process Executive Loop and daily schedules remain active. All durable
+  state lives in Supabase, so restart/redeploy cycles do not lose conversations,
+  memories, tasks, notifications, or Executive Loop cursors. The protected
+  scheduler routes remain available for external invocation and deduplicate
+  against the same durable state.
 
-Practical implication: if you need a change live on the phone/production
-surface, it must be committed and pushed to `codex/aura-cloud-brain`
-specifically. There is no separate manual "deploy" step to run.
+Practical implication: production auto-deploys commits merged to `main` through
+the Render Blueprint. A feature is not live merely because a branch was pushed;
+verify the exact `main` commit reports `live` in Render.
 
 ---
 
@@ -228,10 +224,9 @@ specifically. There is no separate manual "deploy" step to run.
   `AURA_STATE_BACKEND=supabase` (it does, on this machine), you are **also**
   reading/writing the **one shared production conversation**. Assume your test
   messages are visible in the real conversation history and rolling summary.
-- Pushing to `codex/aura-cloud-brain` → **this deploys to Render**
-  automatically. There is no staging environment between your push and
-  production.
-- Pushing to `main` → does not deploy anywhere; it's a backup ref.
+- Pushing a feature branch → opens a review path but does not deploy.
+- Merging to `main` → **this deploys to Render automatically.** There is no
+  staging environment between the merged commit and production.
 - Need something only the Mac can do (Apple Mail, Apple Calendar,
   Blackboard scraping via Puppeteer) while running in cloud mode → it has to go
   through the `aura_companion_jobs` queue to `com.aura.companion` on this Mac.

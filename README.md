@@ -2,7 +2,9 @@
 
 AURA is a local, voice-first personal assistant with long-term memory, proactive
 notifications, Apple Mail and Calendar access, Blackboard monitoring, and
-read-only business intelligence for Credit Comeback Club.
+business intelligence for Credit Comeback Club. Its Executive Loop monitors
+new actionable email, calendar changes, upcoming meetings, and due commitments
+without waiting for the owner to ask.
 
 ## Setup
 
@@ -137,6 +139,23 @@ are not lost merely because the UI is disconnected. Unacknowledged alerts are
 available at `GET /api/notifications`; acknowledge one with
 `POST /api/notifications/:id/acknowledge`.
 
+The Executive Loop runs every five minutes when `AURA_EXECUTIVE_LOOP` is not
+`false`. Its first run baselines the current unread inbox and calendar, so
+enabling it does not replay old mail or events. Later runs surface:
+
+- newly actionable or urgent unread email;
+- calendar cancellations and reschedules;
+- meeting briefs 8–20 minutes before timed events, including matching unread
+  mail from attendees when available; and
+- due or recently overdue tasks.
+
+Routine email and task alerts are deferred during quiet hours (9:00 PM–7:00 AM
+Phoenix by default); urgent email and calendar cancellations still surface.
+Configure `AURA_EXECUTIVE_QUIET_START`, `AURA_EXECUTIVE_QUIET_END`,
+`AURA_MEETING_BRIEF_MIN_MINUTES`, and `AURA_MEETING_BRIEF_MAX_MINUTES` to tune
+the behavior. The protected `POST /internal/scheduled/executive-loop` route can
+also trigger an operational run and returns counts only, never private content.
+
 ## Blackboard
 
 The most reliable unattended option is Blackboard's private external-calendar
@@ -213,13 +232,11 @@ before the user gets to click it, and the sign-in fails with
 button and only calls `/auth/verify-link` when the user taps it, so the
 token is spent by a deliberate action in the user's real browser.
 
-Render Free sleeps after 15 minutes without inbound HTTP or WebSocket traffic.
-Opening AURA wakes it, which can take about a minute. All durable state stays in
-Supabase, so sleeping and redeploying do not erase conversations, tasks,
-notifications, or memories.
+All durable state stays in Supabase, so restarts and redeploys do not erase
+conversations, tasks, notifications, Executive Loop cursors, or memories.
 
-The in-process 7:00 AM deadline timer cannot run while Render is asleep. To keep
-that check reliable without a paid cron service:
+The Supabase cron route can remain as a durable backup to the in-process
+scheduler. To configure that backup:
 
 1. Generate a 64-character secret with `openssl rand -hex 32` and configure it
    in Render as `AURA_CRON_SECRET`. Do not paste it into chat or commit it.
@@ -235,13 +252,14 @@ In cloud mode, Apple Mail and Calendar requests become jobs in
 `aura_companion_jobs`. Run `npm run companion` on the Mac to service them. The
 companion only executes explicitly allowlisted capabilities.
 
-Proposed agent work is stored in `aura_actions`. Read actions can be automatic;
-reversible writes and external actions remain pending until the authenticated
-owner approves or rejects them.
+Audited agent work is stored in `aura_actions`. Explicit owner commands can
+authorize calendar, email, and Telegram execution immediately; destructive
+deletions retain their separate approval gate.
 
 ## Architecture
 
 - `server.js` — HTTP/WebSocket server, agent loop, tools, cron jobs
+- `executive_loop.js` — proactive inbox/calendar/meeting/commitment monitoring
 - `agent_policy.js` — tool authorization and argument validation
 - `memory_store.js` — structured long-term memory
 - `memory_v2.js` — pinned profile, extraction, corrections, retrieval, summaries
