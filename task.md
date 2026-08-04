@@ -46,9 +46,9 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Ship Meeting Intelligence MVP.** Enrich the existing 8–20 minute brief with verified CCC
-  attendee context and matching open follow-ups, then test, deploy, and verify without changing
-  the calendar or sending email.
+- **Ship Relationship Memory MVP.** Extend existing `people.*` profile entries with aliases,
+  contact details, organization/role, preferences, commitments, and recent context while
+  preserving prior details across later mentions. Test, deploy, and verify without a migration.
 
 ## Blocked
 

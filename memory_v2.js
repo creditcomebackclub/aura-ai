@@ -65,6 +65,14 @@ const EXTRACTION_SCHEMA = {
           value: { type: 'string', maxLength: 500 },
           subject: { type: 'string', maxLength: 200 },
           relationship: { type: 'string', maxLength: 80 },
+          aliases: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 100 } },
+          emails: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 320 } },
+          phones: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 40 } },
+          organization: { type: 'string', maxLength: 160 },
+          role: { type: 'string', maxLength: 120 },
+          preferences: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 200 } },
+          commitments: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 240 } },
+          last_context: { type: 'string', maxLength: 300 },
           instruction: { type: 'string', maxLength: 300 },
           replaces_key: { type: 'string', maxLength: 80 },
           pinned: { type: 'boolean' },
@@ -76,6 +84,14 @@ const EXTRACTION_SCHEMA = {
           'value',
           'subject',
           'relationship',
+          'aliases',
+          'emails',
+          'phones',
+          'organization',
+          'role',
+          'preferences',
+          'commitments',
+          'last_context',
           'instruction',
           'replaces_key',
           'pinned',
@@ -153,6 +169,11 @@ function normalizeEntry(raw, source = 'conversation') {
   if (!value || containsSecret(value)) return null;
   const subject = String(raw.subject || '').trim().slice(0, 200);
   const relationship = String(raw.relationship || '').trim().toLowerCase().slice(0, 80);
+  const cleanList = (items, limit, length) => [...new Set(
+    (Array.isArray(items) ? items : [])
+      .map(item => String(item || '').trim().slice(0, length))
+      .filter(Boolean)
+  )].slice(0, limit);
   let key = normalizeKey(raw.key);
   if (kind === 'relationship' && subject) key = `people.${slug(subject)}`;
   if (!key) {
@@ -178,11 +199,40 @@ function normalizeEntry(raw, source = 'conversation') {
     value,
     subject,
     relationship,
+    aliases: cleanList(raw.aliases, 8, 100),
+    emails: cleanList(raw.emails, 5, 320)
+      .filter(email => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)),
+    phones: cleanList(raw.phones, 5, 40),
+    organization: String(raw.organization || '').trim().slice(0, 160),
+    role: String(raw.role || '').trim().slice(0, 120),
+    preferences: cleanList(raw.preferences, 8, 200),
+    commitments: cleanList(raw.commitments, 8, 240),
+    last_context: String(raw.last_context || '').trim().slice(0, 300),
     instruction,
     replaces_key: normalizeKey(raw.replaces_key),
     pinned: raw.pinned === true || PINNED_KINDS.has(kind),
     confidence: Math.max(0, Math.min(1, Number(raw.confidence) || 0.8)),
     source
+  };
+}
+
+function mergeRelationshipEntry(existing, incoming) {
+  if (incoming?.kind !== 'relationship' || !existing || existing.kind !== 'relationship') {
+    return incoming;
+  }
+  const union = (left, right, limit) => [...new Set([...(left || []), ...(right || [])])].slice(0, limit);
+  return {
+    ...existing,
+    ...incoming,
+    relationship: incoming.relationship || existing.relationship || '',
+    aliases: union(existing.aliases, incoming.aliases, 8),
+    emails: union(existing.emails, incoming.emails, 5),
+    phones: union(existing.phones, incoming.phones, 5),
+    organization: incoming.organization || existing.organization || '',
+    role: incoming.role || existing.role || '',
+    preferences: union(existing.preferences, incoming.preferences, 8),
+    commitments: union(existing.commitments, incoming.commitments, 8),
+    last_context: incoming.last_context || existing.last_context || ''
   };
 }
 
@@ -284,6 +334,14 @@ function findProfileMatches(profile, query, { limit = 6, threshold = 0.34 } = {}
         entry.value,
         entry.subject,
         entry.relationship,
+        ...(entry.aliases || []),
+        ...(entry.emails || []),
+        ...(entry.phones || []),
+        entry.organization,
+        entry.role,
+        ...(entry.preferences || []),
+        ...(entry.commitments || []),
+        entry.last_context,
         entry.instruction
       ].filter(Boolean).join(' ');
       const exact = normalizedQuery.length >= 3 &&
@@ -309,7 +367,18 @@ function buildProfileContext(profile) {
   const instructions = [];
   for (const entry of pinned) {
     if (entry.kind === 'relationship') {
-      facts.push(`- ${entry.subject || entry.value}: relationship=${entry.relationship || 'known person'}`);
+      const details = [
+        `relationship=${entry.relationship || 'known person'}`,
+        entry.role ? `role=${entry.role}` : '',
+        entry.organization ? `organization=${entry.organization}` : '',
+        entry.aliases?.length ? `aliases=${entry.aliases.join(', ')}` : '',
+        entry.emails?.length ? `email=${entry.emails.join(', ')}` : '',
+        entry.phones?.length ? `phone=${entry.phones.join(', ')}` : '',
+        entry.preferences?.length ? `preferences=${entry.preferences.join('; ')}` : '',
+        entry.commitments?.length ? `commitments=${entry.commitments.join('; ')}` : '',
+        entry.last_context ? `last context=${entry.last_context}` : ''
+      ].filter(Boolean);
+      facts.push(`- ${entry.subject || entry.value}: ${details.join(' | ')}`);
     } else if (entry.kind !== 'communication' && entry.instruction) {
       facts.push(`- ${entry.key}: ${entry.value}`);
       instructions.push(`- ${entry.instruction}`);
@@ -476,7 +545,8 @@ function renderProfileEntryLine(entry) {
   if (entry.kind === 'relationship') {
     const who = entry.subject || entry.value;
     const relationship = entry.relationship || 'known person';
-    return `- **${who}** — ${relationship}${entry.pinned ? '' : ' (not pinned)'} ${provenance}`;
+    const details = [entry.role, entry.organization, ...(entry.emails || []), ...(entry.phones || [])].filter(Boolean);
+    return `- **${who}** — ${relationship}${details.length ? `; ${details.join('; ')}` : ''}${entry.pinned ? '' : ' (not pinned)'} ${provenance}`;
   }
   if ((entry.kind === 'communication' || entry.kind === 'business_rule') && entry.instruction) {
     return `- ${entry.instruction} _(underlying value: "${entry.value}", source: ${entry.source || 'unknown'})_`;
@@ -540,7 +610,17 @@ function renderMemoryDocument({ profile, memories = [], summary = '', summaryUpd
 
 function canonicalMemory(entry) {
   if (entry.kind === 'relationship') {
-    return `${entry.subject || entry.value} is the owner's ${entry.relationship || 'known person'}.`;
+    const details = [
+      entry.role && `role: ${entry.role}`,
+      entry.organization && `organization: ${entry.organization}`,
+      entry.aliases?.length && `aliases: ${entry.aliases.join(', ')}`,
+      entry.emails?.length && `email: ${entry.emails.join(', ')}`,
+      entry.phones?.length && `phone: ${entry.phones.join(', ')}`,
+      entry.preferences?.length && `preferences: ${entry.preferences.join('; ')}`,
+      entry.commitments?.length && `commitments: ${entry.commitments.join('; ')}`,
+      entry.last_context && `last context: ${entry.last_context}`
+    ].filter(Boolean);
+    return `${entry.subject || entry.value} is the owner's ${entry.relationship || 'known person'}${details.length ? `. ${details.join('. ')}` : ''}.`;
   }
   if (entry.instruction) return `${entry.key}: ${entry.value}. Preference: ${entry.instruction}`;
   return entry.kind === 'durable_fact' ? entry.value : `${entry.key}: ${entry.value}`;
@@ -579,7 +659,9 @@ class MemoryV2 {
           content: [
             'Extract only durable information directly stated by the owner.',
             'Never infer facts. Never store credentials, passwords, tokens, one-time codes, or secrets.',
-            'Create one relationship entry per named person using key people.<name_slug>, kind relationship, subject as the person name, relationship as daughter, son, spouse, employee, or the directly stated role.',
+            'Create one relationship entry per named person using key people.<name_slug>, kind relationship, subject as the person name, relationship as daughter, son, spouse, employee, client, vendor, professional contact, or the directly stated role.',
+            'For relationship entries, preserve directly stated aliases, email addresses, phone numbers, organization, job role, communication preferences, commitments, and a short last_context. Use empty strings or arrays when absent. Never infer them.',
+            'For non-relationship entries, return empty values for all relationship-only fields.',
             'Use communication.* for response-style rules, pronunciation.* for spoken pronunciations, identity.* for stable owner identity, preference.* for durable personal preferences, and business_rule.* for durable operating rules.',
             'Use durable_fact for important facts that should be searchable but do not belong in the always-loaded profile.',
             'Pinned must be true for identity, people/relationships, communication, pronunciation, preferences, and business rules.',
@@ -667,17 +749,16 @@ class MemoryV2 {
         const existing = currentProfile.entries?.[replacementKey] ||
           currentProfile.entries?.[entry.key] ||
           null;
-        const saved = await this.semanticMemory.save(canonicalMemory(entry), {
-          kind: entry.kind,
+        const effectiveEntry = mergeRelationshipEntry(existing, entry);
+        const saved = await this.semanticMemory.save(canonicalMemory(effectiveEntry), {
+          kind: effectiveEntry.kind,
           source,
-          confidence: explicit ? 1 : entry.confidence,
+          confidence: explicit ? 1 : effectiveEntry.confidence,
           sensitivity: 'private'
         });
-        const nextEntry = { ...entry, memory_id: saved.id };
+        const nextEntry = { ...effectiveEntry, memory_id: saved.id };
         if (existing?.memory_id && existing.memory_id !== saved.id &&
-            (existing.value !== entry.value ||
-             existing.relationship !== entry.relationship ||
-             existing.instruction !== entry.instruction)) {
+            canonicalMemory(existing) !== canonicalMemory(effectiveEntry)) {
           await this.semanticMemory.supersede(existing.memory_id, saved.id);
         }
         if (entry.replaces_key && entry.replaces_key !== entry.key) {

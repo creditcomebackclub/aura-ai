@@ -418,6 +418,33 @@ test('automatic learning saves structured profile entries and semantic memory', 
   assert.equal(semanticMemory.rows.size, 1);
 });
 
+test('relationship memory preserves and merges durable contact context', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  const base = {
+    key: 'people.sarah_chen', kind: 'relationship', value: 'Sarah Chen', subject: 'Sarah Chen',
+    relationship: 'accountant', aliases: ['Sarah'], emails: ['sarah@example.com'], phones: [],
+    organization: 'Chen Accounting', role: 'CPA', preferences: ['prefers email'], commitments: [],
+    last_context: 'Preparing the quarterly books', instruction: '', replaces_key: '', pinned: true, confidence: 1
+  };
+  const update = {
+    ...base,
+    aliases: [], emails: [], organization: '', role: '', preferences: [],
+    commitments: ['Send Q2 statements Friday'], last_context: 'Waiting on Q2 statements'
+  };
+  const memory = new MemoryV2({ profileStore, semanticMemory, client: extractionClient([[base], [update]]) });
+  await memory.learnFromUserMessage('Sarah Chen is my accountant at Chen Accounting. Her email is sarah@example.com and she prefers email.');
+  await memory.learnFromUserMessage('Sarah is waiting on the Q2 statements I promised Friday.');
+
+  const entry = (await profileStore.getOwnerProfile()).entries['people.sarah_chen'];
+  assert.deepEqual(entry.aliases, ['Sarah']);
+  assert.deepEqual(entry.emails, ['sarah@example.com']);
+  assert.equal(entry.organization, 'Chen Accounting');
+  assert.deepEqual(entry.commitments, ['Send Q2 statements Friday']);
+  assert.match(buildProfileContext({ entries: { 'people.sarah_chen': entry } }), /Waiting on Q2 statements/);
+  assert.equal(findProfileMatches({ entries: { 'people.sarah_chen': entry } }, 'sarah@example.com')[0].subject, 'Sarah Chen');
+});
+
 test('concurrent learns serialize so a slow extract cannot clobber another write', async () => {
   const profileStore = createProfileStore();
   const semanticMemory = createSemanticMemory();
