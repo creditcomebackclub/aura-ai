@@ -87,13 +87,22 @@ test('meeting briefs include attendees and matching unread email context', () =>
     { from: 'Someone Else <other@example.com>', subject: 'Unrelated' }
   ], {
     now: new Date('2026-08-03T16:00:00Z'),
-    timeZone: TZ
+    timeZone: TZ,
+    tasks: [{ id: 'task-mike', title: 'Send Mike the updated packet' }],
+    clientSnapshots: [{
+      found: true,
+      client: { name: 'Mike Example', status: 'Active', billing_status: 'Current' },
+      current_phase: 'Phase 2',
+      outstanding_total: 125
+    }]
   });
 
   assert.match(brief, /starts in 15 minutes/);
   assert.match(brief, /Location: Zoom/);
   assert.match(brief, /With: Mike/);
   assert.match(brief, /Unread context: Mike — “Numbers for our review”/);
+  assert.match(brief, /CCC: Mike Example — Phase 2 · Active · Current · \$125\.00 outstanding/);
+  assert.match(brief, /Open follow-up: Send Mike the updated packet/);
   assert.doesNotMatch(brief, /Unrelated/);
 });
 
