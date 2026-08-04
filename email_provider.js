@@ -28,7 +28,11 @@ async function listGmailMessageItems({ query = 'is:unread', maxResults = 10 } = 
   const list = await listResponse.json();
   if (!list.messages?.length) return [];
 
-  return Promise.all(list.messages.map(async item => {
+  // Gmail charges each metadata read separately. Fetch sequentially so the Mac
+  // and cloud schedulers cannot combine into a burst that exceeds per-user
+  // quota when both inspect sent mail at the same time.
+  const messages = [];
+  for (const item of list.messages) {
     const response = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
       { headers }
@@ -38,7 +42,7 @@ async function listGmailMessageItems({ query = 'is:unread', maxResults = 10 } = 
     const messageHeaders = Object.fromEntries(
       (message.payload?.headers || []).map(header => [header.name.toLowerCase(), header.value])
     );
-    return {
+    messages.push({
       id: message.id,
       thread_id: message.threadId || null,
       received: messageHeaders.date || '',
@@ -47,8 +51,9 @@ async function listGmailMessageItems({ query = 'is:unread', maxResults = 10 } = 
       subject: messageHeaders.subject || '(No subject)',
       snippet: message.snippet || '',
       internal_date: message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null
-    };
-  }));
+    });
+  }
+  return messages;
 }
 
 async function getGmailUnread() {
