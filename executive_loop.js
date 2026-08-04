@@ -170,7 +170,25 @@ function relatedUnreadForEvent(event, emails) {
     .slice(0, 2);
 }
 
-function buildMeetingBrief(event, emails, { now, timeZone }) {
+function relatedTasksForEvent(event, tasks) {
+  const needles = (event?.attendees || []).flatMap(item => {
+    const address = String(item.email || '').toLowerCase();
+    const name = compactText(item.displayName, 100).toLowerCase();
+    return [address, name, ...name.split(/\s+/)].filter(value => value.length >= 4);
+  });
+  if (!needles.length) return [];
+  return (tasks || []).filter(task => {
+    const title = taskTitle(task).toLowerCase();
+    return needles.some(needle => title.includes(needle));
+  }).slice(0, 3);
+}
+
+function buildMeetingBrief(event, emails, {
+  now,
+  timeZone,
+  tasks = [],
+  clientSnapshots = []
+}) {
   const startMs = eventStartMs(event);
   const minutes = startMs == null ? null : Math.max(1, Math.round((startMs - now.getTime()) / 60000));
   const lines = [
@@ -185,6 +203,21 @@ function buildMeetingBrief(event, emails, { now, timeZone }) {
   const related = relatedUnreadForEvent(event, emails);
   if (related.length) {
     lines.push(`Unread context: ${related.map(email => `${senderLabel(email.from)} — “${compactText(email.subject, 120)}”`).join('; ')}.`);
+  }
+  for (const snapshot of clientSnapshots.slice(0, 2)) {
+    const details = [
+      snapshot.current_phase,
+      snapshot.client?.status,
+      snapshot.client?.billing_status
+    ].filter(Boolean).join(' · ');
+    const balance = Number(snapshot.outstanding_total) > 0
+      ? ` · $${Number(snapshot.outstanding_total).toFixed(2)} outstanding`
+      : '';
+    lines.push(`CCC: ${compactText(snapshot.client?.name, 100)}${details ? ` — ${compactText(details, 180)}` : ''}${balance}.`);
+  }
+  const relatedTasks = relatedTasksForEvent(event, tasks);
+  if (relatedTasks.length) {
+    lines.push(`Open follow-up${relatedTasks.length === 1 ? '' : 's'}: ${relatedTasks.map(task => taskTitle(task)).join('; ')}.`);
   }
   return lines.join('\n');
 }
@@ -204,6 +237,7 @@ function createExecutiveLoop({
   listCalendarEvents,
   listOpenTasks,
   createCommitment,
+  getMeetingContext,
   getState,
   setState,
   sendAlert,
@@ -408,7 +442,12 @@ function createExecutiveLoop({
         continue;
       }
       const alert = await sendAlert(
-        buildMeetingBrief(event, emails, { now: currentTime, timeZone }),
+        buildMeetingBrief(event, emails, {
+          now: currentTime,
+          timeZone,
+          tasks,
+          ...(typeof getMeetingContext === 'function' ? await getMeetingContext(event) : {})
+        }),
         'meeting_brief',
         'normal',
         {
@@ -481,6 +520,7 @@ module.exports = {
   eventFingerprint,
   eventStartMs,
   relatedUnreadForEvent,
+  relatedTasksForEvent,
   buildMeetingBrief,
   createExecutiveLoop
 };

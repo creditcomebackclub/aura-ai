@@ -148,7 +148,8 @@ enabling it does not replay old mail or events. Later runs surface:
   once as an internal task with the stated deadline;
 - calendar cancellations and reschedules;
 - meeting briefs 8–20 minutes before timed events, including matching unread
-  mail from attendees when available; and
+  mail, open follow-ups, and verified CCC client phase/billing context when an
+  attendee matches a client; and
 - due or recently overdue tasks.
 
 Routine email and task alerts are deferred during quiet hours (9:00 PM–7:00 AM

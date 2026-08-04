@@ -929,6 +929,21 @@ const runExecutiveLoop = createExecutiveLoop({
       }
     });
   },
+  getMeetingContext: async event => {
+    const clientSnapshots = [];
+    for (const attendee of (event?.attendees || []).slice(0, 6)) {
+      const candidate = String(attendee.displayName || '').trim();
+      if (!candidate || candidate.length < 4) continue;
+      try {
+        const raw = await ccc.getClientSnapshot(candidate);
+        const snapshot = typeof raw === 'string' && raw.startsWith('{') ? JSON.parse(raw) : null;
+        if (snapshot?.found) clientSnapshots.push(snapshot);
+      } catch (error) {
+        console.warn('[Executive Loop] Meeting client context failed:', error.message || error);
+      }
+    }
+    return { clientSnapshots };
+  },
   getState: getAlertState,
   setState: setAlertState,
   sendAlert: sendProactiveAlert,

@@ -46,7 +46,9 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- No active engineering work. Executive Loop follow-through is deployed and verified.
+- **Ship Meeting Intelligence MVP.** Enrich the existing 8–20 minute brief with verified CCC
+  attendee context and matching open follow-ups, then test, deploy, and verify without changing
+  the calendar or sending email.
 
 ## Blocked
 
