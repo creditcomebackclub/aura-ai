@@ -191,3 +191,14 @@ test('tap interrupt copy and hey Aura wake wiring are present', () => {
   assert.match(app, /stopWakeListening\(\)/);
   assert.match(app, /maybeStartWakeListening\(\)/);
 });
+
+test('Deepgram streaming listen path is wired', () => {
+  assert.match(app, /function startStreamingListen/);
+  assert.match(app, /stt:start/);
+  assert.match(app, /stt:audio/);
+  assert.match(app, /stt:final/);
+  assert.match(app, /sttStreamingEnabled/);
+  assert.match(server, /attachDeepgramSttProxy/);
+  assert.match(server, /speech_final/);
+  assert.match(server, /utterance_end/);
+});

@@ -21,6 +21,10 @@ services:
         value: deepgram
       - key: AURA_DEEPGRAM_MODEL
         value: nova-3
+      - key: AURA_DEEPGRAM_ENDPOINTING_MS
+        value: "400"
+      - key: AURA_DEEPGRAM_UTTERANCE_END_MS
+        value: "1200"
       - key: DEEPGRAM_API_KEY
         sync: false
       - key: AURA_REASONING_EFFORT

@@ -97,6 +97,13 @@ const {
   transcribeWithDeepgram
 } = require('./stt_provider');
 const {
+  buildDeepgramLiveUrl,
+  classifyDeepgramLiveMessage,
+  deepgramStreamingAvailable,
+  DEFAULT_SAMPLE_RATE: DEEPGRAM_LIVE_SAMPLE_RATE
+} = require('./deepgram_live');
+const WebSocket = require('ws');
+const {
   WebSearchError,
   createDailyWebSearchLimiter,
   createOpenAIWebSearch
@@ -145,6 +152,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 app.get('/healthz', (req, res) => {
   const sttProvider = resolveSttProvider();
+  const sttStreaming = deepgramStreamingAvailable();
   res.json({
     ok: true,
     runtime: process.env.AURA_RUNTIME || 'mac',
@@ -154,6 +162,7 @@ app.get('/healthz', (req, res) => {
       reasoning_effort: reasoningEffort || null,
       memory_model: backgroundModel,
       stt_provider: sttProvider,
+      stt_streaming: sttStreaming,
       transcribe_model: sttProvider === 'deepgram'
         ? resolveDeepgramModel()
         : resolveTranscribeModel(),
@@ -3304,7 +3313,163 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   console.log('Frontend connected for proactive alerts.');
+  attachDeepgramSttProxy(socket);
 });
+
+// Browser PCM → Deepgram live → stt:partial / stt:final. API key stays on the
+// server. Falls back to batch /api/transcribe when streaming is unavailable.
+function attachDeepgramSttProxy(socket) {
+  let dg = null;
+  let finalized = false;
+  let finals = [];
+  let interim = '';
+  let stopTimer = null;
+
+  function clearStopTimer() {
+    if (stopTimer) {
+      clearTimeout(stopTimer);
+      stopTimer = null;
+    }
+  }
+
+  function cleanupDeepgram() {
+    clearStopTimer();
+    if (!dg) return;
+    const socketRef = dg;
+    dg = null;
+    try {
+      if (socketRef.readyState === WebSocket.OPEN || socketRef.readyState === WebSocket.CONNECTING) {
+        if (socketRef.readyState === WebSocket.OPEN) {
+          socketRef.send(JSON.stringify({ type: 'CloseStream' }));
+        }
+        socketRef.close();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  function emitFinal(reason) {
+    if (finalized) return;
+    finalized = true;
+    clearStopTimer();
+    const text = [...finals, interim].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    interim = '';
+    socket.emit('stt:final', { transcript: text, reason });
+    cleanupDeepgram();
+  }
+
+  socket.on('stt:start', () => {
+    cleanupDeepgram();
+    finalized = false;
+    finals = [];
+    interim = '';
+    if (!deepgramStreamingAvailable()) {
+      socket.emit('stt:error', {
+        code: 'streaming_unavailable',
+        error: 'Deepgram streaming is not configured.'
+      });
+      return;
+    }
+    const url = buildDeepgramLiveUrl();
+    const live = new WebSocket(url, {
+      headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}` }
+    });
+    dg = live;
+
+    live.on('open', () => {
+      socket.emit('stt:ready', {
+        sample_rate: DEEPGRAM_LIVE_SAMPLE_RATE,
+        endpointing_ms: Number(process.env.AURA_DEEPGRAM_ENDPOINTING_MS) || 400
+      });
+    });
+
+    live.on('message', data => {
+      if (finalized) return;
+      const raw = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+      const event = classifyDeepgramLiveMessage(raw);
+      if (event.kind === 'results') {
+        if (event.transcript) {
+          if (event.isFinal) {
+            finals.push(event.transcript);
+            interim = '';
+            socket.emit('stt:partial', {
+              transcript: finals.join(' ').trim(),
+              is_final: true
+            });
+          } else {
+            interim = event.transcript;
+            socket.emit('stt:partial', {
+              transcript: [...finals, interim].join(' ').trim(),
+              is_final: false
+            });
+          }
+        }
+        if (event.speechFinal && (finals.length > 0 || event.transcript)) {
+          if (event.transcript && event.isFinal === false) {
+            finals.push(event.transcript);
+            interim = '';
+          }
+          emitFinal('speech_final');
+        }
+        return;
+      }
+      if (event.kind === 'utterance_end') {
+        emitFinal('utterance_end');
+        return;
+      }
+      if (event.kind === 'error') {
+        socket.emit('stt:error', { error: event.error });
+        cleanupDeepgram();
+      }
+    });
+
+    live.on('error', err => {
+      if (finalized) return;
+      socket.emit('stt:error', { error: err.message || 'Deepgram socket error' });
+      cleanupDeepgram();
+    });
+
+    live.on('close', () => {
+      if (dg === live) dg = null;
+      if (!finalized) emitFinal('closed');
+    });
+  });
+
+  socket.on('stt:audio', chunk => {
+    if (!dg || finalized || dg.readyState !== WebSocket.OPEN) return;
+    try {
+      const buf = Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(chunk instanceof ArrayBuffer ? chunk : new Uint8Array(chunk));
+      if (buf.length) dg.send(buf);
+    } catch (error) {
+      socket.emit('stt:error', { error: error.message || 'Failed to forward audio' });
+    }
+  });
+
+  socket.on('stt:stop', () => {
+    if (finalized) return;
+    if (!dg) {
+      emitFinal('stopped');
+      return;
+    }
+    try {
+      if (dg.readyState === WebSocket.OPEN) {
+        dg.send(JSON.stringify({ type: 'CloseStream' }));
+      }
+    } catch {
+      // ignore
+    }
+    clearStopTimer();
+    stopTimer = setTimeout(() => emitFinal('stop_timeout'), 900);
+  });
+
+  socket.on('disconnect', () => {
+    finalized = true;
+    cleanupDeepgram();
+  });
+}
 
 // --- Proactive Agency: Cron Jobs --- //
 // These run unattended and push spoken alerts to any connected frontend via

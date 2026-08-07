@@ -256,6 +256,8 @@ const PLAYBACK_VOLUME_LEVELS = {
 const SILENCE_HANGOVER_MS = 400;
 const MIN_UTTERANCE_MS = 350;
 const MAX_UTTERANCE_MS = 20000;
+const STREAM_MAX_UTTERANCE_MS = 12000;
+const DEEPGRAM_STREAM_SAMPLE_RATE = 16000;
 // If the mic arms after her reply and nobody speaks, drop back to idle
 // instead of holding the mic open until MAX_UTTERANCE_MS.
 const NO_SPEECH_IDLE_MS = 4000;
@@ -289,6 +291,19 @@ let waveformEnergy = 0;
 
 let mediaRecorder = null;
 let audioChunks = [];
+let sttStreamingEnabled = false;
+let streamListenActive = false;
+let streamMedia = null;
+let streamAudioCtx = null;
+let streamSource = null;
+let streamProcessor = null;
+let streamMute = null;
+let streamMaxTimer = null;
+let streamNoSpeechTimer = null;
+let streamFinalHandler = null;
+let streamPartialHandler = null;
+let streamErrorHandler = null;
+let streamEndpointAt = null;
 
 // True from the moment a recording is handed off to processAudio() until
 // its reply (or error) is fully resolved. Guards against a second tap
@@ -321,6 +336,10 @@ function cancelActiveTurn() {
   currentTurn += 1;
   isProcessing = false;
   stopWakeListening();
+  if (streamListenActive) {
+    discardNextRecording = true;
+    requestStreamStop();
+  }
   if (turnAbortController) {
     try {
       turnAbortController.abort();
@@ -954,6 +973,7 @@ function finishVoiceQueue() {
 // WebSocket Reconnection Handling
 socket.on('connect', () => {
   console.log('Connected to AURA server');
+  refreshSttStreamingFlag();
   if (orb.className === 'error' || statusText.textContent.includes('Reconnecting')) {
     setOrbState('idle', idleStatusText());
   }
@@ -1061,7 +1081,241 @@ document.getElementById('orb-container').addEventListener('keydown', event => {
   event.currentTarget.click();
 });
 
+async function refreshSttStreamingFlag() {
+  try {
+    const res = await fetch('/healthz');
+    if (!res.ok) return;
+    const data = await res.json();
+    sttStreamingEnabled = data?.brain?.stt_streaming === true;
+  } catch {
+    // Keep last known value.
+  }
+}
+
+function downsampleFloat32(buffer, inRate, outRate) {
+  if (inRate === outRate) return buffer;
+  const ratio = inRate / outRate;
+  const newLen = Math.max(1, Math.round(buffer.length / ratio));
+  const result = new Float32Array(newLen);
+  for (let i = 0; i < newLen; i += 1) {
+    const idx = i * ratio;
+    const i0 = Math.floor(idx);
+    const i1 = Math.min(i0 + 1, buffer.length - 1);
+    const frac = idx - i0;
+    result[i] = buffer[i0] * (1 - frac) + buffer[i1] * frac;
+  }
+  return result;
+}
+
+function floatTo16BitPCM(float32) {
+  const out = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i += 1) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+function clearStreamTimers() {
+  if (streamMaxTimer) {
+    clearTimeout(streamMaxTimer);
+    streamMaxTimer = null;
+  }
+  if (streamNoSpeechTimer) {
+    clearTimeout(streamNoSpeechTimer);
+    streamNoSpeechTimer = null;
+  }
+}
+
+function detachStreamSocketHandlers() {
+  if (streamFinalHandler) {
+    socket.off('stt:final', streamFinalHandler);
+    streamFinalHandler = null;
+  }
+  if (streamPartialHandler) {
+    socket.off('stt:partial', streamPartialHandler);
+    streamPartialHandler = null;
+  }
+  if (streamErrorHandler) {
+    socket.off('stt:error', streamErrorHandler);
+    streamErrorHandler = null;
+  }
+}
+
+async function teardownStreamCapture() {
+  clearStreamTimers();
+  try { streamProcessor?.disconnect(); } catch { /* ignore */ }
+  try { streamSource?.disconnect(); } catch { /* ignore */ }
+  try { streamMute?.disconnect(); } catch { /* ignore */ }
+  streamProcessor = null;
+  streamSource = null;
+  streamMute = null;
+  if (streamAudioCtx) {
+    try { await streamAudioCtx.close(); } catch { /* ignore */ }
+    streamAudioCtx = null;
+  }
+  if (streamMedia) {
+    streamMedia.getTracks().forEach(track => track.stop());
+    streamMedia = null;
+  }
+}
+
+function requestStreamStop() {
+  if (!streamListenActive) return;
+  streamEndpointAt = performance.now();
+  try { socket.emit('stt:stop'); } catch { /* ignore */ }
+}
+
+async function startStreamingListen({ fromConversation = false } = {}) {
+  stopWakeListening();
+  discardNextRecording = false;
+  listeningFromConversation = fromConversation;
+  showSearchEvidence([], []);
+  hideTranscript();
+  streamListenActive = true;
+  streamEndpointAt = null;
+
+  const ready = new Promise((resolve, reject) => {
+    const onReady = () => { cleanup(); resolve(); };
+    const onError = payload => {
+      cleanup();
+      reject(new Error(payload?.error || 'Deepgram streaming unavailable'));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Deepgram streaming ready timeout'));
+    }, 5000);
+    function cleanup() {
+      clearTimeout(timer);
+      socket.off('stt:ready', onReady);
+      socket.off('stt:error', onError);
+    }
+    socket.once('stt:ready', onReady);
+    socket.once('stt:error', onError);
+    socket.emit('stt:start');
+  });
+
+  try {
+    streamMedia = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
+    });
+    await ready;
+
+    streamAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (streamAudioCtx.state === 'suspended') {
+      await streamAudioCtx.resume().catch(() => {});
+    }
+    streamSource = streamAudioCtx.createMediaStreamSource(streamMedia);
+    streamProcessor = streamAudioCtx.createScriptProcessor(4096, 1, 1);
+    streamMute = streamAudioCtx.createGain();
+    streamMute.gain.value = 0;
+    streamProcessor.onaudioprocess = event => {
+      if (!streamListenActive || !isListening) return;
+      const input = event.inputBuffer.getChannelData(0);
+      const down = downsampleFloat32(input, streamAudioCtx.sampleRate, DEEPGRAM_STREAM_SAMPLE_RATE);
+      const pcm = floatTo16BitPCM(down);
+      socket.emit('stt:audio', pcm.buffer);
+    };
+    streamSource.connect(streamProcessor);
+    streamProcessor.connect(streamMute);
+    streamMute.connect(streamAudioCtx.destination);
+
+    isListening = true;
+    setOrbState(
+      'listening',
+      fromConversation || isConversationMode()
+        ? 'Listening... pause to send'
+        : 'Listening... Tap to stop'
+    );
+
+    streamPartialHandler = payload => {
+      if (!streamListenActive || !payload?.transcript || !statusText || !isListening) return;
+      if (streamNoSpeechTimer) {
+        clearTimeout(streamNoSpeechTimer);
+        streamNoSpeechTimer = null;
+      }
+      statusText.textContent = payload.is_final
+        ? 'Listening...'
+        : `Hearing: ${String(payload.transcript).slice(0, 48)}`;
+    };
+    socket.on('stt:partial', streamPartialHandler);
+
+    streamFinalHandler = async payload => {
+      if (!streamListenActive) return;
+      streamListenActive = false;
+      detachStreamSocketHandlers();
+      clearStreamTimers();
+      isListening = false;
+      await teardownStreamCapture();
+
+      if (discardNextRecording) {
+        discardNextRecording = false;
+        listeningFromConversation = false;
+        setOrbState('idle', idleStatusText());
+        maybeStartWakeListening();
+        return;
+      }
+
+      const transcript = String(payload?.transcript || '').trim();
+      const sttMs = streamEndpointAt
+        ? Math.max(0, Math.round(performance.now() - streamEndpointAt))
+        : 0;
+      if (!transcript) {
+        listeningFromConversation = false;
+        setOrbState('idle', idleStatusText());
+        maybeStartWakeListening();
+        return;
+      }
+      setOrbState('thinking', 'Thinking...');
+      await processTranscript(transcript, { sttMs, streamed: true });
+    };
+    socket.once('stt:final', streamFinalHandler);
+
+    streamErrorHandler = async () => {
+      if (!streamListenActive) return;
+      streamListenActive = false;
+      detachStreamSocketHandlers();
+      clearStreamTimers();
+      isListening = false;
+      await teardownStreamCapture();
+      try {
+        await startListeningBatch({ fromConversation });
+      } catch {
+        listeningFromConversation = false;
+        setOrbState('error', 'Microphone blocked');
+        setTimeout(() => setOrbState('idle', idleStatusText()), 3000);
+      }
+    };
+    socket.once('stt:error', streamErrorHandler);
+
+    streamMaxTimer = setTimeout(() => requestStreamStop(), STREAM_MAX_UTTERANCE_MS);
+    if (fromConversation || isConversationMode()) {
+      streamNoSpeechTimer = setTimeout(() => {
+        if (!isListening || !streamListenActive) return;
+        discardNextRecording = true;
+        requestStreamStop();
+      }, NO_SPEECH_IDLE_MS);
+    }
+  } catch (error) {
+    streamListenActive = false;
+    detachStreamSocketHandlers();
+    clearStreamTimers();
+    isListening = false;
+    await teardownStreamCapture();
+    console.warn('[stt] streaming start failed, using batch:', error.message || error);
+    await startListeningBatch({ fromConversation });
+  }
+}
+
 async function startListening({ fromConversation = false } = {}) {
+  if (sttStreamingEnabled) {
+    await startStreamingListen({ fromConversation });
+    return;
+  }
+  await startListeningBatch({ fromConversation });
+}
+
+async function startListeningBatch({ fromConversation = false } = {}) {
   // Do NOT clear playbackCancelled here — a barge-in after interrupt would
   // otherwise let the previous turn's queued TTS resume. processAudio clears
   // it when the new turn actually owns the mic→reply pipeline.
@@ -1143,6 +1397,10 @@ async function startListening({ fromConversation = false } = {}) {
 function cancelListeningToIdle() {
   discardNextRecording = true;
   clearSilenceWatch();
+  if (streamListenActive) {
+    requestStreamStop();
+    return;
+  }
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
   }
@@ -1154,11 +1412,130 @@ function cancelListeningToIdle() {
 
 function stopListening() {
   clearSilenceWatch();
+  if (streamListenActive) {
+    setOrbState('thinking', 'Processing Voice...');
+    requestStreamStop();
+    return;
+  }
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
   }
   isListening = false;
   setOrbState('thinking', 'Processing Voice...');
+}
+
+async function processTranscript(transcript, { sttMs = 0, streamed = false } = {}) {
+  if (turnAbortController) {
+    try { turnAbortController.abort(); } catch { /* ignore */ }
+  }
+  turnAbortController = new AbortController();
+  const { signal } = turnAbortController;
+  playbackCancelled = false;
+  isProcessing = true;
+  const myTurn = ++currentTurn;
+  const timing = { t0: performance.now(), sttMs, whisperMs: sttMs, streamed };
+  const stale = () => myTurn !== currentTurn || signal.aborted;
+  try {
+    console.log('User:', transcript);
+    if (stale()) return;
+    if (!transcript || !String(transcript).trim()) {
+      setOrbState('idle', idleStatusText());
+      maybeStartWakeListening();
+      return;
+    }
+
+    setOrbState('thinking', 'Thinking...');
+    const chatStartedAt = performance.now();
+    const chatRes = await authenticatedFetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: transcript }),
+      signal
+    });
+
+    if (!chatRes.ok) throw new Error('Chat API failed');
+    if (stale()) return;
+
+    resetVoiceQueue();
+    const reader = chatRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let speechChunkCount = 0;
+    let finalResult = null;
+
+    while (true) {
+      if (stale()) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        break;
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex;
+      while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === 'sentence') {
+          if (stale()) continue;
+          speechChunkCount += 1;
+          if (speechChunkCount === 1) {
+            timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
+          }
+          enqueueSpeechAudio(event.text, speechChunkCount === 1, timing, signal);
+        } else if (event.type === 'done') {
+          finalResult = event;
+          if (event.timing) {
+            timing.serverTiming = event.timing;
+            console.log(
+              `[timing] server` +
+              ` (pre_model ${event.timing.pre_model_ms ?? '?'}ms` +
+              `, first_delta ${event.timing.first_delta_ms ?? '?'}ms` +
+              `, context ${event.timing.context_build_ms ?? '?'}ms` +
+              `${event.timing.lightweight ? ', lightweight' : ''}` +
+              `${event.timing.skip_semantic ? ', no-semantic' : ''}` +
+              `${event.timing.direct_metrics ? ', direct-metrics' : ''})`
+            );
+          }
+        } else if (event.type === 'error') {
+          throw new Error(event.error);
+        }
+      }
+    }
+
+    if (stale()) return;
+    if (!finalResult) throw new Error('Chat stream ended without a result.');
+    const { reply, sources = [], web_results: webResults = [] } = finalResult;
+    console.log('AURA:', reply);
+    if (speechChunkCount === 0 && reply) {
+      timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
+      enqueueSpeechAudio(reply, true, timing, signal);
+    }
+    showSearchEvidence(webResults, sources, reply);
+    finishVoiceQueue();
+  } catch (err) {
+    if (err?.name === 'AbortError' || stale()) return;
+    console.error(err);
+    playbackCancelled = true;
+    audioPlayer.pause();
+    releaseAudioUrl();
+    showSearchEvidence([], []);
+    hideTranscript();
+    setOrbState('error', 'Error occurred. Tap to retry.');
+    isSpeaking = false;
+    setTimeout(() => {
+      if (myTurn !== currentTurn) return;
+      setOrbState('idle', idleStatusText());
+      refreshTranscript();
+      maybeStartWakeListening();
+    }, 3000);
+  } finally {
+    if (myTurn === currentTurn) {
+      isProcessing = false;
+      turnAbortController = null;
+    }
+  }
 }
 
 async function processAudio(audioBlob) {
@@ -1359,6 +1736,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 syncConversationToggle();
+refreshSttStreamingFlag();
 if (!isListening && !isSpeaking && !isProcessing) {
   setOrbState(orb.className || 'idle', idleStatusText());
 }
