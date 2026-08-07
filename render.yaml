@@ -17,6 +17,12 @@ services:
         value: gpt-5.6-luna
       - key: AURA_TRANSCRIBE_MODEL
         value: gpt-4o-mini-transcribe
+      - key: AURA_STT_PROVIDER
+        value: deepgram
+      - key: AURA_DEEPGRAM_MODEL
+        value: nova-3
+      - key: DEEPGRAM_API_KEY
+        sync: false
       - key: AURA_REASONING_EFFORT
         value: low
       - key: AURA_SUMMARY_MESSAGE_THRESHOLD

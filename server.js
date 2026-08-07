@@ -92,6 +92,11 @@ const {
 const { createExecutiveLoop } = require('./executive_loop');
 const { brainRequestOptions, resolveModelConfig, resolveTranscribeModel } = require('./model_router');
 const {
+  resolveSttProvider,
+  resolveDeepgramModel,
+  transcribeWithDeepgram
+} = require('./stt_provider');
+const {
   WebSearchError,
   createDailyWebSearchLimiter,
   createOpenAIWebSearch
@@ -139,6 +144,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
   }
 }));
 app.get('/healthz', (req, res) => {
+  const sttProvider = resolveSttProvider();
   res.json({
     ok: true,
     runtime: process.env.AURA_RUNTIME || 'mac',
@@ -147,7 +153,10 @@ app.get('/healthz', (req, res) => {
       model: chatModel,
       reasoning_effort: reasoningEffort || null,
       memory_model: backgroundModel,
-      transcribe_model: resolveTranscribeModel(),
+      stt_provider: sttProvider,
+      transcribe_model: sttProvider === 'deepgram'
+        ? resolveDeepgramModel()
+        : resolveTranscribeModel(),
       // Vector recall is always OpenAI embeddings, independent of chat provider.
       embeddings: process.env.OPENAI_API_KEY ? 'openai:text-embedding-3-small' : null
     },
@@ -2149,7 +2158,7 @@ async function handleToolCall(toolCall, options = {}) {
 // Shared by /api/transcribe (browser mic upload) and the Telegram webhook
 // (voice notes) - both just need "a file on disk with the right extension
 // in, transcript text out."
-async function createTranscription(filePath, model) {
+async function createOpenAiTranscription(filePath, model) {
   return openaiAudio.audio.transcriptions.create({
     file: fs.createReadStream(filePath),
     model,
@@ -2160,14 +2169,13 @@ async function createTranscription(filePath, model) {
   });
 }
 
-async function transcribeAudioFile(filePath) {
+async function transcribeWithOpenAi(filePath) {
   if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for transcription.');
-  const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
   const model = resolveTranscribeModel();
   let usedModel = model;
   let transcription;
   try {
-    transcription = await createTranscription(filePath, model);
+    transcription = await createOpenAiTranscription(filePath, model);
   } catch (error) {
     // Older accounts / regional rollouts may not have the mini model yet —
     // fall back rather than hard-failing voice.
@@ -2176,15 +2184,41 @@ async function transcribeAudioFile(filePath) {
         `[transcribe] ${model} failed (${error.message || error}); falling back to whisper-1`
       );
       usedModel = 'whisper-1';
-      transcription = await createTranscription(filePath, 'whisper-1');
+      transcription = await createOpenAiTranscription(filePath, 'whisper-1');
     } else {
       throw error;
     }
   }
-  if (process.env.AURA_TIMING_TRACE) {
-    console.log(`[timing] whisper (${usedModel}): ${Date.now() - startedAtMs}ms`);
+  return { text: transcription.text, provider: 'openai', model: usedModel };
+}
+
+async function transcribeAudioFile(filePath) {
+  const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
+  const provider = resolveSttProvider();
+  let result;
+  if (provider === 'deepgram') {
+    try {
+      result = await transcribeWithDeepgram(filePath);
+    } catch (error) {
+      // Keep voice working if Deepgram is misconfigured or briefly down.
+      if (process.env.OPENAI_API_KEY) {
+        console.warn(
+          `[transcribe] deepgram failed (${error.message || error}); falling back to openai`
+        );
+        result = await transcribeWithOpenAi(filePath);
+      } else {
+        throw error;
+      }
+    }
+  } else {
+    result = await transcribeWithOpenAi(filePath);
   }
-  return transcription.text;
+  if (process.env.AURA_TIMING_TRACE) {
+    console.log(
+      `[timing] stt (${result.provider}/${result.model}): ${Date.now() - startedAtMs}ms`
+    );
+  }
+  return result.text;
 }
 
 app.post('/api/transcribe', upload.single('audio'), async (req, res) => {

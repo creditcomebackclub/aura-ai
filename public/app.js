@@ -914,7 +914,7 @@ function enqueueSpeechAudio(text, isFirst, timing = null, signal = null) {
           timing.ttfaMs = Math.round(performance.now() - timing.t0);
           console.log(
             `[timing] TTFA ${timing.ttfaMs}ms` +
-            ` (whisper ${timing.whisperMs ?? '?'}ms` +
+            ` (stt ${timing.sttMs ?? timing.whisperMs ?? '?'}ms` +
             `, first_sentence ${timing.firstSentenceMs ?? '?'}ms` +
             `, tts ${timing.ttsMs ?? '?'}ms)`
           );
@@ -1188,7 +1188,7 @@ async function processAudio(audioBlob) {
     const ext = audioBlob.type.includes('mp4') ? 'm4a' : 'webm';
     formData.append('audio', audioBlob, `recording.${ext}`);
 
-    const whisperStartedAt = performance.now();
+    const sttStartedAt = performance.now();
     const transcribeRes = await authenticatedFetch('/api/transcribe', {
       method: 'POST',
       body: formData,
@@ -1197,7 +1197,8 @@ async function processAudio(audioBlob) {
 
     if (!transcribeRes.ok) throw new Error('Transcription failed');
     const { transcript } = await transcribeRes.json();
-    timing.whisperMs = Math.round(performance.now() - whisperStartedAt);
+    timing.sttMs = Math.round(performance.now() - sttStartedAt);
+    timing.whisperMs = timing.sttMs; // back-compat for older console greps
     console.log('User:', transcript);
 
     if (stale()) return;
