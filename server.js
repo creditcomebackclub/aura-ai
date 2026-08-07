@@ -90,7 +90,12 @@ const {
   formatEventSummary
 } = require('./google_calendar');
 const { createExecutiveLoop } = require('./executive_loop');
-const { brainRequestOptions, resolveModelConfig, resolveTranscribeModel } = require('./model_router');
+const {
+  brainRequestOptions,
+  resolveModelConfig,
+  resolveTranscribeModel,
+  isOpenAiChatModel
+} = require('./model_router');
 const {
   resolveSttProvider,
   resolveDeepgramModel,
@@ -536,12 +541,23 @@ const conversationSummary = new ConversationSummaryService({
   minimumMessages: Number(process.env.AURA_SUMMARY_MESSAGE_THRESHOLD) || 40
 });
 
+// Round-0 may use OpenAI Luna while chat is on xAI/Grok — route those
+// requests through the dedicated OpenAI client (embeddings/memory), not the
+// xAI base URL.
+function resolveBrainClient(model) {
+  if (isOpenAiChatModel(model) && aiProvider !== 'openai') {
+    return openaiEmbeddings;
+  }
+  return openai;
+}
+
 // _traceLabel is stripped before the request is built - it's a diagnostic
 // tag for AURA_TIMING_TRACE, never sent to OpenAI (brainRequestOptions
 // spreads its options object directly into the API payload, so anything
 // not stripped here would leak into a real request as an unknown field).
 function createBrainCompletion({ _traceLabel, ...requestOptions } = {}) {
-  const request = openai.chat.completions.create(brainRequestOptions(modelConfig, requestOptions));
+  const options = brainRequestOptions(modelConfig, requestOptions);
+  const request = resolveBrainClient(options.model).chat.completions.create(options);
   if (!process.env.AURA_TIMING_TRACE) return request;
   const startedAtMs = Date.now();
   return request.then(result => {
@@ -566,8 +582,9 @@ function createBrainCompletion({ _traceLabel, ...requestOptions } = {}) {
 // text.
 async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...requestOptions } = {}) {
   const startedAtMs = Date.now();
-  const stream = await openai.chat.completions.create({
-    ...brainRequestOptions(modelConfig, requestOptions),
+  const options = brainRequestOptions(modelConfig, requestOptions);
+  const stream = await resolveBrainClient(options.model).chat.completions.create({
+    ...options,
     stream: true
   });
 
@@ -2321,7 +2338,11 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
         const responseMessage = response.choices[0].message;
         chatHistory.push(responseMessage);
-        for (const toolCall of responseMessage.tool_calls) {
+        const toolCalls = responseMessage.tool_calls;
+        const parallelOk = toolCalls.length > 1
+          && !toolCalls.some(call => call?.function?.name === 'search_web');
+
+        const runOne = async (toolCall) => {
           let functionResult;
           let webSearchUnitReserved = false;
           try {
@@ -2355,18 +2376,30 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
           } catch {
             parsedToolResult = { ok: false };
           }
+          return { toolCall, functionResult, parsedToolResult };
+        };
+
+        const outcomes = parallelOk
+          ? await Promise.all(toolCalls.map(runOne))
+          : await toolCalls.reduce(async (prev, toolCall) => {
+            const list = await prev;
+            list.push(await runOne(toolCall));
+            return list;
+          }, Promise.resolve([]));
+
+        for (const outcome of outcomes) {
           evidence.push({
-            tool: toolCall?.function?.name || 'unknown',
-            ok: parsedToolResult.ok === true
+            tool: outcome.toolCall?.function?.name || 'unknown',
+            ok: outcome.parsedToolResult.ok === true
           });
-          if (toolCall?.function?.name === 'search_web' && parsedToolResult.ok === true) {
-            await settleWebSearchUsage(parsedToolResult.data?.billable_searches);
+          if (outcome.toolCall?.function?.name === 'search_web' && outcome.parsedToolResult.ok === true) {
+            await settleWebSearchUsage(outcome.parsedToolResult.data?.billable_searches);
             webResults.push({
-              answer: parsedToolResult.data?.answer || '',
-              citation_blocks: parsedToolResult.data?.citation_blocks || [],
-              citation_status: parsedToolResult.data?.citation_status || 'unknown'
+              answer: outcome.parsedToolResult.data?.answer || '',
+              citation_blocks: outcome.parsedToolResult.data?.citation_blocks || [],
+              citation_status: outcome.parsedToolResult.data?.citation_status || 'unknown'
             });
-            for (const source of parsedToolResult.data?.sources || []) {
+            for (const source of outcome.parsedToolResult.data?.sources || []) {
               if (!source?.url || seenWebSources.has(source.url)) continue;
               seenWebSources.add(source.url);
               webSources.push(source);
@@ -2374,9 +2407,9 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
           }
           chatHistory.push({
             role: 'tool',
-            tool_call_id: toolCall.id,
-            name: toolCall.function.name,
-            content: functionResult
+            tool_call_id: outcome.toolCall.id,
+            name: outcome.toolCall.function.name,
+            content: outcome.functionResult
           });
         }
         response = await createBrainCompletionStreamed({
@@ -2655,21 +2688,28 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         [...roundToolNames].some(name => PRIVATE_CONTEXT_TOOLS.has(name));
       let forceToolFreeAnswer = false;
 
-      for (const toolCall of responseMessage.tool_calls) {
+      // Independent lookups can overlap. Keep search_web sequential — quota,
+      // privacy boundary, and "already completed" guards all assume ordered
+      // evaluation against shared turn state.
+      const toolCalls = responseMessage.tool_calls;
+      const parallelOk = toolCalls.length > 1 && !roundToolNames.has('search_web');
+
+      const runOneTool = async (toolCall) => {
         let functionResult;
         let webSearchUnitReserved = false;
+        let forceToolFree = false;
         try {
           const toolName = toolCall?.function?.name;
           if (toolName === 'search_web') {
             if (webSearchSucceeded) {
-              forceToolFreeAnswer = true;
+              forceToolFree = true;
               throw new WebSearchError(
                 'A live web search has already completed for this request.',
                 'WEB_SEARCH_ALREADY_COMPLETE'
               );
             }
             if (privateContextToolCompleted || roundMixesSearchAndPrivateData) {
-              forceToolFreeAnswer = true;
+              forceToolFree = true;
               throw new WebSearchError(
                 'For privacy, live web search must be requested separately from private-data lookups.',
                 'WEB_SEARCH_PRIVATE_DATA_BOUNDARY'
@@ -2681,7 +2721,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             // and with up to max_tool_calls searches per attempt, that's how
             // one question ends up costing six billable searches.
             if (webSearchAttempts >= 2 || webSearchBilledSearches > 0) {
-              forceToolFreeAnswer = true;
+              forceToolFree = true;
               throw new WebSearchError(
                 'The live-search attempt limit for this request has been reached.',
                 'WEB_SEARCH_TURN_LIMIT'
@@ -2698,7 +2738,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             try {
               publicSearchInput = resolveOwnerSearchInput(text);
             } catch (inputError) {
-              forceToolFreeAnswer = true;
+              forceToolFree = true;
               throw new WebSearchError(
                 inputError.message,
                 inputError.code || 'WEB_SEARCH_INVALID_INPUT',
@@ -2717,9 +2757,6 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             functionResult = await handleToolCall(toolCall, { turn: requestTurn, requestStartedAtMs, userInstruction: text });
             if (process.env.AURA_TIMING_TRACE) {
               console.log(`[timing] tool ${toolName}: ${Date.now() - toolStartedAtMs}ms`);
-            }
-            if (PRIVATE_CONTEXT_TOOLS.has(toolName)) {
-              privateContextToolCompleted = true;
             }
           }
         } catch (toolError) {
@@ -2746,20 +2783,42 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         } catch {
           parsedToolResult = { ok: false };
         }
+        return {
+          toolCall,
+          functionResult,
+          parsedToolResult,
+          forceToolFree,
+          privateContext: PRIVATE_CONTEXT_TOOLS.has(toolCall?.function?.name)
+        };
+      };
+
+      const outcomes = parallelOk
+        ? await Promise.all(toolCalls.map(runOneTool))
+        : await toolCalls.reduce(async (prev, toolCall) => {
+          const list = await prev;
+          list.push(await runOneTool(toolCall));
+          return list;
+        }, Promise.resolve([]));
+
+      for (const outcome of outcomes) {
+        if (outcome.forceToolFree) forceToolFreeAnswer = true;
+        if (outcome.privateContext && outcome.toolCall?.function?.name !== 'search_web') {
+          privateContextToolCompleted = true;
+        }
         evidence.push({
-          tool: toolCall?.function?.name || 'unknown',
-          ok: parsedToolResult.ok === true
+          tool: outcome.toolCall?.function?.name || 'unknown',
+          ok: outcome.parsedToolResult.ok === true
         });
-        if (toolCall?.function?.name === 'search_web' && parsedToolResult.ok === true) {
-          await settleWebSearchUsage(parsedToolResult.data?.billable_searches);
+        if (outcome.toolCall?.function?.name === 'search_web' && outcome.parsedToolResult.ok === true) {
+          await settleWebSearchUsage(outcome.parsedToolResult.data?.billable_searches);
           webSearchSucceeded = true;
           forceToolFreeAnswer = true;
           webResults.push({
-            answer: parsedToolResult.data?.answer || '',
-            citation_blocks: parsedToolResult.data?.citation_blocks || [],
-            citation_status: parsedToolResult.data?.citation_status || 'unknown'
+            answer: outcome.parsedToolResult.data?.answer || '',
+            citation_blocks: outcome.parsedToolResult.data?.citation_blocks || [],
+            citation_status: outcome.parsedToolResult.data?.citation_status || 'unknown'
           });
-          for (const source of parsedToolResult.data?.sources || []) {
+          for (const source of outcome.parsedToolResult.data?.sources || []) {
             if (!source?.url || seenWebSources.has(source.url)) continue;
             seenWebSources.add(source.url);
             webSources.push(source);
@@ -2767,9 +2826,9 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         }
         chatHistory.push({
           role: 'tool',
-          tool_call_id: toolCall.id,
-          name: toolCall.function.name,
-          content: functionResult,
+          tool_call_id: outcome.toolCall.id,
+          name: outcome.toolCall.function.name,
+          content: outcome.functionResult,
         });
       }
 
@@ -3222,8 +3281,9 @@ app.post('/api/actions/:id/reject', async (req, res) => {
 });
 
 // One Cartesia call for one chunk of text. Pulled out of the route so it can
-// be fired multiple times concurrently below.
-async function synthesizeSpeechChunk(text) {
+// be fired multiple times concurrently below. streamRaw pipes PCM as it is
+// generated so the browser can start audio before the full clip is ready.
+async function requestCartesiaSpeech(text, { streamRaw = false } = {}) {
   // 24kHz is plenty for voice on phone/laptop speakers and cuts Cartesia
   // generation + download vs 44.1kHz — live TTFA had TTS alone at ~3.5s.
   const sampleRate = Number(process.env.AURA_TTS_SAMPLE_RATE) || 24000;
@@ -3243,17 +3303,28 @@ async function synthesizeSpeechChunk(text) {
       transcript,
       language: 'en',
       voice: { mode: 'id', id: 'e8e5fffb-252c-436d-b842-8879b84445b6' },
-      output_format: {
-        container: 'wav',
-        encoding: 'pcm_s16le',
-        sample_rate: sampleRate
-      }
+      output_format: streamRaw
+        ? {
+          container: 'raw',
+          encoding: 'pcm_s16le',
+          sample_rate: sampleRate
+        }
+        : {
+          container: 'wav',
+          encoding: 'pcm_s16le',
+          sample_rate: sampleRate
+        }
     })
   });
   if (!response.ok) {
     const errText = await response.text();
     throw new Error(`Cartesia API error: ${response.status} - ${errText}`);
   }
+  return { response, sampleRate };
+}
+
+async function synthesizeSpeechChunk(text) {
+  const { response } = await requestCartesiaSpeech(text, { streamRaw: false });
   return Buffer.from(await response.arrayBuffer());
 }
 
@@ -3263,12 +3334,40 @@ app.post('/api/tts', async (req, res) => {
     if (typeof text !== 'string' || !text.trim() || text.length > 12000) {
       return res.status(400).json({ error: 'TTS text must be between 1 and 12,000 characters.' });
     }
+    const wantStream = String(req.query.stream || '') === '1';
+    const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
+
+    if (wantStream) {
+      const { response, sampleRate } = await requestCartesiaSpeech(text.trim(), { streamRaw: true });
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('X-Aura-Sample-Rate', String(sampleRate));
+      res.setHeader('X-Aura-Encoding', 'pcm_s16le');
+      res.setHeader('Cache-Control', 'no-store');
+      if (process.env.AURA_TIMING_TRACE) {
+        console.log(`[timing] tts stream open: ${Date.now() - startedAtMs}ms`);
+      }
+      if (!response.body) {
+        const buf = Buffer.from(await response.arrayBuffer());
+        return res.end(buf);
+      }
+      const { Readable } = require('stream');
+      const nodeStream = typeof Readable.fromWeb === 'function'
+        ? Readable.fromWeb(response.body)
+        : Readable.from(Buffer.from(await response.arrayBuffer()));
+      nodeStream.on('error', error => {
+        console.error('TTS stream error:', error);
+        if (!res.headersSent) res.status(500);
+        res.end();
+      });
+      nodeStream.pipe(res);
+      return;
+    }
+
     // The browser already sends bounded speech groups (the first complete
     // sentence, then connected sentence pairs). Keep each group in ONE
     // Cartesia request so pacing and intonation carry through naturally.
     // Splitting again here was faster on paper but reset the performance at
     // every sentence and introduced audible WAV seams.
-    const startedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
     const combined = await synthesizeSpeechChunk(text.trim());
     if (process.env.AURA_TIMING_TRACE) {
       console.log(`[timing] tts (continuous group): ${Date.now() - startedAtMs}ms`);

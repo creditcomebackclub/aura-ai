@@ -841,17 +841,29 @@ test('renderMemoryDocument groups profile entries, excludes linked memories, and
   assert.match(poisoned.markdown, /## ⚠ Warnings/);
 });
 
-test('model routing defaults to Sol with Luna for memory work', () => {
+test('model routing defaults to Sol with Luna for memory and round-0 routing', () => {
   const config = resolveModelConfig({});
   assert.equal(config.provider, 'openai');
   assert.equal(config.primaryModel, 'gpt-5.6-sol');
   assert.equal(config.memoryModel, 'gpt-5.6-luna');
+  assert.equal(config.routerModel, 'gpt-5.6-luna');
   assert.equal(config.reasoningEffort, 'none');
   assert.deepEqual(
     brainRequestOptions(config, { messages: [] }),
     {
       messages: [],
       model: 'gpt-5.6-sol',
+      reasoning_effort: 'none'
+    }
+  );
+  assert.deepEqual(
+    brainRequestOptions(config, {
+      messages: [],
+      model: 'gpt-5.6-luna'
+    }),
+    {
+      messages: [],
+      model: 'gpt-5.6-luna',
       reasoning_effort: 'none'
     }
   );
@@ -881,15 +893,39 @@ test('voice transcription defaults to gpt-4o-mini-transcribe', () => {
   );
 });
 
-test('xAI chat defaults to Grok while memory stays on Luna', () => {
-  const config = resolveModelConfig({ AI_PROVIDER: 'xai' });
-  assert.equal(config.provider, 'xai');
-  assert.equal(config.primaryModel, 'grok-4.5');
-  assert.equal(config.memoryModel, 'gpt-5.6-luna');
-  assert.equal(config.reasoningEffort, 'low');
+test('xAI chat defaults to Grok; Luna routes when OPENAI_API_KEY is present', () => {
+  const withoutOpenAi = resolveModelConfig({ AI_PROVIDER: 'xai' });
+  assert.equal(withoutOpenAi.provider, 'xai');
+  assert.equal(withoutOpenAi.primaryModel, 'grok-4.5');
+  assert.equal(withoutOpenAi.memoryModel, 'gpt-5.6-luna');
+  assert.equal(withoutOpenAi.routerModel, null);
+  assert.equal(withoutOpenAi.reasoningEffort, 'low');
+
+  const withOpenAi = resolveModelConfig({
+    AI_PROVIDER: 'xai',
+    OPENAI_API_KEY: 'sk-test'
+  });
+  assert.equal(withOpenAi.routerModel, 'gpt-5.6-luna');
+  assert.equal(
+    brainRequestOptions(withOpenAi, {
+      messages: [],
+      model: 'gpt-5.6-luna',
+      tools: [{ type: 'function', function: { name: 'lookup' } }]
+    }).reasoning_effort,
+    'none'
+  );
+  assert.equal(
+    resolveModelConfig({
+      AI_PROVIDER: 'xai',
+      OPENAI_API_KEY: 'sk-test',
+      AURA_ROUTER_MODEL: 'off'
+    }).routerModel,
+    null
+  );
+
   // Omitting effort defaults Grok to high — always send low/medium/high.
   assert.deepEqual(
-    brainRequestOptions(config, {
+    brainRequestOptions(withoutOpenAi, {
       messages: [],
       tools: [{ type: 'function', function: { name: 'lookup' } }]
     }),

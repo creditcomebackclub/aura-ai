@@ -348,6 +348,7 @@ function cancelActiveTurn() {
     }
     turnAbortController = null;
   }
+  stopPcmPlayback();
   audioPlayer.pause();
   audioPlayer.currentTime = 0;
   releaseAudioUrl();
@@ -838,10 +839,23 @@ let voiceQueueTail = Promise.resolve();
 // Bumped whenever the queue is reset so orphaned .then() chains from an
 // interrupted turn cannot resume listening or play audio after barge-in.
 let voiceGeneration = 0;
+// Active Web Audio BufferSources from streamed PCM TTS (interrupted on barge-in).
+let pcmPlaybackSources = [];
 
 function resetVoiceQueue() {
   voiceGeneration += 1;
   voiceQueueTail = Promise.resolve();
+}
+
+function stopPcmPlayback() {
+  for (const source of pcmPlaybackSources) {
+    try {
+      source.stop(0);
+    } catch {
+      // Already stopped or never started.
+    }
+  }
+  pcmPlaybackSources = [];
 }
 
 // Plays one clip and resolves once it's done - on natural end, on error, or
@@ -888,6 +902,125 @@ function playBlobAndWait(blob, { onPlayStart = null } = {}) {
   });
 }
 
+// Stream raw pcm_s16le from /api/tts?stream=1 and schedule Web Audio buffers
+// as chunks arrive — first audible audio before Cartesia finishes the clip.
+async function playPcmStreamAndWait(response, { onPlayStart = null, sampleRate = 24000 } = {}) {
+  if (playbackCancelled) return;
+  const ready = await ensureAudioGraph().catch(() => false);
+  if (!ready || !audioContext || !playbackGainNode || !response.body) {
+    const blob = await response.blob();
+    return playBlobAndWait(blob, { onPlayStart });
+  }
+
+  const reader = response.body.getReader();
+  let leftover = new Uint8Array(0);
+  let nextTime = 0;
+  let started = false;
+  const minFirstFrames = Math.max(1, Math.floor(sampleRate * 0.06));
+  const scheduleChunkFrames = Math.max(minFirstFrames, Math.floor(sampleRate * 0.08));
+  let pending = new Int16Array(0);
+
+  const scheduleFrames = (frames, { force = false } = {}) => {
+    if (!frames.length) return frames;
+    let offset = 0;
+    while (offset < frames.length) {
+      const remaining = frames.length - offset;
+      const need = started ? scheduleChunkFrames : minFirstFrames;
+      if (!force && remaining < need) break;
+      const take = force ? remaining : Math.min(scheduleChunkFrames, remaining);
+      if (!force && take < need) break;
+
+      const slice = frames.subarray(offset, offset + take);
+      offset += take;
+      const buffer = audioContext.createBuffer(1, slice.length, sampleRate);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < slice.length; i += 1) {
+        channel[i] = slice[i] / 32768;
+      }
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(playbackGainNode);
+      const startAt = Math.max(audioContext.currentTime + 0.02, nextTime || audioContext.currentTime + 0.02);
+      source.start(startAt);
+      nextTime = startAt + buffer.duration;
+      pcmPlaybackSources.push(source);
+      source.onended = () => {
+        pcmPlaybackSources = pcmPlaybackSources.filter(entry => entry !== source);
+      };
+      if (!started) {
+        started = true;
+        if (typeof onPlayStart === 'function') onPlayStart();
+      }
+      if (force) break;
+    }
+    return frames.subarray(offset);
+  };
+
+  try {
+    while (true) {
+      if (playbackCancelled) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        stopPcmPlayback();
+        return;
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+
+      const merged = new Uint8Array(leftover.length + value.length);
+      merged.set(leftover);
+      merged.set(value, leftover.length);
+      const usable = merged.byteLength - (merged.byteLength % 2);
+      leftover = merged.slice(usable);
+      const pcm = new Int16Array(merged.buffer, merged.byteOffset, usable / 2);
+
+      const combined = new Int16Array(pending.length + pcm.length);
+      combined.set(pending);
+      combined.set(pcm, pending.length);
+      pending = scheduleFrames(combined);
+    }
+    if (leftover.length >= 2) {
+      const tail = new Int16Array(leftover.buffer, leftover.byteOffset, Math.floor(leftover.byteLength / 2));
+      const combined = new Int16Array(pending.length + tail.length);
+      combined.set(pending);
+      combined.set(tail, pending.length);
+      pending = combined;
+    }
+    scheduleFrames(pending, { force: true });
+  } catch (error) {
+    if (error?.name === 'AbortError' || playbackCancelled) {
+      stopPcmPlayback();
+      return;
+    }
+    throw error;
+  }
+
+  if (!started || playbackCancelled) {
+    stopPcmPlayback();
+    return;
+  }
+
+  const remainingMs = Math.max(0, (nextTime - audioContext.currentTime) * 1000) + 30;
+  await new Promise(resolve => {
+    const timer = setTimeout(resolve, remainingMs);
+    const watch = () => {
+      if (playbackCancelled) {
+        clearTimeout(timer);
+        stopPcmPlayback();
+        resolve();
+        return;
+      }
+      if (audioContext.currentTime >= nextTime - 0.01) {
+        clearTimeout(timer);
+        resolve();
+        return;
+      }
+      requestAnimationFrame(watch);
+    };
+    requestAnimationFrame(watch);
+  });
+}
+
 // Fetches TTS for one speech group immediately (so synthesis overlaps with
 // whatever's currently playing) and appends its playback as the next link
 // in the queue. isFirst puts the orb into "speaking" state right away,
@@ -901,45 +1034,59 @@ function enqueueSpeechAudio(text, isFirst, timing = null, signal = null) {
   }
   const ttsStartedAt = timing ? performance.now() : 0;
   const generation = voiceGeneration;
-  const ttsPromise = authenticatedFetch('/api/tts', {
+  const ttsPromise = authenticatedFetch('/api/tts?stream=1', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
     ...(signal ? { signal } : {})
-  }).then(res => {
+  }).then(async res => {
     if (!res.ok) throw new Error('TTS API failed');
-    return res.blob();
-  }).then(blob => {
-    if (timing && isFirst) {
-      timing.ttsMs = Math.round(performance.now() - ttsStartedAt);
-    }
-    return blob;
+    return res;
   });
 
   voiceQueueTail = voiceQueueTail.then(async () => {
     if (playbackCancelled || signal?.aborted || generation !== voiceGeneration) return;
-    let blob;
+    let response;
     try {
-      blob = await ttsPromise;
+      response = await ttsPromise;
     } catch (error) {
       if (error?.name === 'AbortError' || playbackCancelled) return;
       console.error('TTS error:', error);
       return;
     }
     if (playbackCancelled || signal?.aborted || generation !== voiceGeneration) return;
-    await playBlobAndWait(blob, {
-      onPlayStart: isFirst && timing
-        ? () => {
-          timing.ttfaMs = Math.round(performance.now() - timing.t0);
-          console.log(
-            `[timing] TTFA ${timing.ttfaMs}ms` +
-            ` (stt ${timing.sttMs ?? timing.whisperMs ?? '?'}ms` +
-            `, first_sentence ${timing.firstSentenceMs ?? '?'}ms` +
-            `, tts ${timing.ttsMs ?? '?'}ms)`
-          );
+
+    const sampleRate = Number(response.headers.get('X-Aura-Sample-Rate')) || 24000;
+    const onPlayStart = isFirst && timing
+      ? () => {
+        timing.ttsMs = Math.round(performance.now() - ttsStartedAt);
+        timing.ttfaMs = Math.round(performance.now() - timing.t0);
+        console.log(
+          `[timing] TTFA ${timing.ttfaMs}ms` +
+          ` (stt ${timing.sttMs ?? timing.whisperMs ?? '?'}ms` +
+          `, first_sentence ${timing.firstSentenceMs ?? '?'}ms` +
+          `, tts ${timing.ttsMs ?? '?'}ms)`
+        );
+      }
+      : (isFirst
+        ? () => { /* orb already speaking */ }
+        : null);
+
+    try {
+      if (response.body && typeof response.body.getReader === 'function') {
+        if (isFirst) startVoiceWave();
+        await playPcmStreamAndWait(response, { onPlayStart, sampleRate });
+      } else {
+        const blob = await response.blob();
+        if (timing && isFirst) {
+          timing.ttsMs = Math.round(performance.now() - ttsStartedAt);
         }
-        : null
-    });
+        await playBlobAndWait(blob, { onPlayStart: isFirst && timing ? onPlayStart : null });
+      }
+    } catch (error) {
+      if (error?.name === 'AbortError' || playbackCancelled) return;
+      console.error('TTS playback error:', error);
+    }
   });
 }
 

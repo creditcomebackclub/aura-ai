@@ -17,6 +17,29 @@ function defaultPrimaryModel(provider) {
   return 'gpt-5.6-sol';
 }
 
+function isOpenAiChatModel(model) {
+  return /^gpt-/i.test(String(model || ''));
+}
+
+// Round-0 tool routing (and tool-free greets) can use a faster model than the
+// spoken primary. OpenAI defaults to Luna on the same API. xAI stays on the
+// primary unless AURA_ROUTER_MODEL is set explicitly (may be an OpenAI model
+// routed through the OpenAI client). Set AURA_ROUTER_MODEL=off to disable.
+function resolveRouterModel(env = process.env, provider = 'openai', memoryModel = 'gpt-5.6-luna') {
+  const raw = env.AURA_ROUTER_MODEL;
+  if (raw === undefined || raw === null) {
+    // Round-0 Luna is the main TTFT win. Prefer it whenever OpenAI is
+    // reachable — including xAI/Grok chat, which routes Luna through the
+    // embeddings client. Without OPENAI_API_KEY, non-OpenAI providers stay
+    // on their primary model.
+    if (provider === 'openai' || env.OPENAI_API_KEY) return memoryModel;
+    return null;
+  }
+  const trimmed = String(raw).trim();
+  if (!trimmed || /^(off|false|none|null)$/i.test(trimmed)) return null;
+  return trimmed;
+}
+
 function resolveTranscribeModel(env = process.env) {
   // Live TTFA showed whisper-1 alone ~6s of a ~13s turn. Mini-transcribe is
   // the faster default; override with AURA_TRANSCRIBE_MODEL if needed.
@@ -36,12 +59,7 @@ function resolveModelConfig(env = process.env) {
   // when chat is on xAI — vector recall uses OpenAI embeddings, and Luna is
   // the cheap OpenAI worker that fills the profile/semantic stores.
   const memoryModel = env.AURA_MEMORY_MODEL || 'gpt-5.6-luna';
-  // Opt-in only: unset means the tool-routing round uses primaryModel same
-  // as before. When set, it's used ONLY for the first (tool-decision) round
-  // of a turn - if that round doesn't end up calling a tool, its own text
-  // becomes the final reply (faster, but voiced by the router model instead
-  // of primaryModel). Any round after a tool call still uses primaryModel.
-  const routerModel = env.AURA_ROUTER_MODEL || null;
+  const routerModel = resolveRouterModel(env, provider, memoryModel);
   // Voice latency first: default to none/low so tool-free rounds (greets,
   // post-tool answers, plain chat) don't sit on "medium" reasoning. That alone
   // was multi-second TTFT on live turns. Opt into medium/high via env when
@@ -68,13 +86,21 @@ function brainRequestOptions(config, options = {}) {
     ...options,
     model
   };
+  // Key off the model id, not AI_PROVIDER — round-0 may call Luna via the
+  // OpenAI client while chat is still on xAI/Grok.
+  const openAiModel = isOpenAiChatModel(model);
 
-  if (config.provider === 'openai' && /^gpt-5\.6/.test(model)) {
-    // GPT-5.6 Sol supports Chat Completions function tools only when
-    // reasoning effort is disabled. Tool-free synthesis can retain the
-    // configured reasoning level.
-    request.reasoning_effort = hasFunctionTools ? 'none' : config.reasoningEffort;
-  } else if (config.provider === 'xai') {
+  if (openAiModel && /^gpt-5\.6/.test(model)) {
+    // GPT-5.6 supports Chat Completions function tools only when reasoning
+    // effort is disabled. Tool-free synthesis can retain the configured level
+    // unless this is an explicit router/Luna fast round (always none).
+    const isRouterRound = Boolean(
+      config.routerModel && model === config.routerModel && model !== config.primaryModel
+    );
+    request.reasoning_effort = (hasFunctionTools || isRouterRound)
+      ? 'none'
+      : config.reasoningEffort;
+  } else if (!openAiModel && config.provider === 'xai') {
     // Always send effort for Grok — omitting it defaults to high.
     request.reasoning_effort = resolveXaiReasoningEffort(config.reasoningEffort);
   }
@@ -86,5 +112,7 @@ module.exports = {
   brainRequestOptions,
   resolveModelConfig,
   resolveTranscribeModel,
-  resolveXaiReasoningEffort
+  resolveRouterModel,
+  resolveXaiReasoningEffort,
+  isOpenAiChatModel
 };

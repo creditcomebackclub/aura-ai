@@ -662,7 +662,8 @@ class MemoryV2 {
     profileStore,
     semanticMemory,
     client = null,
-    extractionModel = 'gpt-5.6-luna'
+    extractionModel = 'gpt-5.6-luna',
+    contextCacheTtlMs = Number(process.env.AURA_MEMORY_CONTEXT_CACHE_MS) || 15000
   }) {
     this.profileStore = profileStore;
     this.semanticMemory = semanticMemory;
@@ -671,10 +672,52 @@ class MemoryV2 {
     // Serializes learn/forget so a slow extract-then-upsert cannot snapshot a
     // stale profile and clobber a concurrent write to the same keys.
     this.mutationQueue = Promise.resolve();
+    // Short TTL for profile + always-on MEMORY list — these barely change
+    // turn-to-turn and were a free round-trip on every buildContext.
+    this.contextCacheTtlMs = Math.max(0, Number(contextCacheTtlMs) || 0);
+    this._profileCache = { at: 0, value: null };
+    this._alwaysOnCache = { at: 0, value: null };
+  }
+
+  _invalidateContextCache() {
+    this._profileCache = { at: 0, value: null };
+    this._alwaysOnCache = { at: 0, value: null };
+  }
+
+  async _cachedProfile() {
+    const now = Date.now();
+    if (
+      this.contextCacheTtlMs > 0
+      && this._profileCache.value
+      && now - this._profileCache.at < this.contextCacheTtlMs
+    ) {
+      return this._profileCache.value;
+    }
+    const value = await this.profileStore.getOwnerProfile();
+    this._profileCache = { at: now, value };
+    return value;
+  }
+
+  async _cachedAlwaysOnList(limit) {
+    const now = Date.now();
+    if (
+      this.contextCacheTtlMs > 0
+      && this._alwaysOnCache.value
+      && now - this._alwaysOnCache.at < this.contextCacheTtlMs
+    ) {
+      return this._alwaysOnCache.value;
+    }
+    const value = await this.semanticMemory.list(limit);
+    this._alwaysOnCache = { at: now, value };
+    return value;
   }
 
   _withMutationLock(task) {
-    const run = this.mutationQueue.catch(() => {}).then(task);
+    const run = this.mutationQueue.catch(() => {}).then(async () => {
+      const result = await task();
+      this._invalidateContextCache();
+      return result;
+    });
     this.mutationQueue = run.catch(() => {});
     return run;
   }
@@ -845,13 +888,14 @@ class MemoryV2 {
     // embedding/vector leg entirely (profile only) — that was a real slice of
     // first_sentence on "hey what's up" turns. The always-on MEMORY slice still
     // loads via list() (no embedding) so durable facts stay in the prompt,
-    // unless the caller opts out for a pure greeting fast path.
-    const profilePromise = this.profileStore.getOwnerProfile();
+    // unless the caller opts out for a pure greeting fast path. Profile and
+    // always-on are TTL-cached; semantic search stays uncached (query-specific).
+    const profilePromise = this._cachedProfile();
     const semanticPromise = includeSemantic
       ? this.semanticMemory.search(query, { limit: 6, threshold: 0.32 })
       : Promise.resolve([]);
     const recentPromise = includeAlwaysOn
-      ? this.semanticMemory.list(ALWAYS_ON_MEMORY_LIMIT * 2)
+      ? this._cachedAlwaysOnList(ALWAYS_ON_MEMORY_LIMIT * 2)
       : Promise.resolve([]);
     const [profile, semantic, recent] = await Promise.all([
       profilePromise,

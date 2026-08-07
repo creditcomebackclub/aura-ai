@@ -206,16 +206,36 @@ class SupabaseStateStore {
       .maybeSingle();
     if (findError) throw findError;
     const embedding = await this.embed(normalized);
+    const embeddingVec = Array.isArray(embedding) && embedding.length
+      ? `[${embedding.join(',')}]`
+      : undefined;
+    const withVec = (row) => (embeddingVec ? { ...row, embedding_vec: embeddingVec } : row);
+    const write = async (row, { id = null } = {}) => {
+      if (id) {
+        const { error } = await this.client.from('aura_memories').update(row).eq('id', id);
+        if (error && /embedding_vec/i.test(error.message || '')) {
+          const { embedding_vec, ...rest } = row;
+          return this.client.from('aura_memories').update(rest).eq('id', id);
+        }
+        return { error };
+      }
+      const inserted = await this.client.from('aura_memories').insert(row).select('id').single();
+      if (inserted.error && /embedding_vec/i.test(inserted.error.message || '')) {
+        const { embedding_vec, ...rest } = row;
+        return this.client.from('aura_memories').insert(rest).select('id').single();
+      }
+      return inserted;
+    };
     if (existing) {
-      const { error } = await this.client.from('aura_memories').update({
+      const { error } = await write(withVec({
         confidence: Math.max(existing.confidence, options.confidence ?? 0.8),
         embedding: embedding || undefined,
         updated_at: new Date().toISOString()
-      }).eq('id', existing.id);
+      }), { id: existing.id });
       if (error) throw error;
       return { id: existing.id, deduplicated: true };
     }
-    const { data, error } = await this.client.from('aura_memories').insert({
+    const { data, error } = await write(withVec({
       owner_id: this.ownerId,
       content: normalized,
       kind: options.kind || 'fact',
@@ -224,7 +244,7 @@ class SupabaseStateStore {
       sensitivity: options.sensitivity || 'private',
       embedding,
       expires_at: options.expiresAt || null
-    }).select('id').single();
+    }));
     if (error?.code === '23505') {
       const { data: duplicate, error: duplicateError } = await this.client
         .from('aura_memories')
@@ -242,18 +262,83 @@ class SupabaseStateStore {
 
   async searchMemories(query, { limit = 4, threshold = 0.35, lexicalThreshold = 0.34 } = {}) {
     const { textMatchScore } = require('./memory_v2');
+    const queryEmbedding = await this.embed(query);
+
+    // Prefer SQL top-k when the pgvector column + RPC are present. Fall back
+    // to the capped Node scan so recall still works before the migration runs
+    // (or if embedding_vec is empty for older rows).
+    if (queryEmbedding) {
+      try {
+        const { data: vectorHits, error: rpcError } = await this.client.rpc('match_aura_memories', {
+          p_owner_id: this.ownerId,
+          p_query_embedding: `[${queryEmbedding.join(',')}]`,
+          p_match_count: Math.max(limit * 2, limit),
+          p_match_threshold: threshold
+        });
+        if (!rpcError && Array.isArray(vectorHits)) {
+          const { data: recent, error: recentError } = await this.client
+            .from('aura_memories')
+            .select('id, content, kind, source, confidence, created_at')
+            .eq('owner_id', this.ownerId)
+            .is('superseded_by', null)
+            .order('updated_at', { ascending: false })
+            .limit(100);
+          if (recentError) throw recentError;
+
+          const byId = new Map();
+          for (const row of vectorHits) {
+            byId.set(row.id, {
+              id: row.id,
+              content: row.content,
+              kind: row.kind,
+              source: row.source,
+              confidence: row.confidence,
+              created_at: row.created_at,
+              score: Number(row.score) || 0,
+              _vector: Number(row.score) || 0,
+              _lexical: 0
+            });
+          }
+          for (const row of recent || []) {
+            const lexical = textMatchScore(query, row.content);
+            const existing = byId.get(row.id);
+            if (existing) {
+              existing._lexical = lexical;
+              existing.score = Math.max(existing.score, lexical * 0.95);
+              continue;
+            }
+            if (lexical < lexicalThreshold) continue;
+            byId.set(row.id, {
+              ...row,
+              score: lexical * 0.95,
+              _vector: 0,
+              _lexical: lexical
+            });
+          }
+
+          return [...byId.values()]
+            .filter(row => row._vector >= threshold || row._lexical >= lexicalThreshold)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit)
+            .map(({ _vector, _lexical, ...row }) => row);
+        }
+      } catch (error) {
+        // RPC missing / vector extension not applied — use the Node scan below.
+        if (process.env.AURA_TIMING_TRACE) {
+          console.warn('[memory] match_aura_memories unavailable:', error.message || error);
+        }
+      }
+    }
+
     // Embed and fetch overlap — they don't depend on each other. Cap the scan
     // so we don't pull a thousand embedding jsonbs into Node on every recall.
-    const [queryEmbedding, fetchResult] = await Promise.all([
-      this.embed(query),
-      this.client
-        .from('aura_memories')
-        .select('id, content, kind, source, confidence, embedding, created_at')
-        .eq('owner_id', this.ownerId)
-        .is('superseded_by', null)
-        .order('updated_at', { ascending: false })
-        .limit(200)
-    ]);
+    const fetchResult = await this.client
+      .from('aura_memories')
+      .select('id, content, kind, source, confidence, embedding, created_at')
+      .eq('owner_id', this.ownerId)
+      .is('superseded_by', null)
+      .order('updated_at', { ascending: false })
+      .limit(200);
     const { data, error } = fetchResult;
     if (error) throw error;
     return (data || [])
