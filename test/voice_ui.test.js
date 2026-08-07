@@ -193,6 +193,7 @@ test('tap interrupt copy and hey Aura wake wiring are present', () => {
 });
 
 test('Deepgram streaming listen path is wired', () => {
+  assert.match(app, /AudioWorkletNode|aura-pcm-capture/);
   assert.match(app, /function startStreamingListen/);
   assert.match(app, /stt:start/);
   assert.match(app, /stt:audio/);

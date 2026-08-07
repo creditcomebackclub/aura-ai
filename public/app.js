@@ -1166,6 +1166,63 @@ function requestStreamStop() {
   try { socket.emit('stt:stop'); } catch { /* ignore */ }
 }
 
+async function attachPcmCapture(audioCtx, mediaStream) {
+  const source = audioCtx.createMediaStreamSource(mediaStream);
+  const mute = audioCtx.createGain();
+  mute.gain.value = 0;
+  const emitPcm = float32 => {
+    if (!streamListenActive || !isListening) return;
+    const down = downsampleFloat32(float32, audioCtx.sampleRate, DEEPGRAM_STREAM_SAMPLE_RATE);
+    const pcm = floatTo16BitPCM(down);
+    socket.emit('stt:audio', pcm.buffer);
+  };
+
+  // Prefer AudioWorklet (no deprecation warning). Fall back to ScriptProcessor
+  // on older WebKit builds that still lack worklet support.
+  if (audioCtx.audioWorklet) {
+    try {
+      const workletSource = `
+        class AuraPcmCaptureProcessor extends AudioWorkletProcessor {
+          process(inputs) {
+            const input = inputs[0] && inputs[0][0];
+            if (input && input.length) {
+              this.port.postMessage(input);
+            }
+            return true;
+          }
+        }
+        registerProcessor('aura-pcm-capture', AuraPcmCaptureProcessor);
+      `;
+      const blobUrl = URL.createObjectURL(new Blob([workletSource], { type: 'application/javascript' }));
+      try {
+        await audioCtx.audioWorklet.addModule(blobUrl);
+      } finally {
+        URL.revokeObjectURL(blobUrl);
+      }
+      const node = new AudioWorkletNode(audioCtx, 'aura-pcm-capture');
+      node.port.onmessage = event => {
+        if (event.data instanceof Float32Array) emitPcm(event.data);
+        else if (event.data?.buffer) emitPcm(new Float32Array(event.data.buffer));
+      };
+      source.connect(node);
+      node.connect(mute);
+      mute.connect(audioCtx.destination);
+      return { source, processor: node, mute };
+    } catch (error) {
+      console.warn('[stt] AudioWorklet unavailable, using ScriptProcessor:', error.message || error);
+    }
+  }
+
+  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = event => {
+    emitPcm(event.inputBuffer.getChannelData(0));
+  };
+  source.connect(processor);
+  processor.connect(mute);
+  mute.connect(audioCtx.destination);
+  return { source, processor, mute };
+}
+
 async function startStreamingListen({ fromConversation = false } = {}) {
   stopWakeListening();
   discardNextRecording = false;
@@ -1205,20 +1262,10 @@ async function startStreamingListen({ fromConversation = false } = {}) {
     if (streamAudioCtx.state === 'suspended') {
       await streamAudioCtx.resume().catch(() => {});
     }
-    streamSource = streamAudioCtx.createMediaStreamSource(streamMedia);
-    streamProcessor = streamAudioCtx.createScriptProcessor(4096, 1, 1);
-    streamMute = streamAudioCtx.createGain();
-    streamMute.gain.value = 0;
-    streamProcessor.onaudioprocess = event => {
-      if (!streamListenActive || !isListening) return;
-      const input = event.inputBuffer.getChannelData(0);
-      const down = downsampleFloat32(input, streamAudioCtx.sampleRate, DEEPGRAM_STREAM_SAMPLE_RATE);
-      const pcm = floatTo16BitPCM(down);
-      socket.emit('stt:audio', pcm.buffer);
-    };
-    streamSource.connect(streamProcessor);
-    streamProcessor.connect(streamMute);
-    streamMute.connect(streamAudioCtx.destination);
+    const capture = await attachPcmCapture(streamAudioCtx, streamMedia);
+    streamSource = capture.source;
+    streamProcessor = capture.processor;
+    streamMute = capture.mute;
 
     isListening = true;
     setOrbState(
