@@ -30,7 +30,7 @@ test('Deepgram live URL includes nova-3 streaming + endpointing knobs', () => {
 test('endpointing defaults and clamps', () => {
   assert.equal(resolveDeepgramEndpointingMs({}), 300);
   assert.equal(resolveDeepgramUtteranceEndMs({}), 1000);
-  assert.equal(resolveDeepgramUtteranceEndMs({ AURA_DEEPGRAM_UTTERANCE_END_MS: '500' }), 1200);
+  assert.equal(resolveDeepgramUtteranceEndMs({ AURA_DEEPGRAM_UTTERANCE_END_MS: '500' }), 1000);
 });
 
 test('classifyDeepgramLiveMessage maps Results / UtteranceEnd / Error', () => {
