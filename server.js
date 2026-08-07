@@ -3380,7 +3380,7 @@ function attachDeepgramSttProxy(socket) {
     live.on('open', () => {
       socket.emit('stt:ready', {
         sample_rate: DEEPGRAM_LIVE_SAMPLE_RATE,
-        endpointing_ms: Number(process.env.AURA_DEEPGRAM_ENDPOINTING_MS) || 300
+        endpointing_ms: Number(process.env.AURA_DEEPGRAM_ENDPOINTING_MS) || 400
       });
     });
 
