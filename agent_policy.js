@@ -18,6 +18,9 @@ const TOOL_POLICIES = Object.freeze({
   update_goal_status: 'reversible_write',
   log_finance: 'reversible_write',
   save_semantic_memory: 'reversible_write',
+  list_skills: 'read',
+  view_skill: 'read',
+  manage_skill: 'reversible_write',
   // Staging a deletion changes nothing on its own; only the confirm step destroys data.
   propose_test_letter_deletion: 'reversible_write',
   confirm_test_letter_deletion: 'destructive_write',
@@ -197,6 +200,17 @@ function validateToolArguments(name, args) {
     }
   }
   if (name === 'save_semantic_memory') requireString('fact', 2000);
+  if (name === 'view_skill') requireString('name', 80);
+  if (name === 'manage_skill') {
+    if (!['create', 'patch', 'delete'].includes(args.action)) {
+      throw new Error('manage_skill action must be create, patch, or delete.');
+    }
+    requireString('name', 80);
+    if (args.action === 'create' || args.action === 'patch') {
+      requireString('description', 240);
+      requireString('content', 24000);
+    }
+  }
 
   if (name === 'update_goal_status') {
     const validNumericId = Number.isInteger(args.id) && args.id > 0;

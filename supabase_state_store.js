@@ -240,23 +240,35 @@ class SupabaseStateStore {
     return { id: data.id, deduplicated: false };
   }
 
-  async searchMemories(query, { limit = 4, threshold = 0.35 } = {}) {
-    const queryEmbedding = await this.embed(query);
-    if (!queryEmbedding) return [];
-    const { data, error } = await this.client
-      .from('aura_memories')
-      .select('id, content, kind, source, confidence, embedding, created_at')
-      .eq('owner_id', this.ownerId)
-      .is('superseded_by', null)
-      .order('updated_at', { ascending: false })
-      .limit(1000);
+  async searchMemories(query, { limit = 4, threshold = 0.35, lexicalThreshold = 0.34 } = {}) {
+    const { textMatchScore } = require('./memory_v2');
+    // Embed and fetch overlap — they don't depend on each other. Cap the scan
+    // so we don't pull a thousand embedding jsonbs into Node on every recall.
+    const [queryEmbedding, fetchResult] = await Promise.all([
+      this.embed(query),
+      this.client
+        .from('aura_memories')
+        .select('id, content, kind, source, confidence, embedding, created_at')
+        .eq('owner_id', this.ownerId)
+        .is('superseded_by', null)
+        .order('updated_at', { ascending: false })
+        .limit(200)
+    ]);
+    const { data, error } = fetchResult;
     if (error) throw error;
     return (data || [])
-      .map(row => ({ ...row, score: this.cosine(queryEmbedding, row.embedding) }))
-      .filter(row => row.score >= threshold)
+      .map(row => {
+        const lexical = textMatchScore(query, row.content);
+        const vector = queryEmbedding && row.embedding
+          ? this.cosine(queryEmbedding, row.embedding)
+          : 0;
+        const score = Math.max(vector, lexical * 0.95);
+        return { ...row, score, _vector: vector, _lexical: lexical };
+      })
+      .filter(row => row._vector >= threshold || row._lexical >= lexicalThreshold)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map(({ embedding, ...row }) => row);
+      .map(({ embedding, _vector, _lexical, ...row }) => row);
   }
 
   async listMemories(limit = 100) {

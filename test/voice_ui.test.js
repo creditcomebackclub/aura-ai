@@ -36,10 +36,17 @@ test('the search-results panel is non-persistent and appears only with content',
   // is interrupted (stopSpeaking) - so old text doesn't linger on screen
   // until the next interaction starts.
   assert.match(app, /showSearchEvidence\(\[\],\s*\[\]\)/);
+  const cancelActiveTurnFn = app.slice(
+    app.indexOf('function cancelActiveTurn()'),
+    app.indexOf('function cancelActiveTurn()') + 700
+  );
+  assert.match(cancelActiveTurnFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
+  assert.match(cancelActiveTurnFn, /playbackCancelled = true/);
+  assert.match(cancelActiveTurnFn, /resetVoiceQueue\(\)/);
   const finishVoiceQueueFn = app.slice(app.indexOf('function finishVoiceQueue()'), app.indexOf('function finishVoiceQueue()') + 400);
   assert.match(finishVoiceQueueFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
-  const stopSpeakingFn = app.slice(app.indexOf('function stopSpeaking()'), app.indexOf('function releaseAudioUrl'));
-  assert.match(stopSpeakingFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
+  const stopSpeakingFn = app.slice(app.indexOf('function stopSpeaking()'), app.indexOf('function setOrbState'));
+  assert.match(stopSpeakingFn, /cancelActiveTurn\(\)/);
 });
 
 test('the panel shows receipts only — search evidence or number-heavy replies', () => {
@@ -103,20 +110,21 @@ test('on a phone the panel docks below the orb/wave instead of beside them', () 
   assert.match(mobileBlock, /#source-panel\.visible\s*\{[^}]*transform:\s*translateY\(0\)/s);
 });
 
-test('conversation transcript panel loads from /api/messages when idle', () => {
+test('conversation transcript panel stays hidden — voice-first, no leftover text on open', () => {
   const transcriptTag = html.match(/<section id="transcript-panel"[^>]*>/)[0];
   assert.match(transcriptTag, /aria-hidden="true"/);
   assert.match(css, /#transcript-panel\s*\{[^}]*opacity:\s*0;/s);
-  // Desktop: left of the wave (right edge pinned to wave's left - gutter).
-  assert.match(css, /#transcript-panel\s*\{[^}]*right:\s*calc\(50% - var\(--wave-width\)\s*\/\s*2/s);
-  assert.match(app, /async function refreshTranscript\(/);
-  assert.match(app, /authenticatedFetch\('\/api\/messages\?limit=12'\)/);
   assert.match(app, /function hideTranscript\(/);
-  // Hidden while listening; refreshed when a turn returns to idle.
-  const startListeningFn = app.slice(app.indexOf('async function startListening'), app.indexOf('async function startListening') + 500);
-  assert.match(startListeningFn, /hideTranscript\(\)/);
-  const finishVoiceQueueFn = app.slice(app.indexOf('function finishVoiceQueue()'), app.indexOf('function finishVoiceQueue()') + 700);
-  assert.match(finishVoiceQueueFn, /refreshTranscript\(\)/);
+  assert.match(app, /function refreshTranscript\(/);
+  // Must never auto-fetch / auto-show history on idle or boot.
+  assert.doesNotMatch(app, /authenticatedFetch\('\/api\/messages\?limit=12'\)/);
+  assert.match(app, /never auto-show/i);
+  const refreshFn = app.slice(
+    app.indexOf('function refreshTranscript()'),
+    app.indexOf('function refreshTranscript()') + 200
+  );
+  assert.match(refreshFn, /hideTranscript\(\)/);
+  assert.doesNotMatch(refreshFn, /\.visible/);
 });
 
 test('waveform is driven by the actual AURA audio element', () => {
@@ -142,8 +150,10 @@ test('the wordmark glow tracks the orb state and respects reduced motion', () =>
 test('mobile cache-busting versions the waveform assets together', () => {
   const styleVersion = html.match(/style\.css\?v=([^"']+)/)?.[1];
   const appVersion = html.match(/app\.js\?v=([^"']+)/)?.[1];
+  const wakeVersion = html.match(/wake_word\.js\?v=([^"']+)/)?.[1];
   assert.ok(styleVersion);
   assert.equal(appVersion, styleVersion);
+  assert.equal(wakeVersion, styleVersion);
 });
 
 test('voice path logs wall-clock TTFA marks in the browser console', () => {
@@ -157,6 +167,25 @@ test('voice path logs wall-clock TTFA marks in the browser console', () => {
 test('streamed voice uses connected TTS groups instead of resetting every sentence', () => {
   assert.match(app, /function enqueueSpeechAudio/);
   assert.match(server, /createSpeechChunkAccumulator\(onSentence\)/);
+  assert.match(server, /extractEarlySpeakable/);
   assert.match(server, /await synthesizeSpeechChunk\(text\.trim\(\)\)/);
   assert.doesNotMatch(server, /Promise\.all\(sentences\.map\(synthesizeSpeechChunk\)\)/);
+  assert.match(app, /function cancelActiveTurn\(/);
+  assert.match(app, /turnAbortController/);
+  assert.match(app, /isSpeaking \|\| isProcessing/);
+  assert.match(app, /SILENCE_HANGOVER_MS = 400/);
+});
+
+test('tap interrupt copy and hey Aura wake wiring are present', () => {
+  assert.match(app, /Speaking\.\.\. tap to interrupt/);
+  assert.match(app, /Say hey Aura, or tap/);
+  assert.match(app, /function maybeStartWakeListening\(/);
+  assert.match(app, /function stopWakeListening\(/);
+  assert.match(app, /createWakeWordListener/);
+  assert.match(app, /canRunWakeListener/);
+  assert.match(html, /wake_word\.js\?v=/);
+  // Wake arms on idle after conversation listen times out / reply finishes;
+  // listening/speaking stops it.
+  assert.match(app, /stopWakeListening\(\)/);
+  assert.match(app, /maybeStartWakeListening\(\)/);
 });

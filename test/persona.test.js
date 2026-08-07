@@ -26,6 +26,15 @@ test('SOUL.md preserves the proven-necessary safety and accuracy instructions', 
   assert.match(soul, /Memory v2/i);
   assert.match(soul, /Stay quiet while tools run/i);
   assert.match(soul, /Never narrate routine work with filler/i);
+  assert.match(soul, /view_skill/);
+  assert.match(soul, /manage_skill/);
+  assert.match(soul, /Procedural skills/i);
+  assert.match(soul, /Sound like this/i);
+  assert.match(soul, /Never sound like this/i);
+  assert.match(soul, /let me know if/i);
+  assert.match(soul, /Write for the ear, not the page/i);
+  assert.match(soul, /Ban these closers/i);
+  assert.match(soul, /helpdesk closers/i);
 });
 
 test('the delete-routes description matches the actual staged approval flow, not immediate deletion', () => {

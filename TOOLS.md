@@ -78,6 +78,9 @@ sees in the `tools` array; "underlying tables" are what the executor in
 | `update_goal_status` | Updates a goal's status (`pending`/`active`/`paused`/`completed`/`dropped`, mapped to `aura_tasks.status` values `pending`/`running`/`blocked`/`completed`/`cancelled` in cloud mode). | `id` (int or UUID), `status` | SQLite `goals`, or `aura_tasks` via `cloudState.updateTaskStatus()` |
 | `log_finance` | Logs an expense (negative) or income (positive) entry. | `amount` (≤ 100,000,000 in magnitude), `category`, `description` | SQLite `finances` table (local-only) |
 | `save_semantic_memory` | Saves a fact/preference/event for long-term semantic recall. | `fact` | `aura_memories` (cloud) or local `MemoryStore`, via `MemoryV2.learnFromUserMessage()` |
+| `list_skills` | Lists procedural skills (name, description, origin). | — | `skills/bundled` + `skills/learned` via `SkillsStore` |
+| `view_skill` | Loads a full skill body by exact name (progressive disclosure). | `name` | `skills_store.viewSkill()` |
+| `manage_skill` | Create/patch/delete learned skills only (`skills/learned/`). | `action`, `name`, `description?`, `content?` | filesystem under `skills/learned/` |
 | `propose_test_letter_deletion` | **Step 1 of 2** for deleting a test letter. Re-validates eligibility and *stages* the deletion; deletes nothing. | `letter_id` | Inserts a `proposed` row into `aura_actions` (`tool_name: 'confirm_test_letter_deletion'`) |
 | `create_calendar_event` | Immediately creates a Google Calendar event from an explicit scheduling command in the owner's current message. Optional explicitly named attendees receive invitations. Missing or ambiguous details require a short follow-up before the call. | `summary`, `start`, `end?`, `duration_minutes?`, `description?`, `location?`, `attendees[]?`, `time_zone?` | Validates the raw owner instruction, grounds relative dates, inserts an audited `aura_actions` row (`risk_level: 'reversible_write'`), then executes `google_calendar.js::createGoogleCalendarEvent()` in the same turn |
 
@@ -310,6 +313,7 @@ read:
 
 reversible_write:
   add_goal, update_goal_status, log_finance, save_semantic_memory,
+  list_skills, view_skill, manage_skill,
   propose_test_letter_deletion, create_calendar_event
 
 destructive_write:

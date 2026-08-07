@@ -253,7 +253,7 @@ const PLAYBACK_VOLUME_LEVELS = {
   medium: 1.7,
   high: 2.25
 };
-const SILENCE_HANGOVER_MS = 850;
+const SILENCE_HANGOVER_MS = 400;
 const MIN_UTTERANCE_MS = 350;
 const MAX_UTTERANCE_MS = 20000;
 // If the mic arms after her reply and nobody speaks, drop back to idle
@@ -261,7 +261,7 @@ const MAX_UTTERANCE_MS = 20000;
 const NO_SPEECH_IDLE_MS = 4000;
 // Ignore the first beat after arming so speaker bleed / room echo from her
 // last sentence doesn't look like the start of Chris's reply.
-const LISTEN_ARM_GRACE_MS = 450;
+const LISTEN_ARM_GRACE_MS = 500;
 const SPEECH_RMS_START = 0.028;
 const SPEECH_RMS_CONTINUE = 0.014;
 
@@ -308,6 +308,43 @@ let currentAudioUrl = null;
 // Set when the user interrupts, so a reply whose audio is still being
 // generated doesn't start playing after they've told her to stop.
 let playbackCancelled = false;
+// Aborts in-flight transcribe/chat/TTS fetches when Chris barges in.
+let turnAbortController = null;
+// Idle "hey Aura" wake listener (Web Speech). Created after startListening exists.
+let wakeListener = null;
+
+// Hard-stop the active turn: mute audio, invalidate in-flight processAudio,
+// abort network work, and drop the speech queue so a barge-in can't get
+// overwritten by a stale reply that finishes later.
+function cancelActiveTurn() {
+  playbackCancelled = true;
+  currentTurn += 1;
+  isProcessing = false;
+  stopWakeListening();
+  if (turnAbortController) {
+    try {
+      turnAbortController.abort();
+    } catch {
+      // AbortController.abort is safe; ignore exotic environments.
+    }
+    turnAbortController = null;
+  }
+  audioPlayer.pause();
+  audioPlayer.currentTime = 0;
+  releaseAudioUrl();
+  resetVoiceQueue();
+  isSpeaking = false;
+  stopVoiceWave();
+  showSearchEvidence([], []);
+  hideTranscript();
+}
+
+// Cuts AURA off mid-sentence and returns the orb to idle (unless the caller
+// immediately re-arms listening for a barge-in).
+function stopSpeaking() {
+  cancelActiveTurn();
+  setOrbState('idle', idleStatusText());
+}
 
 // State Management
 function setOrbState(state, text) {
@@ -510,7 +547,7 @@ function playAudioBlob(blob) {
   resetVoiceQueue();
   voiceQueueTail = voiceQueueTail.then(async () => {
     if (playbackCancelled) return;
-    setOrbState('speaking', 'Speaking... Tap to stop');
+    setOrbState('speaking', 'Speaking... tap to interrupt');
     isSpeaking = true;
     audioPlayer.onplay = startVoiceWave;
     await playBlobAndWait(blob);
@@ -580,43 +617,12 @@ function hideTranscript() {
   transcriptPanel.setAttribute('aria-hidden', 'true');
 }
 
-// Loads recent user/assistant turns into the left (desktop) / top (mobile)
-// transcript panel. Shown when idle; hidden while listening or speaking so
-// the orb stays the primary surface.
-async function refreshTranscript() {
-  if (!transcriptPanel || !transcriptContent) return;
-  if (isListening || isSpeaking || isProcessing) {
-    hideTranscript();
-    return;
-  }
-  try {
-    const res = await authenticatedFetch('/api/messages?limit=12');
-    if (!res.ok) return;
-    const body = await res.json();
-    const messages = Array.isArray(body.messages) ? body.messages : [];
-    transcriptContent.replaceChildren();
-    for (const msg of messages) {
-      if (msg.role !== 'user' && msg.role !== 'assistant') continue;
-      const text = String(msg.content || '').trim();
-      if (!text) continue;
-      const entry = document.createElement('div');
-      entry.className = `transcript-entry transcript-entry--${msg.role}`;
-      const role = document.createElement('span');
-      role.className = 'transcript-role';
-      role.textContent = msg.role === 'user' ? 'You' : 'AURA';
-      const paragraph = document.createElement('p');
-      paragraph.className = 'transcript-text';
-      paragraph.textContent = text;
-      entry.append(role, paragraph);
-      transcriptContent.appendChild(entry);
-    }
-    const hasContent = transcriptContent.childElementCount > 0;
-    transcriptPanel.classList.toggle('visible', hasContent);
-    transcriptPanel.setAttribute('aria-hidden', String(!hasContent));
-    if (hasContent) transcriptPanel.scrollTop = transcriptPanel.scrollHeight;
-  } catch (error) {
-    console.error('Failed to load transcript:', error);
-  }
+// Transcript history used to auto-appear when idle (top sheet on phones).
+// That fights the voice-first surface — every open dumped leftover text over
+// the orb. Keep the panel in the DOM for a future explicit affordance, but
+// never auto-show it.
+function refreshTranscript() {
+  hideTranscript();
 }
 
 // Ear for talk, panel for receipts: show search citations/sources, or a
@@ -675,10 +681,26 @@ function isConversationMode() {
   return localStorage.getItem(CONVERSATION_MODE_KEY) !== 'false';
 }
 
+function speechRecognitionAvailable() {
+  return typeof window !== 'undefined' &&
+    Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+
 function idleStatusText() {
-  return isConversationMode()
-    ? 'Tap to talk · conversation on'
-    : 'Tap to talk to AURA';
+  if (!isConversationMode()) return 'Tap to talk to AURA';
+  if (wakeListener?.isArmed?.()) return 'Say hey Aura, or tap';
+  if (speechRecognitionAvailable()) return 'Say hey Aura, or tap';
+  return 'Tap to talk · conversation on';
+}
+
+function canRunWakeListener() {
+  return isConversationMode() &&
+    speechRecognitionAvailable() &&
+    !isListening &&
+    !isSpeaking &&
+    !isProcessing &&
+    typeof document !== 'undefined' &&
+    document.visibilityState !== 'hidden';
 }
 
 function syncConversationToggle() {
@@ -691,9 +713,26 @@ function syncConversationToggle() {
 function setConversationMode(on) {
   localStorage.setItem(CONVERSATION_MODE_KEY, on ? 'true' : 'false');
   syncConversationToggle();
+  if (!on) {
+    wakeListener?.stop?.();
+  }
   if (!isListening && !isSpeaking && !isProcessing) {
     setOrbState('idle', idleStatusText());
+    if (on) maybeStartWakeListening();
   }
+}
+
+function maybeStartWakeListening() {
+  if (!wakeListener) return false;
+  if (!canRunWakeListener()) {
+    wakeListener.stop();
+    return false;
+  }
+  return wakeListener.start();
+}
+
+function stopWakeListening() {
+  wakeListener?.stop?.();
 }
 
 function clearSilenceWatch() {
@@ -763,19 +802,6 @@ function armSilenceAutoStop(stream) {
   silenceWatchFrame = requestAnimationFrame(tick);
 }
 
-// Cuts AURA off mid-sentence and returns the orb to idle.
-function stopSpeaking() {
-  playbackCancelled = true;
-  audioPlayer.pause();
-  audioPlayer.currentTime = 0;
-  releaseAudioUrl();
-  isSpeaking = false;
-  stopVoiceWave();
-  setOrbState('idle', idleStatusText());
-  showSearchEvidence([], []);
-  refreshTranscript();
-}
-
 function releaseAudioUrl() {
   if (currentAudioUrl) {
     URL.revokeObjectURL(currentAudioUrl);
@@ -790,8 +816,12 @@ function releaseAudioUrl() {
 // overlap playback, but Cartesia gets enough connected text to keep natural
 // cadence instead of restarting its performance sentence by sentence.
 let voiceQueueTail = Promise.resolve();
+// Bumped whenever the queue is reset so orphaned .then() chains from an
+// interrupted turn cannot resume listening or play audio after barge-in.
+let voiceGeneration = 0;
 
 function resetVoiceQueue() {
+  voiceGeneration += 1;
   voiceQueueTail = Promise.resolve();
 }
 
@@ -844,17 +874,19 @@ function playBlobAndWait(blob, { onPlayStart = null } = {}) {
 // in the queue. isFirst puts the orb into "speaking" state right away,
 // matching the old single-blob behavior of setting state before playback
 // starts rather than waiting for audio to actually begin.
-function enqueueSpeechAudio(text, isFirst, timing = null) {
+function enqueueSpeechAudio(text, isFirst, timing = null, signal = null) {
   if (isFirst) {
-    setOrbState('speaking', 'Speaking... Tap to stop');
+    setOrbState('speaking', 'Speaking... tap to interrupt');
     isSpeaking = true;
     audioPlayer.onplay = startVoiceWave;
   }
   const ttsStartedAt = timing ? performance.now() : 0;
+  const generation = voiceGeneration;
   const ttsPromise = authenticatedFetch('/api/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text })
+    body: JSON.stringify({ text }),
+    ...(signal ? { signal } : {})
   }).then(res => {
     if (!res.ok) throw new Error('TTS API failed');
     return res.blob();
@@ -866,15 +898,16 @@ function enqueueSpeechAudio(text, isFirst, timing = null) {
   });
 
   voiceQueueTail = voiceQueueTail.then(async () => {
-    if (playbackCancelled) return;
+    if (playbackCancelled || signal?.aborted || generation !== voiceGeneration) return;
     let blob;
     try {
       blob = await ttsPromise;
     } catch (error) {
+      if (error?.name === 'AbortError' || playbackCancelled) return;
       console.error('TTS error:', error);
       return;
     }
-    if (playbackCancelled) return;
+    if (playbackCancelled || signal?.aborted || generation !== voiceGeneration) return;
     await playBlobAndWait(blob, {
       onPlayStart: isFirst && timing
         ? () => {
@@ -895,8 +928,9 @@ function enqueueSpeechAudio(text, isFirst, timing = null) {
 // 'done' event arrived) - the actual "return to idle" only happens once
 // every queued clip has finished playing, not the moment this is called.
 function finishVoiceQueue() {
+  const generation = voiceGeneration;
   voiceQueueTail = voiceQueueTail.then(async () => {
-    if (playbackCancelled) return;
+    if (playbackCancelled || generation !== voiceGeneration) return;
     isSpeaking = false;
     stopVoiceWave();
     releaseAudioUrl();
@@ -913,6 +947,7 @@ function finishVoiceQueue() {
     }
     setOrbState('idle', idleStatusText());
     refreshTranscript();
+    maybeStartWakeListening();
   });
 }
 
@@ -991,22 +1026,25 @@ document.getElementById('orb-container').addEventListener('click', async () => {
     audioUnlocked = true;
   }
 
-  // Tapping the orb while she's speaking (orange) interrupts her.
-  // In conversation mode, jump straight into listening for the barge-in reply.
-  if (isSpeaking) {
-    stopSpeaking();
-    if (isConversationMode() && !isProcessing) {
-      await startListening({ fromConversation: true });
+  // Tapping the orb while she's speaking OR still thinking interrupts her
+  // and, in conversation mode, arms the mic for the barge-in reply. Without
+  // this, mid-reply taps only muted audio while isProcessing stayed true —
+  // so she wouldn't listen until you tapped again.
+  if (isSpeaking || isProcessing) {
+    cancelActiveTurn();
+    if (isConversationMode()) {
+      try {
+        await startListening({ fromConversation: true });
+      } catch (error) {
+        console.warn('Barge-in re-listen failed:', error.message || error);
+        setOrbState('idle', idleStatusText());
+      }
+    } else {
+      setOrbState('idle', idleStatusText());
+      maybeStartWakeListening();
     }
     return;
   }
-
-  // A request is already in flight (transcribing or waiting on the chat
-  // backend) - ignore the tap instead of starting a second, overlapping
-  // turn. Without this, an impatient re-tap during a slow response (cold
-  // boot, etc.) races two replies against each other and whichever
-  // resolves last gets shown/spoken, even if it's the stale one.
-  if (isProcessing) return;
 
   if (isListening) {
     // Tap to STOP listening
@@ -1024,8 +1062,10 @@ document.getElementById('orb-container').addEventListener('keydown', event => {
 });
 
 async function startListening({ fromConversation = false } = {}) {
-  // Clear any prior interrupt so this new exchange is allowed to speak.
-  playbackCancelled = false;
+  // Do NOT clear playbackCancelled here — a barge-in after interrupt would
+  // otherwise let the previous turn's queued TTS resume. processAudio clears
+  // it when the new turn actually owns the mic→reply pipeline.
+  stopWakeListening();
   discardNextRecording = false;
   listeningFromConversation = fromConversation;
   showSearchEvidence([], []);
@@ -1109,6 +1149,7 @@ function cancelListeningToIdle() {
   isListening = false;
   listeningFromConversation = false;
   setOrbState('idle', idleStatusText());
+  maybeStartWakeListening();
 }
 
 function stopListening() {
@@ -1121,6 +1162,17 @@ function stopListening() {
 }
 
 async function processAudio(audioBlob) {
+  if (turnAbortController) {
+    try {
+      turnAbortController.abort();
+    } catch {
+      // ignore
+    }
+  }
+  turnAbortController = new AbortController();
+  const { signal } = turnAbortController;
+  // This turn owns playback now.
+  playbackCancelled = false;
   isProcessing = true;
   const myTurn = ++currentTurn;
   // Wall-clock voice latency marks: mic-stop → first audible audio.
@@ -1129,7 +1181,7 @@ async function processAudio(audioBlob) {
   // True once this turn has been superseded (a newer tap started, or this
   // one errored out) - any UI write after that point is a stale reply and
   // must be dropped instead of displayed/spoken.
-  const stale = () => myTurn !== currentTurn;
+  const stale = () => myTurn !== currentTurn || signal.aborted;
   try {
     // 1. Send Audio to Whisper for Transcription
     const formData = new FormData();
@@ -1139,7 +1191,8 @@ async function processAudio(audioBlob) {
     const whisperStartedAt = performance.now();
     const transcribeRes = await authenticatedFetch('/api/transcribe', {
       method: 'POST',
-      body: formData
+      body: formData,
+      signal
     });
 
     if (!transcribeRes.ok) throw new Error('Transcription failed');
@@ -1147,8 +1200,10 @@ async function processAudio(audioBlob) {
     timing.whisperMs = Math.round(performance.now() - whisperStartedAt);
     console.log('User:', transcript);
 
+    if (stale()) return;
     if (!transcript || transcript.trim() === '') {
       setOrbState('idle', idleStatusText());
+      maybeStartWakeListening();
       return;
     }
 
@@ -1163,7 +1218,8 @@ async function processAudio(audioBlob) {
     const chatRes = await authenticatedFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: transcript })
+      body: JSON.stringify({ text: transcript }),
+      signal
     });
 
     if (!chatRes.ok) throw new Error('Chat API failed');
@@ -1177,6 +1233,14 @@ async function processAudio(audioBlob) {
     let finalResult = null;
 
     while (true) {
+      if (stale()) {
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore
+        }
+        break;
+      }
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -1192,7 +1256,7 @@ async function processAudio(audioBlob) {
           if (speechChunkCount === 1) {
             timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
           }
-          enqueueSpeechAudio(event.text, speechChunkCount === 1, timing);
+          enqueueSpeechAudio(event.text, speechChunkCount === 1, timing, signal);
         } else if (event.type === 'done') {
           finalResult = event;
           // Arrives after the tool loop finishes — later than TTFA, but this is
@@ -1204,7 +1268,9 @@ async function processAudio(audioBlob) {
               ` (pre_model ${event.timing.pre_model_ms ?? '?'}ms` +
               `, first_delta ${event.timing.first_delta_ms ?? '?'}ms` +
               `, context ${event.timing.context_build_ms ?? '?'}ms` +
-              `${event.timing.lightweight ? ', lightweight' : ''})`
+              `${event.timing.lightweight ? ', lightweight' : ''}` +
+              `${event.timing.skip_semantic ? ', no-semantic' : ''}` +
+              `${event.timing.direct_metrics ? ', direct-metrics' : ''})`
             );
           }
         } else if (event.type === 'error') {
@@ -1213,8 +1279,8 @@ async function processAudio(audioBlob) {
       }
     }
 
-    if (!finalResult) throw new Error('Chat stream ended without a result.');
     if (stale()) return;
+    if (!finalResult) throw new Error('Chat stream ended without a result.');
     const { reply, sources = [], web_results: webResults = [] } = finalResult;
     console.log('AURA:', reply);
 
@@ -1223,7 +1289,7 @@ async function processAudio(audioBlob) {
     // silently saying nothing.
     if (speechChunkCount === 0 && reply) {
       timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
-      enqueueSpeechAudio(reply, true, timing);
+      enqueueSpeechAudio(reply, true, timing, signal);
     }
 
     // Evidence is shown once the reply is fully known, which lands close to
@@ -1233,6 +1299,7 @@ async function processAudio(audioBlob) {
     showSearchEvidence(webResults, sources, reply);
     finishVoiceQueue();
   } catch (err) {
+    if (err?.name === 'AbortError' || stale()) return;
     console.error(err);
     // Halts any sentences already queued/playing from this same turn before
     // the error - startListening() resets this back to false at the start
@@ -1245,18 +1312,56 @@ async function processAudio(audioBlob) {
     setOrbState('error', 'Error occurred. Tap to retry.');
     isSpeaking = false;
     setTimeout(() => {
+      if (myTurn !== currentTurn) return;
       setOrbState('idle', idleStatusText());
       refreshTranscript();
+      maybeStartWakeListening();
     }, 3000);
   } finally {
-    isProcessing = false;
+    // Only the live turn clears the processing lock — a cancelled turn's
+    // finally must not unlock while a newer barge-in turn is running.
+    if (myTurn === currentTurn) {
+      isProcessing = false;
+      turnAbortController = null;
+    }
   }
 }
+
+wakeListener = window.AuraWakeWord?.createWakeWordListener({
+  shouldRun: canRunWakeListener,
+  onWake: async () => {
+    console.log('[wake] hey Aura detected');
+    try {
+      await ensureAudioGraph().catch(() => false);
+      await startListening({ fromConversation: true });
+    } catch (error) {
+      console.warn('[wake] failed to start listening:', error.message || error);
+      setOrbState('idle', idleStatusText());
+      maybeStartWakeListening();
+    }
+  },
+  onStatus: text => {
+    if (!isListening && !isSpeaking && !isProcessing) {
+      setOrbState('idle', text);
+    }
+  }
+}) || null;
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    stopWakeListening();
+    return;
+  }
+  if (!isListening && !isSpeaking && !isProcessing) {
+    maybeStartWakeListening();
+  }
+});
 
 syncConversationToggle();
 if (!isListening && !isSpeaking && !isProcessing) {
   setOrbState(orb.className || 'idle', idleStatusText());
 }
-if (auraSessionToken || auraAccessToken) {
-  refreshTranscript();
-}
+hideTranscript();
+// Don't auto-start wake until a user gesture has unlocked audio/mic once.
+// First orb tap or conversation toggle will arm it via setConversationMode /
+// startListening completion paths.

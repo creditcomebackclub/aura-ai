@@ -6,7 +6,8 @@ const {
   concatWavBuffers,
   splitIntoSentences,
   createSpeechChunkAccumulator,
-  advancePastEmitted
+  advancePastEmitted,
+  sanitizeSpokenText
 } = require('../wav_utils');
 
 function makeWav({ numChannels = 1, sampleRate = 44100, bitsPerSample = 16, samples = [] } = {}) {
@@ -85,17 +86,34 @@ test('speech chunking emits one complete opening sentence, never a leading fragm
   assert.equal(emitted.includes('Yeah,'), false);
 });
 
-test('speech chunking pairs the remainder for connected Cartesia prosody', () => {
+test('speech chunking keeps later sentences in a larger connected group', () => {
   const emitted = [];
   const chunks = createSpeechChunkAccumulator(text => emitted.push(text));
   chunks.add('The first sentence starts quickly.');
-  chunks.add('The second stays buffered.');
+  chunks.add('Two.');
+  chunks.add('Three.');
+  chunks.add('Four.');
+  chunks.add('Five.');
   assert.deepEqual(emitted, ['The first sentence starts quickly.']);
-  chunks.add('The third completes the group.');
+  chunks.add('Six completes the five-sentence group.');
   assert.deepEqual(emitted, [
     'The first sentence starts quickly.',
-    'The second stays buffered. The third completes the group.'
+    'Two. Three. Four. Five. Six completes the five-sentence group.'
   ]);
+});
+
+test('extractEarlySpeakable emits a clause before the first period on long openings', () => {
+  const { extractEarlySpeakable } = require('../wav_utils');
+  assert.equal(extractEarlySpeakable('Short opener'), null);
+  assert.equal(
+    extractEarlySpeakable('Yeah, I pulled the ledger for the last thirty days and'),
+    null
+  );
+  const early = extractEarlySpeakable(
+    'Yeah, I pulled the ledger for the last thirty days, and the outstanding balance is still coming in'
+  );
+  assert.match(early, /thirty days,/);
+  assert.equal(extractEarlySpeakable('MRR is five ninety-four.'), null);
 });
 
 test('speech chunking flushes a final unpaired sentence', () => {
@@ -112,4 +130,23 @@ test('advancePastEmitted skips the chunk and following whitespace', () => {
   const full = 'Yeah, I checked Monday.';
   const next = advancePastEmitted(full, 0, 'Yeah,');
   assert.equal(full.slice(next), 'I checked Monday.');
+});
+
+test('sanitizeSpokenText strips markdown that TTS would read aloud', () => {
+  const raw = [
+    'Here are the last three emails:',
+    '',
+    '1. **From:** LinkedIn',
+    '   **Subject:** people viewed your profile',
+    '',
+    '- Chess.com streak reminder',
+    '',
+    'If you need anything else, just let me know!'
+  ].join('\n');
+  const spoken = sanitizeSpokenText(raw);
+  assert.doesNotMatch(spoken, /\*\*/);
+  assert.doesNotMatch(spoken, /^\s*1\.\s/m);
+  assert.doesNotMatch(spoken, /^\s*-\s/m);
+  assert.match(spoken, /LinkedIn/);
+  assert.match(spoken, /Chess\.com streak reminder/);
 });

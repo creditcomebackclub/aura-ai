@@ -78,25 +78,44 @@ class MemoryStore {
     return aa && bb ? dot / Math.sqrt(aa * bb) : 0;
   }
 
-  async search(query, { limit = 4, threshold = 0.35 } = {}) {
-    const queryEmbedding = await this.embed(query);
-    if (!queryEmbedding) return [];
-    const rows = this.db.prepare(`
-      SELECT id, content, kind, source, confidence, embedding, created_at
-      FROM semantic_memories
-      WHERE superseded_by IS NULL
-        AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-        AND embedding IS NOT NULL
-      ORDER BY updated_at DESC
-      LIMIT 1000
-    `).all();
+  async search(query, { limit = 4, threshold = 0.35, lexicalThreshold = 0.34 } = {}) {
+    const { textMatchScore } = require('./memory_v2');
+    const [queryEmbedding, rows] = await Promise.all([
+      this.embed(query),
+      Promise.resolve(this.db.prepare(`
+        SELECT id, content, kind, source, confidence, embedding, created_at
+        FROM semantic_memories
+        WHERE superseded_by IS NULL
+          AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+        ORDER BY updated_at DESC
+        LIMIT 200
+      `).all())
+    ]);
 
-    return rows
-      .map(row => ({ ...row, score: this.cosine(queryEmbedding, JSON.parse(row.embedding)) }))
-      .filter(row => row.score >= threshold)
+    const scored = rows.map(row => {
+      const lexical = textMatchScore(query, row.content);
+      let vector = 0;
+      if (queryEmbedding && row.embedding) {
+        try {
+          vector = this.cosine(queryEmbedding, JSON.parse(row.embedding));
+        } catch {
+          vector = 0;
+        }
+      }
+      // Prefer vector when present; keep lexical as a floor so recall still
+      // works when embeddings are missing or weak (Hermes-style FTS fallback).
+      const score = Math.max(vector, lexical * 0.95);
+      return { ...row, score, _vector: vector, _lexical: lexical };
+    }).filter(row => {
+      if (row._vector >= threshold) return true;
+      if (row._lexical >= lexicalThreshold) return true;
+      return false;
+    });
+
+    return scored
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map(({ embedding, ...row }) => row);
+      .map(({ embedding, _vector, _lexical, ...row }) => row);
   }
 
   list(limit = 100) {

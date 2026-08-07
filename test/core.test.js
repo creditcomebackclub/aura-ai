@@ -242,7 +242,10 @@ test('memory degrades gracefully when embeddings fail', async () => {
   const db = new Database(':memory:');
   const store = new MemoryStore(db, async () => { throw new Error('offline'); });
   await store.save('A durable preference');
-  assert.deepEqual(await store.search('preference'), []);
+  // Lexical fallback still finds token overlap without embeddings.
+  const results = await store.search('preference', { lexicalThreshold: 0.3 });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].content, 'A durable preference');
   assert.equal(store.list().length, 1);
   db.close();
 });
@@ -606,8 +609,9 @@ test('buildContext can skip semantic search for lightweight turns', async () => 
     return originalSearch(...args);
   };
   const memory = new MemoryV2({ profileStore, semanticMemory });
-  const light = await memory.buildContext('hey', { includeSemantic: false });
+  const light = await memory.buildContext('hey', { includeSemantic: false, includeAlwaysOn: false });
   assert.equal(searchCalls, 0);
+  assert.equal(light.alwaysOnContext, '');
   assert.ok(light.profileContext);
   const full = await memory.buildContext('hey', { includeSemantic: true });
   assert.equal(searchCalls, 1);
@@ -842,13 +846,13 @@ test('model routing defaults to Sol with Luna for memory work', () => {
   assert.equal(config.provider, 'openai');
   assert.equal(config.primaryModel, 'gpt-5.6-sol');
   assert.equal(config.memoryModel, 'gpt-5.6-luna');
-  assert.equal(config.reasoningEffort, 'medium');
+  assert.equal(config.reasoningEffort, 'none');
   assert.deepEqual(
     brainRequestOptions(config, { messages: [] }),
     {
       messages: [],
       model: 'gpt-5.6-sol',
-      reasoning_effort: 'medium'
+      reasoning_effort: 'none'
     }
   );
   assert.deepEqual(

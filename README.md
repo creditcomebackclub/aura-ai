@@ -86,8 +86,17 @@ People records can also preserve directly stated aliases, email addresses,
 phone numbers, organization/role, preferences, commitments, and recent context.
 Later mentions merge into the existing person instead of discarding previously
 learned contact details.
-Other durable facts remain searchable through hybrid exact and vector retrieval.
+Other durable facts remain searchable through hybrid vector and lexical retrieval,
+and a bounded always-on MEMORY slice of recent facts is injected every turn.
 Conversation continuity is maintained with rolling summaries in Supabase.
+
+## Procedural skills
+
+Reusable workflows live under `skills/bundled/` (seeded CCC runbooks) and
+`skills/learned/` (agent-created). Each turn gets a name+description index;
+full bodies load via `view_skill`. After tool-heavy turns, a background learning
+review may pin durable facts or write/patch learned skills (disable with
+`AURA_LEARNING_REVIEW=false`).
 
 AURA extracts durable facts automatically with the configured background model.
 These commands are also handled explicitly:

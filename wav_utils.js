@@ -100,18 +100,16 @@ function splitIntoSentences(text) {
     .filter(Boolean);
 }
 
-// Keeps the first complete sentence fast, then groups later sentences into
-// connected TTS performances. A fresh TTS request for every sentence resets
-// prosody and introduces media-file boundaries; pairing the remainder lets
-// Cartesia carry cadence across sentences while synthesis overlaps playback
-// of the first sentence.
+// Keeps the first complete sentence (or early clause) fast, then groups later
+// sentences into larger connected TTS performances. Tiny 2-sentence clips were
+// resetting Cartesia prosody too often and sounded chopped on the phone.
 function createSpeechChunkAccumulator(onChunk, {
-  maxSentences = 2,
-  maxChars = 320
+  maxSentences = 5,
+  maxChars = 720
 } = {}) {
   const emit = typeof onChunk === 'function' ? onChunk : null;
-  const sentenceLimit = Math.max(1, Math.trunc(Number(maxSentences)) || 2);
-  const charLimit = Math.max(80, Math.trunc(Number(maxChars)) || 320);
+  const sentenceLimit = Math.max(1, Math.trunc(Number(maxSentences)) || 5);
+  const charLimit = Math.max(80, Math.trunc(Number(maxChars)) || 720);
   let emittedFirst = false;
   let pending = [];
 
@@ -141,8 +139,29 @@ function createSpeechChunkAccumulator(onChunk, {
     flush,
     pendingCount() {
       return pending.length;
+    },
+    hasEmitted() {
+      return emittedFirst;
     }
   };
+}
+
+// When the first sentence is still streaming and already long, emit a clause
+// so Cartesia can start while the model finishes the thought. Returns null
+// when the normal sentence splitter should handle it instead.
+function extractEarlySpeakable(text) {
+  const trimmed = String(text || '').trim();
+  if (trimmed.length < 64) return null;
+  // A finished sentence is present — let splitIntoSentences own it.
+  if (/[.!?]["')\]]?(?:\s|$)/.test(trimmed)) return null;
+  const clause = trimmed.match(/^([\s\S]{48,160}?)([,;—–])\s+/);
+  if (clause) return `${clause[1]}${clause[2]}`;
+  if (trimmed.length >= 110) {
+    const slice = trimmed.slice(0, 100);
+    const breakAt = Math.max(slice.lastIndexOf(' '), slice.lastIndexOf(','));
+    if (breakAt > 40) return slice.slice(0, breakAt).trim();
+  }
+  return null;
 }
 
 // After emitting `chunk` from `full` starting at `start`, return the index
@@ -158,11 +177,45 @@ function advancePastEmitted(full, start, chunk) {
   return end;
 }
 
+// Last-line defense for Cartesia: even if the model slips markdown into a
+// reply, strip the syntax that TTS would otherwise read aloud as "asterisk
+// asterisk From colon". Keeps prose; does not try to rewrite meaning.
+function sanitizeSpokenText(text) {
+  let value = String(text || '');
+  if (!value.trim()) return '';
+
+  value = value.replace(/\r\n/g, '\n');
+  // Fenced code blocks → plain inner text
+  value = value.replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, body) => body.trim());
+  // Links [label](url) → label
+  value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+  // Bold / italic markers
+  value = value.replace(/\*\*([^*]+)\*\*/g, '$1');
+  value = value.replace(/__([^_]+)__/g, '$1');
+  value = value.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, '$1');
+  value = value.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '$1');
+  value = value.replace(/`([^`]+)`/g, '$1');
+  // Headings / quote markers at line start
+  value = value.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  value = value.replace(/^\s{0,3}>\s?/gm, '');
+  // Bullets and numbered lists → spoken clauses
+  value = value.replace(/^\s*[-*+]\s+/gm, '');
+  value = value.replace(/^\s*\d+[.)]\s+/gm, '');
+  // Collapse leftover emphasis debris and whitespace
+  value = value.replace(/^\s*[*_]{1,3}\s*$/gm, '');
+  value = value.replace(/[ \t]+\n/g, '\n');
+  value = value.replace(/\n{3,}/g, '\n\n');
+  value = value.replace(/[ \t]{2,}/g, ' ');
+  return value.trim();
+}
+
 module.exports = {
   parseWav,
   buildWavHeader,
   concatWavBuffers,
   splitIntoSentences,
   createSpeechChunkAccumulator,
-  advancePastEmitted
+  extractEarlySpeakable,
+  advancePastEmitted,
+  sanitizeSpokenText
 };

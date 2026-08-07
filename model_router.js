@@ -42,13 +42,15 @@ function resolveModelConfig(env = process.env) {
   // becomes the final reply (faster, but voiced by the router model instead
   // of primaryModel). Any round after a tool call still uses primaryModel.
   const routerModel = env.AURA_ROUTER_MODEL || null;
-  // Voice latency: xAI omitted effort was silently "high". Default xAI to low
-  // unless the env explicitly asks for more thinking.
+  // Voice latency first: default to none/low so tool-free rounds (greets,
+  // post-tool answers, plain chat) don't sit on "medium" reasoning. That alone
+  // was multi-second TTFT on live turns. Opt into medium/high via env when
+  // you want deeper thinking. xAI rejects "none" → coerced to low below.
   const requestedEffort = env.AURA_REASONING_EFFORT
-    || (provider === 'xai' ? 'low' : 'medium');
+    || (provider === 'xai' ? 'low' : 'none');
   const reasoningEffort = OPENAI_REASONING_EFFORTS.has(requestedEffort)
     ? requestedEffort
-    : (provider === 'xai' ? 'low' : 'medium');
+    : (provider === 'xai' ? 'low' : 'none');
   return {
     provider,
     primaryModel,

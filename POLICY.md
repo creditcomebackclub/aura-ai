@@ -23,8 +23,8 @@ Every tool AURA can call is assigned exactly one risk tier in the
 
 | Tier | Meaning | Examples (from `TOOL_POLICIES`) |
 |---|---|---|
-| `read` | No state change. Always autonomous. | `list_database_tables`, `get_table_schema`, `query_database_table`, `count_database_rows`, `get_outstanding_balances`, `calculate_financial_metrics`, `get_client_snapshot`, `get_client_current_phase`, `check_email`, `check_calendar`, `get_goals`, `query_finances`, `check_blackboard`, `search_web`, `list_deletable_test_letters` |
-| `reversible_write` | Changes state non-destructively, either from a direct owner command or by only *staging* a later destructive step. | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `create_calendar_event`, `propose_test_letter_deletion` |
+| `read` | No state change. Always autonomous. | `list_database_tables`, `get_table_schema`, `query_database_table`, `count_database_rows`, `get_outstanding_balances`, `calculate_financial_metrics`, `get_client_snapshot`, `get_client_current_phase`, `check_email`, `check_calendar`, `get_goals`, `query_finances`, `check_blackboard`, `search_web`, `list_deletable_test_letters`, `list_skills`, `view_skill` |
+| `reversible_write` | Changes state non-destructively, either from a direct owner command or by only *staging* a later destructive step. | `add_goal`, `update_goal_status`, `log_finance`, `save_semantic_memory`, `manage_skill`, `create_calendar_event`, `propose_test_letter_deletion` |
 | `destructive_write` | Irreversible or externally visible with a recipient fixed server-side. Test-letter deletion stays gated; owner email and Telegram execute from a direct owner command. | `confirm_test_letter_deletion`, `send_owner_email`, `send_telegram_message` |
 | `external_action` | Sends to a recipient supplied as an argument. Direct execution requires both a current-turn send command and the exact literal recipient address in that same owner message. | `send_email` |
 
