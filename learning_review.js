@@ -121,7 +121,7 @@ class LearningReviewController {
   }
 
   async runReview({ transcript, toolCallCount = 0 } = {}) {
-    const skillIndex = this.skillsStore.buildIndexPrompt();
+    const skillIndex = await this.skillsStore.buildIndexPrompt();
     const completion = await this.createReviewCompletion({
       messages: buildReviewMessages({ transcript, skillIndex, toolCallCount }),
       schema: REVIEW_SCHEMA
@@ -141,7 +141,7 @@ class LearningReviewController {
 
     const skillAction = String(parsed.skill_action || 'none').toLowerCase();
     if (skillAction === 'create' || skillAction === 'patch') {
-      applied.skill = this.skillsStore.manageSkill({
+      applied.skill = await this.skillsStore.manageSkill({
         action: skillAction,
         name: parsed.skill_name,
         description: parsed.skill_description,

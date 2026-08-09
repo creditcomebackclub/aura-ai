@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   SkillsStore
 } = require('../skills_store');
+const { DurableSkillsStore } = require('../durable_skills_store');
 const { buildAlwaysOnMemorySlice } = require('../memory_v2');
 const { LearningReviewController } = require('../learning_review');
 
@@ -58,6 +59,41 @@ test('skills store writes learned skills and refuses bundled deletes', () => {
 
   store.manageSkill({ action: 'delete', name: 'morning-sweep' });
   assert.throws(() => store.viewSkill('morning-sweep'), /Unknown skill/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('durable skills store persists learned skills through the owner state store', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-durable-skills-'));
+  const rows = new Map();
+  let revision = 0;
+  const stateStore = {
+    async getState(key) { return rows.get(key)?.value ?? null; },
+    async getStateRow(key) { return rows.get(key) || null; },
+    async compareAndSetState(key, expectedUpdatedAt, value) {
+      const current = rows.get(key) || null;
+      if ((current?.updated_at ?? null) !== expectedUpdatedAt) return false;
+      rows.set(key, { value, updated_at: String(++revision) });
+      return true;
+    }
+  };
+  const store = new DurableSkillsStore({
+    localStore: new SkillsStore({ rootDir: root }),
+    stateStore
+  });
+  const created = await store.manageSkill({
+    action: 'create',
+    name: 'handoff-notes',
+    description: 'Prepare concise handoff notes',
+    content: '## Steps\n1. State the outcome.\n'
+  });
+  assert.equal(created.durable, true);
+  const reloaded = new DurableSkillsStore({
+    localStore: new SkillsStore({ rootDir: root }),
+    stateStore
+  });
+  assert.equal((await reloaded.viewSkill('handoff-notes')).origin, 'learned');
+  await reloaded.manageSkill({ action: 'delete', name: 'handoff-notes' });
+  await assert.rejects(reloaded.viewSkill('handoff-notes'), /Unknown skill/);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

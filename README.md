@@ -93,7 +93,9 @@ Conversation continuity is maintained with rolling summaries in Supabase.
 ## Procedural skills
 
 Reusable workflows live under `skills/bundled/` (seeded CCC runbooks) and
-`skills/learned/` (agent-created). Each turn gets a name+description index;
+`skills/learned/` (agent-created in local/Mac mode). In cloud mode, learned
+skills are instead stored owner-scoped in Supabase `aura_state`, so they survive
+Render restarts and redeploys. Each turn gets a name+description index;
 full bodies load via `view_skill`. After tool-heavy turns, a background learning
 review may pin durable facts or write/patch learned skills (disable with
 `AURA_LEARNING_REVIEW=false`).
@@ -235,7 +237,7 @@ Service output is written to `aura-service.log` and
 4. Set `AURA_STATE_BACKEND=supabase`.
 5. Restart and verify chat history, memories, notifications, and tasks.
 
-`render.yaml` and `Dockerfile` define a $0 Render Free web service. Configure
+`render.yaml` and `Dockerfile` define a Render Starter web service. Configure
 the secret environment variables in the Render blueprint, set
 `AURA_PUBLIC_URL` to the deployed HTTPS origin, and add that exact origin to the
 Supabase Auth redirect allowlist.
@@ -257,7 +259,8 @@ button and only calls `/auth/verify-link` when the user taps it, so the
 token is spent by a deliberate action in the user's real browser.
 
 All durable state stays in Supabase, so restarts and redeploys do not erase
-conversations, tasks, notifications, Executive Loop cursors, or memories.
+conversations, tasks, notifications, Executive Loop cursors, memories, or
+learned skills.
 
 The Supabase cron route can remain as a durable backup to the in-process
 scheduler. To configure that backup:
