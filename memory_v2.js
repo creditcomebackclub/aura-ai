@@ -664,11 +664,13 @@ class MemoryV2 {
     semanticMemory,
     client = null,
     extractionModel = 'gpt-5.6-luna',
-    contextCacheTtlMs = Number(process.env.AURA_MEMORY_CONTEXT_CACHE_MS) || 15000
+    contextCacheTtlMs = Number(process.env.AURA_MEMORY_CONTEXT_CACHE_MS) || 15000,
+    retrievalTraceStore = null
   }) {
     this.profileStore = profileStore;
     this.semanticMemory = semanticMemory;
     this.client = client;
+    this.retrievalTraceStore = retrievalTraceStore;
     this.extractionModel = extractionModel;
     // Serializes learn/forget so a slow extract-then-upsert cannot snapshot a
     // stale profile and clobber a concurrent write to the same keys.
@@ -959,7 +961,19 @@ class MemoryV2 {
         kind: entry.kind,
         confidence: entry.confidence,
         source: entry.source || 'owner_profile',
-        score: entry.match_score
+        score: entry.match_score,
+        profile_key: entry.key,
+        retrieval: {
+          base_score: entry.match_score,
+          final_score: entry.match_score,
+          vector_score: 0,
+          lexical_score: entry.match_score,
+          entity_score: 0,
+          recency_boost: 0,
+          confidence_boost: 0,
+          age_days: null,
+          matched_by: ['profile']
+        }
       });
     }
     for (const memory of semantic) {
@@ -970,6 +984,11 @@ class MemoryV2 {
 
     const relatedSlice = related.slice(0, 8);
     const profileCanonical = profileRows(profile).map(canonicalMemory);
+    if (includeSemantic && this.retrievalTraceStore) {
+      this.retrievalTraceStore.record({ query, related: relatedSlice }).catch(error => {
+        console.warn('[Memory v2] Retrieval trace failed:', error.message);
+      });
+    }
     return {
       profile,
       profileContext: buildProfileContext(profile),

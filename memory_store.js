@@ -80,10 +80,11 @@ class MemoryStore {
 
   async search(query, { limit = 4, threshold = 0.35, lexicalThreshold = 0.34 } = {}) {
     const { textMatchScore } = require('./memory_v2');
+    const { isRelevantRetrieval, scoreMemoryRetrieval } = require('./retrieval_scoring');
     const [queryEmbedding, rows] = await Promise.all([
       this.embed(query),
       Promise.resolve(this.db.prepare(`
-        SELECT id, content, kind, source, confidence, embedding, created_at
+        SELECT id, content, kind, source, confidence, embedding, created_at, updated_at
         FROM semantic_memories
         WHERE superseded_by IS NULL
           AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
@@ -102,20 +103,25 @@ class MemoryStore {
           vector = 0;
         }
       }
-      // Prefer vector when present; keep lexical as a floor so recall still
-      // works when embeddings are missing or weak (Hermes-style FTS fallback).
-      const score = Math.max(vector, lexical * 0.95);
-      return { ...row, score, _vector: vector, _lexical: lexical };
+      const retrieval = scoreMemoryRetrieval({
+        query,
+        content: row.content,
+        kind: row.kind,
+        confidence: row.confidence,
+        vectorScore: vector,
+        lexicalScore: lexical,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      });
+      return { ...row, score: retrieval.final_score, retrieval };
     }).filter(row => {
-      if (row._vector >= threshold) return true;
-      if (row._lexical >= lexicalThreshold) return true;
-      return false;
+      return isRelevantRetrieval(row.retrieval, { threshold, lexicalThreshold });
     });
 
     return scored
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map(({ embedding, _vector, _lexical, ...row }) => row);
+      .map(({ embedding, ...row }) => row);
   }
 
   list(limit = 100) {

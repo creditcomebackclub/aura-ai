@@ -66,6 +66,7 @@ const { SkillsStore } = require('./skills_store');
 const { DurableSkillsStore } = require('./durable_skills_store');
 const { SkillOutcomeStore, classifyOwnerFeedback } = require('./skill_outcome_store');
 const { BeliefStore, renderBeliefContext } = require('./belief_store');
+const { RetrievalTraceStore } = require('./retrieval_trace_store');
 const {
   evaluateSkillCandidate: runSkillCandidateEvaluation,
   shouldAutoRollback
@@ -196,7 +197,8 @@ app.get('/healthz', (req, res) => {
       outcome_ledger: useSupabaseState,
       episodic_memory: true,
       belief_consolidation: useSupabaseState,
-      skill_lifecycle: useSupabaseState
+      skill_lifecycle: useSupabaseState,
+      retrieval_observability: useSupabaseState
     },
     timestamp: new Date().toISOString()
   });
@@ -316,6 +318,9 @@ const cloudState = useSupabaseState
       ownerId: process.env.AURA_OWNER_ID,
       embeddingProvider: process.env.OPENAI_API_KEY ? getEmbedding : null
     })
+  : null;
+const retrievalTraceStore = cloudState
+  ? new RetrievalTraceStore({ stateStore: cloudState })
   : null;
 
 async function addConversationMessage(role, content, metadata = {}) {
@@ -498,7 +503,8 @@ const memoryV2 = new MemoryV2({
   profileStore: cloudState || localProfileStore,
   semanticMemory: activeMemory,
   client: process.env.OPENAI_API_KEY ? openaiEmbeddings : null,
-  extractionModel: backgroundModel
+  extractionModel: backgroundModel,
+  retrievalTraceStore
 });
 
 const memoryExtractionQueue = cloudState
@@ -3309,6 +3315,17 @@ app.get('/api/memory/view', async (req, res) => {
     summaryUpdatedAt: conversationContext.updatedAt || null
   });
   res.json({ generated_at: new Date().toISOString(), markdown, warnings });
+});
+
+app.get('/api/memory/retrievals', async (req, res) => {
+  if (!retrievalTraceStore) {
+    return res.status(503).json({ error: 'Retrieval observability is not enabled.' });
+  }
+  const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+  res.json({
+    traces: await retrievalTraceStore.list(limit),
+    summary: await retrievalTraceStore.summary()
+  });
 });
 
 app.get('/api/learning/outcomes', async (req, res) => {

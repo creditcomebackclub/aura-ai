@@ -144,6 +144,18 @@ to clarify rather than act on them. Inspect the authenticated ledger at
 `POST /api/learning/beliefs/:key/resolve` and `{ "statement": "...", "note":
 "..." }`; the statement must match the current belief or a recorded alternative.
 
+## Retrieval observability
+
+Semantic recall now uses a transparent combined score: vector similarity, lexical
+overlap, named-entity overlap, recency, and memory confidence. Recency and
+confidence only refine a memory that already matches; they cannot make an
+unrelated memory appear relevant. Every semantic recall writes a bounded,
+owner-scoped private trace of the query, memories injected into context, score
+components, match reason, source, confidence, and age. Inspect it with
+authenticated `GET /api/memory/retrievals`. Use the existing profile and memory
+deletion endpoints to correct any influential memory; cloud deletions remain
+approval-staged.
+
 AURA extracts durable facts automatically with the configured background model.
 These commands are also handled explicitly:
 

@@ -74,14 +74,17 @@ Core gate met: AURA distinguishes a recent event from a durable rule, does not
 pin episodes into the owner profile, can show why a belief exists, and surfaces
 unresolved contradictions instead of silently choosing one.
 
-### 4. Retrieval quality and memory observability
+### 4. Retrieval quality and memory observability — scoring and traces live
 
-Add temporal and importance weighting to vector similarity, entity-aware recall,
-retrieval traces, and a private memory dashboard showing what was recalled,
-why, confidence, source, age, and correction controls.
+Recall now combines vector similarity, lexical overlap, named-entity overlap,
+recency, and confidence, while filtering relevance on the unboosted match. A
+private bounded retrieval ledger records the exact memories AURA injected, why
+they matched, source, confidence, score components, and age. Existing memory
+and profile correction endpoints provide the owner controls. Remaining work is
+a visual in-app dashboard and a fixed retrieval evaluation set/benchmark.
 
-Success gate: benchmark recall improves on a fixed evaluation set, and the owner
-can inspect or correct every influential memory.
+Partial gate met: the owner can inspect or correct every traced influential
+memory. Full completion still needs a fixed benchmark proving recall quality.
 
 ### 5. Bounded proactive planning
 

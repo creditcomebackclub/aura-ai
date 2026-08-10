@@ -262,6 +262,7 @@ class SupabaseStateStore {
 
   async searchMemories(query, { limit = 4, threshold = 0.35, lexicalThreshold = 0.34 } = {}) {
     const { textMatchScore } = require('./memory_v2');
+    const { isRelevantRetrieval, scoreMemoryRetrieval } = require('./retrieval_scoring');
     const queryEmbedding = await this.embed(query);
 
     // Prefer SQL top-k when the pgvector column + RPC are present. Fall back
@@ -278,7 +279,7 @@ class SupabaseStateStore {
         if (!rpcError && Array.isArray(vectorHits)) {
           const { data: recent, error: recentError } = await this.client
             .from('aura_memories')
-            .select('id, content, kind, source, confidence, created_at')
+            .select('id, content, kind, source, confidence, created_at, updated_at')
             .eq('owner_id', this.ownerId)
             .is('superseded_by', null)
             .order('updated_at', { ascending: false })
@@ -303,21 +304,51 @@ class SupabaseStateStore {
             const lexical = textMatchScore(query, row.content);
             const existing = byId.get(row.id);
             if (existing) {
-              existing._lexical = lexical;
-              existing.score = Math.max(existing.score, lexical * 0.95);
+              Object.assign(existing, {
+                content: row.content,
+                kind: row.kind,
+                source: row.source,
+                confidence: row.confidence,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                _lexical: lexical
+              });
               continue;
             }
-            if (lexical < lexicalThreshold) continue;
+            const preliminary = scoreMemoryRetrieval({
+              query,
+              content: row.content,
+              kind: row.kind,
+              confidence: row.confidence,
+              vectorScore: 0,
+              lexicalScore: lexical,
+              createdAt: row.created_at,
+              updatedAt: row.updated_at
+            });
+            if (!isRelevantRetrieval(preliminary, { threshold, lexicalThreshold })) continue;
             byId.set(row.id, {
               ...row,
-              score: lexical * 0.95,
+              score: preliminary.final_score,
               _vector: 0,
               _lexical: lexical
             });
           }
 
           return [...byId.values()]
-            .filter(row => row._vector >= threshold || row._lexical >= lexicalThreshold)
+            .map(row => {
+              const retrieval = scoreMemoryRetrieval({
+                query,
+                content: row.content,
+                kind: row.kind,
+                confidence: row.confidence,
+                vectorScore: row._vector,
+                lexicalScore: row._lexical,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at
+              });
+              return { ...row, score: retrieval.final_score, retrieval };
+            })
+            .filter(row => isRelevantRetrieval(row.retrieval, { threshold, lexicalThreshold }))
             .sort((a, b) => b.score - a.score)
             .slice(0, limit)
             .map(({ _vector, _lexical, ...row }) => row);
@@ -334,7 +365,7 @@ class SupabaseStateStore {
     // so we don't pull a thousand embedding jsonbs into Node on every recall.
     const fetchResult = await this.client
       .from('aura_memories')
-      .select('id, content, kind, source, confidence, embedding, created_at')
+      .select('id, content, kind, source, confidence, embedding, created_at, updated_at')
       .eq('owner_id', this.ownerId)
       .is('superseded_by', null)
       .order('updated_at', { ascending: false })
@@ -347,13 +378,22 @@ class SupabaseStateStore {
         const vector = queryEmbedding && row.embedding
           ? this.cosine(queryEmbedding, row.embedding)
           : 0;
-        const score = Math.max(vector, lexical * 0.95);
-        return { ...row, score, _vector: vector, _lexical: lexical };
+        const retrieval = scoreMemoryRetrieval({
+          query,
+          content: row.content,
+          kind: row.kind,
+          confidence: row.confidence,
+          vectorScore: vector,
+          lexicalScore: lexical,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at
+        });
+        return { ...row, score: retrieval.final_score, retrieval };
       })
-      .filter(row => row._vector >= threshold || row._lexical >= lexicalThreshold)
+      .filter(row => isRelevantRetrieval(row.retrieval, { threshold, lexicalThreshold }))
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map(({ embedding, _vector, _lexical, ...row }) => row);
+      .map(({ embedding, ...row }) => row);
   }
 
   async listMemories(limit = 100) {
