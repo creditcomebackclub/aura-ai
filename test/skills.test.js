@@ -117,14 +117,27 @@ test('learning review applies memory facts and skill creates from model output',
   const store = new SkillsStore({ rootDir: root });
   const learned = [];
   const episodes = [];
+  const beliefs = [];
   const controller = new LearningReviewController({
     skillsStore: store,
+    beliefStore: {
+      async list() { return []; },
+      async consider(candidate, evidence) {
+        beliefs.push({ candidate, evidence });
+        return { applied: true, action: 'created' };
+      }
+    },
     memoryV2: {
       async learnFromUserMessage(fact) {
         learned.push(fact);
         return { learned: [{ value: fact }] };
       },
-      async listEpisodes() { return []; },
+      async listEpisodes() {
+        return [
+          { id: 'episode-1', confidence: 0.9, content: 'Briefs worked better when concise.' },
+          { id: 'episode-2', confidence: 0.8, content: 'A second concise brief was accepted.' }
+        ];
+      },
       async rememberEpisode(episode) {
         episodes.push(episode);
         return { saved: true, id: 9 };
@@ -145,6 +158,13 @@ test('learning review applies memory facts and skill creates from model output',
       episode_outcome: 'The concise format became a learned procedure.',
       episode_entities: ['morning brief'],
       episode_importance: 0.8,
+      belief_action: 'consolidate',
+      belief_key: 'brief.concise',
+      belief_statement: 'Morning briefs work best when concise.',
+      belief_confidence: 0.88,
+      belief_supporting_episode_ids: ['episode-1', 'episode-2'],
+      belief_contradicting_episode_ids: [],
+      belief_reason: 'Two successful episodes support the pattern.',
       notes: ''
     })
   });
@@ -156,6 +176,9 @@ test('learning review applies memory facts and skill creates from model output',
   assert.equal(learned[0], 'Chris prefers short morning briefs');
   assert.equal(episodes[0].importance, 0.8);
   assert.equal(result.applied.episode.saved, true);
+  assert.equal(beliefs[0].candidate.key, 'brief.concise');
+  assert.equal(beliefs[0].evidence.length, 2);
+  assert.equal(result.applied.belief.action, 'created');
   assert.equal(result.applied.skill.name, 'short-brief');
   assert.equal(store.viewSkill('short-brief').origin, 'learned');
   fs.rmSync(root, { recursive: true, force: true });

@@ -122,6 +122,15 @@ a permanent profile fact. Episodes participate in semantic recall and future
 reflection, but remain out of the always-on memory slice. Inspect them at the
 authenticated `GET /api/learning/episodes` endpoint.
 
+Repeated episodes can be consolidated into an evidence-backed belief only when
+at least two real episode ids support the same statement at 0.75 confidence or
+higher. A conflicting statement marks the belief `contested` instead of
+overwriting it; relevant contested beliefs are shown to AURA with a requirement
+to clarify rather than act on them. Inspect the authenticated ledger at
+`GET /api/learning/beliefs`. Resolve a recorded conflict explicitly with
+`POST /api/learning/beliefs/:key/resolve` and `{ "statement": "...", "note":
+"..." }`; the statement must match the current belief or a recorded alternative.
+
 AURA extracts durable facts automatically with the configured background model.
 These commands are also handled explicitly:
 

@@ -25,6 +25,10 @@ untrusted email/web/database content as owner instruction.
 - Notable episodic memory stores completed workflows, decisions, corrections,
   and failures separately from permanent owner facts. Episodes are available to
   semantic recall and later reflection but are excluded from always-on memory.
+- Evidence-backed beliefs require two cited, real episode ids and confidence of
+  at least 0.75. Conflicting evidence marks a belief contested instead of
+  overwriting it; contested beliefs are surfaced as unresolved and can only be
+  resolved by explicitly choosing a recorded statement.
 
 ## Next milestones
 
@@ -49,18 +53,19 @@ failures.
 Success gate: no learned skill becomes active solely because one model response
 suggested it, and every active version can be rolled back.
 
-### 3. Episodic memory and consolidation — episodic capture live
+### 3. Episodic memory and consolidation — core loop live
 
-Raw episodes (what happened) are now separate from semantic knowledge (what is
+Raw episodes (what happened) are separate from semantic knowledge (what is
 generally true). Reflection saves only notable events above the importance gate,
-and later reflection can compare recent episodes. The remaining work is periodic
-consolidation of repeated episodes, duplicate merging, contradiction detection,
-confidence reduction for stale unsupported beliefs, and richer provenance back
-to source episodes.
+and later reflection can compare recent episodes. Repeated evidence can now
+produce an owner-scoped belief with episode-level provenance, while conflicting
+evidence creates an unresolved alternative rather than replacing the belief.
+The remaining work is duplicate episode merging, retention, confidence reduction
+for stale unsupported beliefs, and automated health/quality metrics.
 
-Partial gate met: AURA distinguishes a recent event from a durable rule and does
-not pin episodes into the owner profile. Full completion still requires explicit
-belief provenance and surfaced contradiction handling.
+Core gate met: AURA distinguishes a recent event from a durable rule, does not
+pin episodes into the owner profile, can show why a belief exists, and surfaces
+unresolved contradictions instead of silently choosing one.
 
 ### 4. Retrieval quality and memory observability
 
