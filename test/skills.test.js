@@ -112,14 +112,38 @@ test('always-on memory slice respects char cap and exclusions', () => {
   assert.doesNotMatch(slice, /one-time meeting/);
 });
 
-test('learning review applies memory facts and skill creates from model output', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-learn-'));
-  const store = new SkillsStore({ rootDir: root });
+test('learning review proposes and independently evaluates skill candidates', async () => {
   const learned = [];
   const episodes = [];
   const beliefs = [];
+  const candidates = [];
+  const evaluations = [];
   const controller = new LearningReviewController({
-    skillsStore: store,
+    skillsStore: {
+      async buildIndexPrompt() { return ''; },
+      async proposeSkill(input) {
+        candidates.push(input);
+        return {
+          action: 'candidate',
+          name: input.name,
+          version: 1,
+          status: 'candidate',
+          candidate: { ...input, version: 1 },
+          baseline: null
+        };
+      },
+      async applyCandidateEvaluation(name, version, evaluation) {
+        evaluations.push({ name, version, evaluation });
+        return { promoted: true, name, version };
+      }
+    },
+    evaluateSkillCandidate: async () => ({
+      policy_passed: true,
+      scenario_results: [
+        { scenario_id: 'one', candidate_score: 0.9, baseline_score: 0, passed: true },
+        { scenario_id: 'two', candidate_score: 0.85, baseline_score: 0, passed: true }
+      ]
+    }),
     beliefStore: {
       async list() { return []; },
       async consider(candidate, evidence) {
@@ -179,9 +203,10 @@ test('learning review applies memory facts and skill creates from model output',
   assert.equal(beliefs[0].candidate.key, 'brief.concise');
   assert.equal(beliefs[0].evidence.length, 2);
   assert.equal(result.applied.belief.action, 'created');
-  assert.equal(result.applied.skill.name, 'short-brief');
-  assert.equal(store.viewSkill('short-brief').origin, 'learned');
-  fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(candidates[0].name, 'short-brief');
+  assert.equal(evaluations[0].version, 1);
+  assert.equal(result.applied.skill.status, 'candidate');
+  assert.equal(result.applied.skill_promotion.promoted, true);
 });
 
 test('learning review durably reflects across multiple turns after a restart', async () => {

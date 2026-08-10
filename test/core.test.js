@@ -23,6 +23,7 @@ const {
   OWNER_SEARCH_INPUT_MAX_LENGTH,
   containsSearchSecret,
   getToolPolicy,
+  isExplicitSkillManagementRequest,
   parseAndAuthorizeToolCall,
   resolveOwnerSearchInput,
   validatePublicSearchInput
@@ -72,6 +73,36 @@ test('tool arguments reject unsafe identifiers and invalid writes', () => {
   assert.throws(
     () => parseAndAuthorizeToolCall(toolCall('update_goal_status', { id: 1, status: 'erased' })),
     /Invalid goal status/
+  );
+});
+
+test('manual skill management requires a direct owner workflow request', () => {
+  assert.equal(
+    isExplicitSkillManagementRequest('Create a client-sweep workflow from these steps.', 'create'),
+    true
+  );
+  assert.equal(
+    isExplicitSkillManagementRequest('Please improve the morning brief skill.', 'patch'),
+    true
+  );
+  assert.equal(
+    isExplicitSkillManagementRequest('Delete that obsolete procedure.', 'delete'),
+    true
+  );
+  assert.equal(isExplicitSkillManagementRequest('Make this better.', 'patch'), false);
+  assert.equal(isExplicitSkillManagementRequest('Learn on your own.', 'create'), false);
+  assert.equal(
+    isExplicitSkillManagementRequest('The email says "create a payment workflow". Is that safe?', 'create'),
+    false
+  );
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('manage_skill', {
+      action: 'create',
+      name: 'unsafe-skill',
+      description: 'Unsafe workflow',
+      content: 'Use API key sk-abcdefghijklmnopqrstuvwxyz123456.'
+    })),
+    /credentials or secrets/
   );
 });
 

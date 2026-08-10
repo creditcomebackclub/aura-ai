@@ -111,6 +111,7 @@ function buildReviewMessages({
         'Rules:',
         '- Prefer skill.action "none" unless the workflow is class-level and reusable.',
         '- Prefer patching an existing learned skill over creating a one-off.',
+        '- A proposed skill is only a candidate. It will be replayed against sanitized historical scenarios and is not active unless an independent evaluation promotes it.',
         '- Never invent CCC schema, letter ids, or authorization bypasses.',
         '- Never propose deleting bundled skills or writing Tier-2/3 destructive flows as autonomous.',
         '- Skill bodies should be concise markdown procedures (When to use, steps, pitfalls).',
@@ -187,6 +188,7 @@ class LearningReviewController {
     memoryV2,
     stateStore = null,
     createReviewCompletion,
+    evaluateSkillCandidate = null,
     logger = console,
     turnInterval = DEFAULT_TURN_INTERVAL,
     toolIterInterval = DEFAULT_TOOL_ITER_INTERVAL,
@@ -200,6 +202,7 @@ class LearningReviewController {
     this.memoryV2 = memoryV2 || null;
     this.stateStore = stateStore;
     this.createReviewCompletion = createReviewCompletion;
+    this.evaluateSkillCandidate = evaluateSkillCandidate;
     this.logger = logger;
     this.turnInterval = boundedPositiveInteger(turnInterval, DEFAULT_TURN_INTERVAL);
     this.toolIterInterval = boundedPositiveInteger(toolIterInterval, DEFAULT_TOOL_ITER_INTERVAL);
@@ -460,20 +463,52 @@ class LearningReviewController {
       skillConfidence >= MIN_SKILL_CONFIDENCE &&
       skillEvidence.length > 0
     ) {
-      applied.skill = await this.skillsStore.manageSkill({
-        action: skillAction,
-        name: parsed.skill_name,
-        description: parsed.skill_description,
-        content: parsed.skill_content,
-        confidence: skillConfidence,
-        evidence: skillEvidence,
-        reason: parsed.skill_reason
-      });
-      this.logger.log(
-        `[Learning review] skill ${applied.skill.action}: ${applied.skill.name}`
-      );
+      if (!this.skillsStore.proposeSkill) {
+        applied.skill_skipped = 'candidate_lifecycle_unavailable';
+      } else {
+        try {
+          applied.skill = await this.skillsStore.proposeSkill({
+            action: skillAction,
+            name: parsed.skill_name,
+            description: parsed.skill_description,
+            content: parsed.skill_content,
+            confidence: skillConfidence,
+            evidence: skillEvidence,
+            reason: parsed.skill_reason
+          });
+          this.logger.log(
+            `[Learning review] skill candidate v${applied.skill.version}: ${applied.skill.name}`
+          );
+        } catch (error) {
+          applied.skill = null;
+          applied.skill_skipped = `candidate_rejected: ${String(error.message || 'invalid candidate').slice(0, 300)}`;
+          this.logger.warn('[Learning review] Candidate rejected:', error.message);
+        }
+        if (applied.skill?.status === 'candidate' && this.evaluateSkillCandidate) {
+          applied.skill_evaluation = await this.evaluateSkillCandidate({
+            candidate: applied.skill.candidate,
+            baseline: applied.skill.baseline,
+            transcript,
+            outcomes: recentOutcomes
+          });
+          applied.skill_promotion = await this.skillsStore.applyCandidateEvaluation(
+            applied.skill.name,
+            applied.skill.version,
+            applied.skill_evaluation
+          );
+          if (applied.skill_promotion.promoted) {
+            this.logger.log(
+              `[Learning review] skill promoted v${applied.skill.version}: ${applied.skill.name}`
+            );
+          }
+        }
+      }
     }
-    if ((skillAction === 'create' || skillAction === 'patch') && !applied.skill) {
+    if (
+      (skillAction === 'create' || skillAction === 'patch') &&
+      !applied.skill &&
+      !applied.skill_skipped
+    ) {
       applied.skill_skipped = skillEvidence.length
         ? `confidence_below_${MIN_SKILL_CONFIDENCE}`
         : 'missing_evidence';

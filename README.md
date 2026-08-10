@@ -102,10 +102,23 @@ review may pin durable facts or write/patch learned skills (disable with
 
 Reflection batches and counters are durable in Supabase, so AURA can learn from
 several experiences even when Render restarts between them. Learned procedures
-must include supporting evidence and sufficient confidence; cloud records retain
-their version, reason, evidence count, and timestamps. See
-`LEARNING_ROADMAP.md` for the staged path toward evaluated skills, episodic
-memory consolidation, richer retrieval, and bounded proactive planning.
+must include supporting evidence and sufficient confidence. Autonomous changes
+enter an inactive candidate lifecycle: a second model call replays the candidate
+against at least two sanitized historical scenarios, while deterministic checks
+reject credentials, prompt injection, authorization bypasses, self-modification,
+and ungated external-action procedures. New skills need an average replay score
+of at least `0.75`; patches must also beat the active version by at least `0.05`.
+Candidates remain invisible to `list_skills` and `view_skill` until promoted.
+
+Cloud records retain up to 20 candidate, active, retired, rejected, and
+rolled-back versions per skill. Two negative owner corrections or three hard
+failures within the last five uses automatically restore the previous learned
+version, bundled fallback, or disabled state and create a high-urgency learning
+notification. Manual `manage_skill` writes require a direct current-turn owner
+request. Inspect lifecycle history at authenticated `GET /api/learning/skills`,
+or explicitly roll back with `POST /api/learning/skills/:name/rollback` and
+`{ "from_version": 3, "reason": "..." }`. See `LEARNING_ROADMAP.md` for the
+remaining memory, retrieval, planning, and capability milestones.
 
 When a skill is loaded with `view_skill`, AURA records the exact skill version,
 subsequent tool outcomes, and the immediately following owner feedback. Neutral

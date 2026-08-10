@@ -40,6 +40,7 @@ const {
 } = require('./memory_v2');
 const {
   getToolPolicy,
+  isExplicitSkillManagementRequest,
   parseAndAuthorizeToolCall,
   resolveOwnerSearchInput
 } = require('./agent_policy');
@@ -63,8 +64,12 @@ const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
 const { SkillsStore } = require('./skills_store');
 const { DurableSkillsStore } = require('./durable_skills_store');
-const { SkillOutcomeStore } = require('./skill_outcome_store');
+const { SkillOutcomeStore, classifyOwnerFeedback } = require('./skill_outcome_store');
 const { BeliefStore, renderBeliefContext } = require('./belief_store');
+const {
+  evaluateSkillCandidate: runSkillCandidateEvaluation,
+  shouldAutoRollback
+} = require('./skill_evaluator');
 const { LearningReviewController } = require('./learning_review');
 const {
   isDirectEmailConfigured,
@@ -190,7 +195,8 @@ app.get('/healthz', (req, res) => {
       minimum_skill_confidence: 0.75,
       outcome_ledger: useSupabaseState,
       episodic_memory: true,
-      belief_consolidation: useSupabaseState
+      belief_consolidation: useSupabaseState,
+      skill_lifecycle: useSupabaseState
     },
     timestamp: new Date().toISOString()
   });
@@ -570,11 +576,81 @@ const learningReview = new LearningReviewController({
       }
     });
     return JSON.parse(completion.choices[0].message.content || '{}');
-  }
+  },
+  evaluateSkillCandidate: async input => runSkillCandidateEvaluation({
+    ...input,
+    createCompletion: process.env.OPENAI_API_KEY
+      ? async ({ messages, schema }) => {
+          const completion = await openaiEmbeddings.chat.completions.create({
+            model: backgroundModel,
+            reasoning_effort: 'low',
+            messages,
+            response_format: {
+              type: 'json_schema',
+              json_schema: {
+                name: 'aura_skill_candidate_evaluation',
+                strict: true,
+                schema
+              }
+            }
+          });
+          return JSON.parse(completion.choices[0].message.content || '{}');
+        }
+      : null
+  })
 });
 learningReview.resume().catch(error => {
   console.warn('[Learning review] Startup resume failed:', error.message);
 });
+
+let skillRollbackSweep = Promise.resolve([]);
+async function reconcileSkillRollbacks() {
+  if (!skillOutcomeStore || !cloudState) return [];
+  const outcomes = await skillOutcomeStore.list(200);
+  const groups = new Map();
+  for (const outcome of outcomes) {
+    if (outcome.skill_origin !== 'learned') continue;
+    const key = `${outcome.skill_name}:${outcome.skill_version}`;
+    if (!groups.has(key)) groups.set(key, []);
+    if (groups.get(key).length < 5) groups.get(key).push(outcome);
+  }
+  const rolledBack = [];
+  for (const group of groups.values()) {
+    const signal = shouldAutoRollback(group);
+    if (!signal.rollback) continue;
+    const latest = group[0];
+    const result = await skillsStore.rollbackSkill(latest.skill_name, {
+      fromVersion: latest.skill_version,
+      reason: signal.reason,
+      source: 'automatic_outcome_guard'
+    });
+    if (!result.rolled_back) continue;
+    rolledBack.push(result);
+    await cloudState.createNotification(
+      `AURA rolled back learned workflow ${result.name} from v${result.from_version} ` +
+      `${result.to_version ? `to v${result.to_version}` : `(${result.fallback})`} after ${signal.reason}`,
+      'learning',
+      'high',
+      {
+        dedupeKey: `skill-rollback:${result.name}:v${result.from_version}`,
+        metadata: result
+      }
+    );
+  }
+  return rolledBack;
+}
+
+function scheduleSkillRollbackSweep() {
+  skillRollbackSweep = skillRollbackSweep
+    .catch(() => [])
+    .then(reconcileSkillRollbacks)
+    .catch(error => {
+      console.warn('[Skill lifecycle] Automatic rollback sweep failed:', error.message);
+      return [];
+    });
+  return skillRollbackSweep;
+}
+scheduleSkillRollbackSweep();
 
 const conversationSummary = new ConversationSummaryService({
   stateStore: cloudState,
@@ -1641,7 +1717,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'manage_skill',
-      description: 'Create, patch, or delete a learned procedural skill under skills/learned only. Prefer patching an existing learned skill over creating one-offs. Cannot modify bundled skills except by writing a learned override via patch.',
+      description: 'Manually create, patch, or delete a learned procedural skill only when the owner directly requests that skill/workflow change in the current turn. Background self-learning uses an independent candidate evaluation pipeline instead. Cannot modify bundled skill files; a patch creates a versioned learned override.',
       parameters: {
         type: 'object',
         properties: {
@@ -2212,6 +2288,11 @@ async function handleToolCall(toolCall, options = {}) {
       result = await skillsStore.viewSkill(args.name);
       break;
     case 'manage_skill':
+      if (!isExplicitSkillManagementRequest(options.userInstruction, args.action)) {
+        throw new Error(
+          'Manual skill changes require a direct current-turn owner request naming a skill, workflow, procedure, or playbook. Background learning must use the candidate evaluation pipeline.'
+        );
+      }
       result = await skillsStore.manageSkill({
         action: args.action,
         name: args.name,
@@ -2338,9 +2419,17 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       throw new Error('Text must be between 1 and 10,000 characters.');
     }
     if (!isolated && skillOutcomeStore) {
-      skillOutcomeStore.applyOwnerFeedback(text).catch(error => {
-        console.warn('[Skill outcomes] Feedback attribution failed:', error.message);
-      });
+      const feedbackWork = skillOutcomeStore.applyOwnerFeedback(text)
+        .then(() => scheduleSkillRollbackSweep())
+        .catch(error => {
+          console.warn('[Skill outcomes] Feedback attribution failed:', error.message);
+          return [];
+        });
+      // A correction can cross the rollback threshold. Complete that state
+      // transition before building the skill index for this same turn so the
+      // just-corrected version cannot be selected again. Neutral attribution
+      // remains background work and does not add latency to ordinary turns.
+      if (classifyOwnerFeedback(text) === 'negative') await feedbackWork;
     }
     // Whisper (and casual typing) often mangle client surnames. Rewrite clear
     // directory hits to the canonical spelling before memory/tools see them,
@@ -2954,9 +3043,11 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         reply,
         evidence,
         messageId: assistantMessage?.id || null
-      }).catch(error => {
-        console.warn('[Skill outcomes] Turn recording failed:', error.message);
-      });
+      })
+        .then(() => scheduleSkillRollbackSweep())
+        .catch(error => {
+          console.warn('[Skill outcomes] Turn recording failed:', error.message);
+        });
     }
     scheduleConversationSummary();
     if (process.env.AURA_TIMING_TRACE) {
@@ -3240,6 +3331,27 @@ app.get('/api/learning/episodes', async (req, res) => {
   res.json({ episodes: await memoryV2.listEpisodes(limit) });
 });
 
+app.get('/api/learning/skills', async (req, res) => {
+  if (!cloudState) {
+    return res.status(503).json({ error: 'The durable skill lifecycle is not enabled.' });
+  }
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
+  res.json({ skills: await skillsStore.listLifecycles(limit) });
+});
+
+app.post('/api/learning/skills/:name/rollback', async (req, res) => {
+  if (!cloudState) {
+    return res.status(503).json({ error: 'The durable skill lifecycle is not enabled.' });
+  }
+  const result = await skillsStore.rollbackSkill(req.params.name, {
+    fromVersion: req.body?.from_version,
+    reason: req.body?.reason || 'Explicit owner rollback.',
+    source: 'owner_api'
+  });
+  if (!result.rolled_back) return res.status(409).json(result);
+  res.json(result);
+});
+
 app.get('/api/learning/beliefs', async (req, res) => {
   if (!beliefStore) {
     return res.status(503).json({ error: 'The durable belief ledger is not enabled.' });
@@ -3274,7 +3386,8 @@ app.post('/api/learning/outcomes/:id/feedback', async (req, res) => {
       note: req.body?.note
     });
     if (!outcome) return res.status(404).json({ error: 'Skill outcome not found.' });
-    res.json({ outcome });
+    const rollbacks = await scheduleSkillRollbackSweep();
+    res.json({ outcome, rollbacks });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

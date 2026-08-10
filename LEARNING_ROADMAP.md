@@ -15,9 +15,12 @@ untrusted email/web/database content as owner instruction.
 - Durable multi-turn reflection batches. AURA accumulates recent turn digests
   and tool outcomes across Render restarts, then reflects after the configured
   turn/tool threshold.
-- Evidence-gated skill learning. Learned procedures carry a version,
-  confidence, evidence, reason, and timestamps; unsupported or low-confidence
-  skill changes are rejected.
+- Candidate-gated skill learning. Autonomous proposals remain invisible until
+  a second model call replays at least two sanitized historical scenarios and
+  deterministic policy checks pass. Patches must beat the active version.
+- Learned skill lifecycle history retains candidates, active, retired, rejected,
+  and rolled-back versions. Repeated failures automatically restore the prior
+  learned version, bundled fallback, or disable the skill and alert the owner.
 - An owner-scoped skill outcome ledger attributes every viewed skill version to
   the response's tool successes/failures. The immediately following owner turn
   records conservative positive/negative feedback or closes attribution as
@@ -43,15 +46,19 @@ model prose. Authenticated inspection and feedback endpoints are available under
 Success gate met: every `view_skill` execution has an auditable outcome, and a
 negative correction identifies the exact skill version(s) responsible.
 
-### 2. Skill evaluation, promotion, and rollback
+### 2. Skill evaluation, promotion, and rollback — live
 
-New procedures begin as candidates. Replay sanitized historical scenarios and
-run deterministic policy checks before activation. Promote candidates that beat
-the prior version; retain version history and automatically roll back repeated
-failures.
+New procedures begin as candidates. Sanitized historical scenarios are replayed
+in an independent evaluation, and deterministic checks reject secrets, prompt
+injection, authorization bypasses, self-modification, and ungated external
+actions. A candidate needs two passing scenarios and score >= 0.75; patches must
+beat the active version by >= 0.05. Up to 20 versions are retained. Two negative
+owner corrections or three hard failures in the last five uses automatically
+roll back the exact active version and notify the owner.
 
-Success gate: no learned skill becomes active solely because one model response
-suggested it, and every active version can be rolled back.
+Success gate met: no autonomous learned skill becomes active solely because one
+model response suggested it, and every active learned version can fall back to a
+prior learned version, bundled workflow, or disabled state.
 
 ### 3. Episodic memory and consolidation — core loop live
 

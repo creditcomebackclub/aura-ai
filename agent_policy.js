@@ -108,6 +108,18 @@ function getToolPolicy(name) {
   return TOOL_POLICIES[name] || 'blocked';
 }
 
+function isExplicitSkillManagementRequest(message, action) {
+  const text = String(message || '').trim();
+  if (!text) return false;
+  const prefix = '^(?:aura[,:]?\\s*)?(?:please\\s+|can you\\s+|could you\\s+|i want you to\\s+)?';
+  const patterns = {
+    create: new RegExp(`${prefix}(?:create|add|save|teach|learn|remember|make)\\b.{0,160}\\b(?:skill|workflow|procedure|playbook)\\b`, 'i'),
+    patch: new RegExp(`${prefix}(?:update|change|edit|patch|revise|improve|fix|override)\\b.{0,160}\\b(?:skill|workflow|procedure|playbook)\\b`, 'i'),
+    delete: new RegExp(`${prefix}(?:delete|remove|forget|discard)\\b.{0,160}\\b(?:skill|workflow|procedure|playbook)\\b`, 'i')
+  };
+  return Boolean(patterns[action]?.test(text));
+}
+
 function validateToolArguments(name, args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) {
     throw new Error(`Invalid arguments for ${name}: expected an object.`);
@@ -209,6 +221,9 @@ function validateToolArguments(name, args) {
     if (args.action === 'create' || args.action === 'patch') {
       requireString('description', 240);
       requireString('content', 24000);
+      if (containsSearchSecret(`${args.description}\n${args.content}`)) {
+        throw new Error('Skill content cannot contain credentials or secrets.');
+      }
     }
   }
 
@@ -275,6 +290,7 @@ module.exports = {
   TOOL_POLICIES,
   containsSearchSecret,
   getToolPolicy,
+  isExplicitSkillManagementRequest,
   parseAndAuthorizeToolCall,
   resolveOwnerSearchInput,
   validatePublicSearchInput,
