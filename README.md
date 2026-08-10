@@ -107,6 +107,15 @@ their version, reason, evidence count, and timestamps. See
 `LEARNING_ROADMAP.md` for the staged path toward evaluated skills, episodic
 memory consolidation, richer retrieval, and bounded proactive planning.
 
+When a skill is loaded with `view_skill`, AURA records the exact skill version,
+subsequent tool outcomes, and the immediately following owner feedback. Neutral
+follow-up turns close automatic attribution so unrelated later corrections do
+not contaminate old outcomes. Inspect the authenticated ledger at
+`GET /api/learning/outcomes`, view aggregate counts at
+`GET /api/learning/summary`, or submit explicit feedback with
+`POST /api/learning/outcomes/:id/feedback` using `{ "rating": "positive" |
+"negative", "note": "..." }`.
+
 AURA extracts durable facts automatically with the configured background model.
 These commands are also handled explicitly:
 

@@ -82,6 +82,9 @@ class DurableSkillsStore {
       name: skill.name,
       description: skill.description,
       origin: skill.origin,
+      version: Math.max(1, Number(skill.version) || 1),
+      confidence: skill.confidence ?? null,
+      evidence_count: Math.max(0, Number(skill.evidence_count) || 0),
       content: renderSkillMarkdown({ name: skill.name, description: skill.description, body: skill.content || skill.body })
     };
   }

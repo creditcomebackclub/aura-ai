@@ -63,6 +63,7 @@ const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
 const { SkillsStore } = require('./skills_store');
 const { DurableSkillsStore } = require('./durable_skills_store');
+const { SkillOutcomeStore } = require('./skill_outcome_store');
 const { LearningReviewController } = require('./learning_review');
 const {
   isDirectEmailConfigured,
@@ -185,7 +186,8 @@ app.get('/healthz', (req, res) => {
       durable_reflection: useSupabaseState,
       turn_interval: Number(process.env.AURA_LEARNING_TURN_INTERVAL) || 10,
       tool_iteration_interval: Number(process.env.AURA_LEARNING_TOOL_ITER_INTERVAL) || 10,
-      minimum_skill_confidence: 0.75
+      minimum_skill_confidence: 0.75,
+      outcome_ledger: useSupabaseState
     },
     timestamp: new Date().toISOString()
   });
@@ -510,9 +512,13 @@ const skillsStore = new DurableSkillsStore({
   localStore: localSkillsStore,
   stateStore: cloudState
 });
+const skillOutcomeStore = cloudState
+  ? new SkillOutcomeStore({ stateStore: cloudState })
+  : null;
 
 const learningReview = new LearningReviewController({
   skillsStore,
+  outcomeStore: skillOutcomeStore,
   memoryV2,
   stateStore: cloudState,
   enabled: process.env.AURA_LEARNING_REVIEW !== 'false',
@@ -527,6 +533,8 @@ const learningReview = new LearningReviewController({
         skill_description: '',
         skill_content: '',
         skill_reason: 'no_api_key',
+        skill_confidence: 0,
+        skill_evidence: [],
         notes: ''
       };
     }
@@ -1661,6 +1669,19 @@ function isCapabilityCorrectionToolAllowed(name) {
     !CAPABILITY_CORRECTION_BLOCKED_TOOLS.has(name);
 }
 
+function buildToolEvidence(toolCall, parsedToolResult) {
+  const tool = toolCall?.function?.name || 'unknown';
+  const evidence = { tool, ok: parsedToolResult?.ok === true };
+  if (tool === 'view_skill' && evidence.ok && parsedToolResult?.data?.name) {
+    evidence.skill = {
+      name: String(parsedToolResult.data.name).slice(0, 80),
+      origin: parsedToolResult.data.origin === 'learned' ? 'learned' : 'bundled',
+      version: Math.max(1, Number(parsedToolResult.data.version) || 1)
+    };
+  }
+  return evidence;
+}
+
 // If the model verbally denies a capability whose tool was offered this turn,
 // force one correction pass against the actual turnTools list before the
 // reply is persisted / spoken further. Returns the (possibly replaced) reply.
@@ -1753,10 +1774,7 @@ async function correctFalseCapabilityDenial({
         parsedToolResult = { ok: false };
       }
       if (Array.isArray(evidence)) {
-        evidence.push({
-          tool: toolCall?.function?.name || 'unknown',
-          ok: parsedToolResult.ok === true
-        });
+        evidence.push(buildToolEvidence(toolCall, parsedToolResult));
       }
       chatHistory.push({
         role: 'tool',
@@ -2301,6 +2319,11 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     if (typeof text !== 'string' || !text.trim() || text.length > 10000) {
       throw new Error('Text must be between 1 and 10,000 characters.');
     }
+    if (!isolated && skillOutcomeStore) {
+      skillOutcomeStore.applyOwnerFeedback(text).catch(error => {
+        console.warn('[Skill outcomes] Feedback attribution failed:', error.message);
+      });
+    }
     // Whisper (and casual typing) often mangle client surnames. Rewrite clear
     // directory hits to the canonical spelling before memory/tools see them,
     // so she doesn't echo "pissavage" / "Carl" back as not-found. Directory
@@ -2404,10 +2427,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
           }, Promise.resolve([]));
 
         for (const outcome of outcomes) {
-          evidence.push({
-            tool: outcome.toolCall?.function?.name || 'unknown',
-            ok: outcome.parsedToolResult.ok === true
-          });
+          evidence.push(buildToolEvidence(outcome.toolCall, outcome.parsedToolResult));
           if (outcome.toolCall?.function?.name === 'search_web' && outcome.parsedToolResult.ok === true) {
             await settleWebSearchUsage(outcome.parsedToolResult.data?.billable_searches);
             webResults.push({
@@ -2821,10 +2841,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         if (outcome.privateContext && outcome.toolCall?.function?.name !== 'search_web') {
           privateContextToolCompleted = true;
         }
-        evidence.push({
-          tool: outcome.toolCall?.function?.name || 'unknown',
-          ok: outcome.parsedToolResult.ok === true
-        });
+        evidence.push(buildToolEvidence(outcome.toolCall, outcome.parsedToolResult));
         if (outcome.toolCall?.function?.name === 'search_web' && outcome.parsedToolResult.ok === true) {
           await settleWebSearchUsage(outcome.parsedToolResult.data?.billable_searches);
           webSearchSucceeded = true;
@@ -2898,13 +2915,23 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     // Extraction enqueue was kicked off earlier; only need the job id before
     // we stamp it on the assistant row (not before the model starts).
     const memoryJob = await memoryJobPromise.catch(() => null);
-    await addConversationMessage('assistant', reply, {
+    const assistantMessage = await addConversationMessage('assistant', reply, {
       evidence,
       brain: { model: chatModel, reasoning_effort: reasoningEffort },
       memory_extraction: memoryJob
         ? { status: memoryJob.status, job_id: memoryJob.id }
         : { status: 'scheduled_local' }
     });
+    if (skillOutcomeStore) {
+      skillOutcomeStore.recordTurn({
+        ownerText: text,
+        reply,
+        evidence,
+        messageId: assistantMessage?.id || null
+      }).catch(error => {
+        console.warn('[Skill outcomes] Turn recording failed:', error.message);
+      });
+    }
     scheduleConversationSummary();
     if (process.env.AURA_TIMING_TRACE) {
       console.log(`[timing] total request: ${Date.now() - requestStartedAtMs}ms`);
@@ -2920,6 +2947,9 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         turnToolCallCount
           ? `Tool outcomes: ${evidence.map(item => `${item.tool || 'unknown'}=${item.ok === true ? 'success' : 'failure'}`).join(', ')}`
           : 'Tool outcomes: none',
+        evidence.some(item => item.skill)
+          ? `Skills used: ${evidence.filter(item => item.skill).map(item => `${item.skill.name}@v${item.skill.version}`).join(', ')}`
+          : 'Skills used: none',
         `AURA: ${String(reply || '').slice(0, 1500)}`
       ];
       learningReview.noteTurn({
@@ -3162,6 +3192,37 @@ app.get('/api/memory/view', async (req, res) => {
     summaryUpdatedAt: conversationContext.updatedAt || null
   });
   res.json({ generated_at: new Date().toISOString(), markdown, warnings });
+});
+
+app.get('/api/learning/outcomes', async (req, res) => {
+  if (!skillOutcomeStore) {
+    return res.status(503).json({ error: 'The durable skill outcome ledger is not enabled.' });
+  }
+  const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+  res.json({ outcomes: await skillOutcomeStore.list(limit) });
+});
+
+app.get('/api/learning/summary', async (req, res) => {
+  if (!skillOutcomeStore) {
+    return res.status(503).json({ error: 'The durable skill outcome ledger is not enabled.' });
+  }
+  res.json({ summary: await skillOutcomeStore.summary() });
+});
+
+app.post('/api/learning/outcomes/:id/feedback', async (req, res) => {
+  if (!skillOutcomeStore) {
+    return res.status(503).json({ error: 'The durable skill outcome ledger is not enabled.' });
+  }
+  try {
+    const outcome = await skillOutcomeStore.setFeedback(req.params.id, {
+      rating: req.body?.rating,
+      note: req.body?.note
+    });
+    if (!outcome) return res.status(404).json({ error: 'Skill outcome not found.' });
+    res.json({ outcome });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.delete('/api/profile/:key', async (req, res) => {

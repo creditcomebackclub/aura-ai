@@ -18,17 +18,23 @@ untrusted email/web/database content as owner instruction.
 - Evidence-gated skill learning. Learned procedures carry a version,
   confidence, evidence, reason, and timestamps; unsupported or low-confidence
   skill changes are rejected.
+- An owner-scoped skill outcome ledger attributes every viewed skill version to
+  the response's tool successes/failures. The immediately following owner turn
+  records conservative positive/negative feedback or closes attribution as
+  neutral; explicit feedback can override it. Reflection consumes this evidence.
 
 ## Next milestones
 
-### 1. Outcome and feedback ledger
+### 1. Outcome and feedback ledger — live
 
-Record when a learned skill is selected, which version ran, its tool outcomes,
-whether the owner corrected the result, and explicit positive/negative feedback.
-This gives reflection objective evidence instead of relying only on model prose.
+Records when a skill is selected, which version ran, its tool outcomes, whether
+the owner corrected the result on the next turn, and explicit positive/negative
+feedback. This gives reflection objective evidence instead of relying only on
+model prose. Authenticated inspection and feedback endpoints are available under
+`/api/learning/`.
 
-Success gate: every learned-skill execution has an auditable outcome, and a
-negative correction can identify the exact skill version responsible.
+Success gate met: every `view_skill` execution has an auditable outcome, and a
+negative correction identifies the exact skill version(s) responsible.
 
 ### 2. Skill evaluation, promotion, and rollback
 

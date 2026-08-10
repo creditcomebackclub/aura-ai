@@ -284,3 +284,40 @@ test('failed durable reflection remains pending and resumes after restart', asyn
   assert.equal(recovered, 1);
   assert.equal([...rows.values()][0].value.pending_review, null);
 });
+
+test('learning review receives structured skill outcomes and owner feedback', async () => {
+  let reviewPrompt = '';
+  const controller = new LearningReviewController({
+    skillsStore: { async buildIndexPrompt() { return ''; } },
+    outcomeStore: {
+      async list() {
+        return [{
+          skill_name: 'client-sweep',
+          skill_version: 3,
+          status: 'partial',
+          tools: [{ name: 'get_client_snapshot', ok: false }],
+          feedback: 'negative',
+          feedback_text: 'That client was active.'
+        }];
+      }
+    },
+    createReviewCompletion: async ({ messages }) => {
+      reviewPrompt = messages[0].content;
+      return {
+        save_memory_facts: [],
+        skill_action: 'none',
+        skill_name: '',
+        skill_description: '',
+        skill_content: '',
+        skill_reason: '',
+        skill_confidence: 0,
+        skill_evidence: [],
+        notes: ''
+      };
+    }
+  });
+  await controller.runReview({ transcript: 'A later reflection batch.' });
+  assert.match(reviewPrompt, /client-sweep@v3/);
+  assert.match(reviewPrompt, /get_client_snapshot=failure/);
+  assert.match(reviewPrompt, /That client was active/);
+});
