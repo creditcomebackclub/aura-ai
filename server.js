@@ -180,6 +180,13 @@ app.get('/healthz', (req, res) => {
       email_monitoring: isDirectEmailConfigured(),
       calendar_monitoring: isGoogleCalendarWriteConfigured()
     },
+    learning: {
+      review_enabled: process.env.AURA_LEARNING_REVIEW !== 'false',
+      durable_reflection: useSupabaseState,
+      turn_interval: Number(process.env.AURA_LEARNING_TURN_INTERVAL) || 10,
+      tool_iteration_interval: Number(process.env.AURA_LEARNING_TOOL_ITER_INTERVAL) || 10,
+      minimum_skill_confidence: 0.75
+    },
     timestamp: new Date().toISOString()
   });
 });
