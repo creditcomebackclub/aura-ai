@@ -100,6 +100,13 @@ full bodies load via `view_skill`. After tool-heavy turns, a background learning
 review may pin durable facts or write/patch learned skills (disable with
 `AURA_LEARNING_REVIEW=false`).
 
+Reflection batches and counters are durable in Supabase, so AURA can learn from
+several experiences even when Render restarts between them. Learned procedures
+must include supporting evidence and sufficient confidence; cloud records retain
+their version, reason, evidence count, and timestamps. See
+`LEARNING_ROADMAP.md` for the staged path toward evaluated skills, episodic
+memory consolidation, richer retrieval, and bounded proactive planning.
+
 AURA extracts durable facts automatically with the configured background model.
 These commands are also handled explicitly:
 

@@ -131,6 +131,8 @@ test('learning review applies memory facts and skill creates from model output',
       skill_description: 'Keep morning briefs short',
       skill_content: '## Steps\nLead with calendar then goals.\n',
       skill_reason: 'repeated preference',
+      skill_confidence: 0.92,
+      skill_evidence: ['Experience 1: owner explicitly corrected brief length'],
       notes: ''
     })
   });
@@ -143,4 +145,142 @@ test('learning review applies memory facts and skill creates from model output',
   assert.equal(result.applied.skill.name, 'short-brief');
   assert.equal(store.viewSkill('short-brief').origin, 'learned');
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('learning review durably reflects across multiple turns after a restart', async () => {
+  const rows = new Map();
+  let revision = 0;
+  const stateStore = {
+    async getStateRow(key) { return rows.get(key) || null; },
+    async compareAndSetState(key, expectedUpdatedAt, value) {
+      const current = rows.get(key) || null;
+      if ((current?.updated_at ?? null) !== expectedUpdatedAt) return false;
+      rows.set(key, { value, updated_at: String(++revision) });
+      return true;
+    }
+  };
+  const reviews = [];
+  const makeController = () => new LearningReviewController({
+    stateStore,
+    skillsStore: {
+      async buildIndexPrompt() { return ''; },
+      async manageSkill() { throw new Error('No skill should be written.'); }
+    },
+    turnInterval: 2,
+    toolIterInterval: 99,
+    createReviewCompletion: async ({ messages }) => {
+      reviews.push(messages.at(-1).content);
+      return {
+        save_memory_facts: [],
+        skill_action: 'none',
+        skill_name: '',
+        skill_description: '',
+        skill_content: '',
+        skill_reason: '',
+        skill_confidence: 0,
+        skill_evidence: [],
+        notes: ''
+      };
+    }
+  });
+
+  const beforeRestart = makeController();
+  beforeRestart.noteTurn({ transcript: 'Owner: first preference\nAURA: noted' });
+  await beforeRestart.flush();
+
+  const afterRestart = makeController();
+  afterRestart.noteTurn({ transcript: 'Owner: second preference\nAURA: noted' });
+  await afterRestart.flush();
+
+  assert.equal(reviews.length, 1);
+  assert.match(reviews[0], /first preference/);
+  assert.match(reviews[0], /second preference/);
+  const state = [...rows.values()][0].value;
+  assert.equal(state.turns_since_review, 0);
+  assert.deepEqual(state.experiences, []);
+});
+
+test('learning review rejects unsupported low-confidence skill changes', async () => {
+  let writes = 0;
+  const controller = new LearningReviewController({
+    skillsStore: {
+      async buildIndexPrompt() { return ''; },
+      async manageSkill() { writes += 1; }
+    },
+    createReviewCompletion: async () => ({
+      save_memory_facts: [],
+      skill_action: 'create',
+      skill_name: 'guessy-workflow',
+      skill_description: 'An unsupported guess',
+      skill_content: '## Steps\nGuess.\n',
+      skill_reason: 'maybe useful',
+      skill_confidence: 0.4,
+      skill_evidence: ['One ambiguous interaction'],
+      notes: ''
+    })
+  });
+  const result = await controller.runReview({ transcript: 'Ambiguous turn' });
+  assert.equal(writes, 0);
+  assert.match(result.applied.skill_skipped, /confidence_below/);
+});
+
+test('failed durable reflection remains pending and resumes after restart', async () => {
+  const rows = new Map();
+  let revision = 0;
+  const stateStore = {
+    async getStateRow(key) { return rows.get(key) || null; },
+    async compareAndSetState(key, expectedUpdatedAt, value) {
+      const current = rows.get(key) || null;
+      if ((current?.updated_at ?? null) !== expectedUpdatedAt) return false;
+      rows.set(key, { value, updated_at: String(++revision) });
+      return true;
+    }
+  };
+  const skillsStore = {
+    async buildIndexPrompt() { return ''; },
+    async manageSkill() { throw new Error('No skill should be written.'); }
+  };
+  const completion = {
+    save_memory_facts: [],
+    skill_action: 'none',
+    skill_name: '',
+    skill_description: '',
+    skill_content: '',
+    skill_reason: '',
+    skill_confidence: 0,
+    skill_evidence: [],
+    notes: ''
+  };
+  const quietLogger = { warn() {}, log() {} };
+  const failing = new LearningReviewController({
+    stateStore,
+    skillsStore,
+    logger: quietLogger,
+    turnInterval: 1,
+    createReviewCompletion: async () => { throw new Error('temporary outage'); }
+  });
+  failing.noteTurn({ transcript: 'Owner: retain this experience' });
+  await failing.flush();
+
+  const storedRow = [...rows.values()][0];
+  assert.equal(storedRow.value.pending_review.status, 'retry_wait');
+  assert.equal(storedRow.value.pending_review.attempts, 1);
+  assert.match(storedRow.value.pending_review.experiences[0].transcript, /retain this experience/);
+  storedRow.value.pending_review.available_at = new Date(Date.now() - 1000).toISOString();
+
+  let recovered = 0;
+  const restarted = new LearningReviewController({
+    stateStore,
+    skillsStore,
+    logger: quietLogger,
+    turnInterval: 1,
+    createReviewCompletion: async () => {
+      recovered += 1;
+      return completion;
+    }
+  });
+  assert.equal((await restarted.resume()).resumed, true);
+  await restarted.flush();
+  assert.equal(recovered, 1);
+  assert.equal([...rows.values()][0].value.pending_review, null);
 });

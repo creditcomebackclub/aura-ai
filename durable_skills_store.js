@@ -46,7 +46,17 @@ class DurableSkillsStore {
       .map(skill => [skill.name, skill]));
     for (const [name, skill] of Object.entries(await this.#remoteSkills())) {
       const normalized = normalizeSkill({ name, description: skill.description, content: skill.content });
-      skills.set(name, { ...normalized, origin: 'learned', path: null });
+      skills.set(name, {
+        ...normalized,
+        origin: 'learned',
+        path: null,
+        version: Math.max(1, Number(skill.version) || 1),
+        confidence: Number.isFinite(Number(skill.confidence)) ? Number(skill.confidence) : null,
+        evidence_count: Array.isArray(skill.evidence) ? skill.evidence.length : 0,
+        reason: String(skill.reason || '').slice(0, 500),
+        learned_at: skill.learned_at || null,
+        updated_at: skill.updated_at || null
+      });
     }
     return [...skills.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -108,11 +118,32 @@ class DurableSkillsStore {
           description: input.description || existing?.description,
           content: input.content || existing?.content
         });
-        current[name] = { description: skill.description, content: skill.content, updated_at: new Date().toISOString() };
+        const now = new Date().toISOString();
+        const confidence = Math.max(0, Math.min(1, Number(input.confidence) || 0));
+        const evidence = (Array.isArray(input.evidence) ? input.evidence : [])
+          .map(item => String(item || '').trim().slice(0, 500))
+          .filter(Boolean)
+          .slice(0, 12);
+        current[name] = {
+          description: skill.description,
+          content: skill.content,
+          version: Math.max(0, Number(current[name]?.version) || 0) + 1,
+          confidence,
+          evidence,
+          reason: String(input.reason || '').trim().slice(0, 500),
+          learned_at: current[name]?.learned_at || now,
+          updated_at: now
+        };
       }
       const next = { version: 1, skills: current, updated_at: new Date().toISOString() };
       if (await this.stateStore.compareAndSetState(this.stateKey, row?.updated_at ?? null, next)) {
-        return { action, name, origin: 'learned', durable: true };
+        return {
+          action,
+          name,
+          origin: 'learned',
+          durable: true,
+          version: action === 'delete' ? null : current[name]?.version || 1
+        };
       }
     }
     throw new Error('Could not save learned skill due to concurrent updates; please retry.');

@@ -507,6 +507,7 @@ const skillsStore = new DurableSkillsStore({
 const learningReview = new LearningReviewController({
   skillsStore,
   memoryV2,
+  stateStore: cloudState,
   enabled: process.env.AURA_LEARNING_REVIEW !== 'false',
   turnInterval: process.env.AURA_LEARNING_TURN_INTERVAL || 10,
   toolIterInterval: process.env.AURA_LEARNING_TOOL_ITER_INTERVAL || 10,
@@ -537,6 +538,9 @@ const learningReview = new LearningReviewController({
     });
     return JSON.parse(completion.choices[0].message.content || '{}');
   }
+});
+learningReview.resume().catch(error => {
+  console.warn('[Learning review] Startup resume failed:', error.message);
 });
 
 const conversationSummary = new ConversationSummaryService({
@@ -2906,6 +2910,9 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         turnToolCallCount
           ? `Tools used (${turnToolCallCount}): ${evidence.map(item => item.tool).filter(Boolean).join(', ') || 'n/a'}`
           : 'Tools used: none',
+        turnToolCallCount
+          ? `Tool outcomes: ${evidence.map(item => `${item.tool || 'unknown'}=${item.ok === true ? 'success' : 'failure'}`).join(', ')}`
+          : 'Tool outcomes: none',
         `AURA: ${String(reply || '').slice(0, 1500)}`
       ];
       learningReview.noteTurn({
