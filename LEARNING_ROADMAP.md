@@ -22,6 +22,9 @@ untrusted email/web/database content as owner instruction.
   the response's tool successes/failures. The immediately following owner turn
   records conservative positive/negative feedback or closes attribution as
   neutral; explicit feedback can override it. Reflection consumes this evidence.
+- Notable episodic memory stores completed workflows, decisions, corrections,
+  and failures separately from permanent owner facts. Episodes are available to
+  semantic recall and later reflection but are excluded from always-on memory.
 
 ## Next milestones
 
@@ -46,16 +49,18 @@ failures.
 Success gate: no learned skill becomes active solely because one model response
 suggested it, and every active version can be rolled back.
 
-### 3. Episodic memory and consolidation
+### 3. Episodic memory and consolidation — episodic capture live
 
-Separate raw episodes (what happened) from semantic knowledge (what is generally
-true). Periodically consolidate repeated episodes, merge duplicates, detect
-contradictions, reduce confidence for stale unsupported beliefs, and preserve
-provenance back to source episodes.
+Raw episodes (what happened) are now separate from semantic knowledge (what is
+generally true). Reflection saves only notable events above the importance gate,
+and later reflection can compare recent episodes. The remaining work is periodic
+consolidation of repeated episodes, duplicate merging, contradiction detection,
+confidence reduction for stale unsupported beliefs, and richer provenance back
+to source episodes.
 
-Success gate: AURA can explain why she believes a memory, distinguish a recent
-event from a durable rule, and surface unresolved contradictions instead of
-silently choosing one.
+Partial gate met: AURA distinguishes a recent event from a durable rule and does
+not pin episodes into the owner profile. Full completion still requires explicit
+belief provenance and surfaced contradiction handling.
 
 ### 4. Retrieval quality and memory observability
 

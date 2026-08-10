@@ -417,6 +417,7 @@ function buildAlwaysOnMemorySlice(memories = [], {
   let used = 0;
   for (const memory of memories) {
     if (lines.length >= limit) break;
+    if (memory?.kind === 'episode') continue;
     const content = String(memory?.content || '').trim();
     if (!content || excluded.has(content.toLowerCase())) continue;
     const kind = memory.kind || 'fact';
@@ -852,6 +853,50 @@ class MemoryV2 {
       }
       return { learned };
     });
+  }
+
+  async rememberEpisode({ summary, outcome = '', entities = [], importance = 0.7 } = {}) {
+    const normalizedSummary = String(summary || '').trim().slice(0, 1200);
+    const normalizedOutcome = String(outcome || '').trim().slice(0, 500);
+    const normalizedEntities = (Array.isArray(entities) ? entities : [])
+      .map(entity => String(entity || '').trim().slice(0, 100))
+      .filter(Boolean)
+      .slice(0, 12);
+    const normalizedImportance = Math.max(0, Math.min(1, Number(importance) || 0));
+    const combined = [normalizedSummary, normalizedOutcome, ...normalizedEntities].join(' ');
+    if (!normalizedSummary || containsSecret(combined) || normalizedImportance < 0.6) {
+      return { saved: false, reason: !normalizedSummary ? 'empty' : (containsSecret(combined) ? 'contains_secret' : 'low_importance') };
+    }
+    const date = new Intl.DateTimeFormat('en-CA', {
+      timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+    const content = [
+      `[Episode ${date}] ${normalizedSummary}`,
+      normalizedOutcome ? `Outcome: ${normalizedOutcome}` : '',
+      normalizedEntities.length ? `Entities: ${normalizedEntities.join(', ')}` : ''
+    ].filter(Boolean).join(' ');
+    const saved = await this.semanticMemory.save(content, {
+      kind: 'episode',
+      source: 'learning_review',
+      confidence: normalizedImportance,
+      sensitivity: 'private'
+    });
+    return {
+      saved: true,
+      id: saved.id,
+      deduplicated: saved.deduplicated,
+      content,
+      importance: normalizedImportance
+    };
+  }
+
+  async listEpisodes(limit = 12) {
+    const bounded = Math.max(1, Math.min(50, Number(limit) || 12));
+    const memories = await this.semanticMemory.list(Math.max(100, bounded * 5));
+    return memories.filter(memory => memory.kind === 'episode').slice(0, bounded);
   }
 
   async forget(query) {

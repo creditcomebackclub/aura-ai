@@ -100,7 +100,8 @@ test('durable skills store persists learned skills through the owner state store
 test('always-on memory slice respects char cap and exclusions', () => {
   const slice = buildAlwaysOnMemorySlice([
     { kind: 'durable_fact', confidence: 0.9, content: 'Prefers morning meetings' },
-    { kind: 'durable_fact', confidence: 0.8, content: 'Lives in Phoenix' }
+    { kind: 'durable_fact', confidence: 0.8, content: 'Lives in Phoenix' },
+    { kind: 'episode', confidence: 0.9, content: 'A one-time meeting was rescheduled' }
   ], {
     maxChars: 120,
     excludeContents: ['Lives in Phoenix']
@@ -108,18 +109,25 @@ test('always-on memory slice respects char cap and exclusions', () => {
   assert.match(slice, /ALWAYS-ON LONG-TERM MEMORY/);
   assert.match(slice, /Prefers morning meetings/);
   assert.doesNotMatch(slice, /Lives in Phoenix/);
+  assert.doesNotMatch(slice, /one-time meeting/);
 });
 
 test('learning review applies memory facts and skill creates from model output', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-learn-'));
   const store = new SkillsStore({ rootDir: root });
   const learned = [];
+  const episodes = [];
   const controller = new LearningReviewController({
     skillsStore: store,
     memoryV2: {
       async learnFromUserMessage(fact) {
         learned.push(fact);
         return { learned: [{ value: fact }] };
+      },
+      async listEpisodes() { return []; },
+      async rememberEpisode(episode) {
+        episodes.push(episode);
+        return { saved: true, id: 9 };
       }
     },
     turnInterval: 1,
@@ -133,6 +141,10 @@ test('learning review applies memory facts and skill creates from model output',
       skill_reason: 'repeated preference',
       skill_confidence: 0.92,
       skill_evidence: ['Experience 1: owner explicitly corrected brief length'],
+      episode_summary: 'Chris established a shorter morning-brief workflow.',
+      episode_outcome: 'The concise format became a learned procedure.',
+      episode_entities: ['morning brief'],
+      episode_importance: 0.8,
       notes: ''
     })
   });
@@ -142,6 +154,8 @@ test('learning review applies memory facts and skill creates from model output',
     toolCallCount: 4
   });
   assert.equal(learned[0], 'Chris prefers short morning briefs');
+  assert.equal(episodes[0].importance, 0.8);
+  assert.equal(result.applied.episode.saved, true);
   assert.equal(result.applied.skill.name, 'short-brief');
   assert.equal(store.viewSkill('short-brief').origin, 'learned');
   fs.rmSync(root, { recursive: true, force: true });

@@ -187,7 +187,8 @@ app.get('/healthz', (req, res) => {
       turn_interval: Number(process.env.AURA_LEARNING_TURN_INTERVAL) || 10,
       tool_iteration_interval: Number(process.env.AURA_LEARNING_TOOL_ITER_INTERVAL) || 10,
       minimum_skill_confidence: 0.75,
-      outcome_ledger: useSupabaseState
+      outcome_ledger: useSupabaseState,
+      episodic_memory: true
     },
     timestamp: new Date().toISOString()
   });
@@ -535,6 +536,10 @@ const learningReview = new LearningReviewController({
         skill_reason: 'no_api_key',
         skill_confidence: 0,
         skill_evidence: [],
+        episode_summary: '',
+        episode_outcome: '',
+        episode_entities: [],
+        episode_importance: 0,
         notes: ''
       };
     }
@@ -3207,6 +3212,11 @@ app.get('/api/learning/summary', async (req, res) => {
     return res.status(503).json({ error: 'The durable skill outcome ledger is not enabled.' });
   }
   res.json({ summary: await skillOutcomeStore.summary() });
+});
+
+app.get('/api/learning/episodes', async (req, res) => {
+  const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 20));
+  res.json({ episodes: await memoryV2.listEpisodes(limit) });
 });
 
 app.post('/api/learning/outcomes/:id/feedback', async (req, res) => {

@@ -116,6 +116,12 @@ not contaminate old outcomes. Inspect the authenticated ledger at
 `POST /api/learning/outcomes/:id/feedback` using `{ "rating": "positive" |
 "negative", "note": "..." }`.
 
+Reflection may also save a notable episode—such as a completed workflow,
+decision, correction, or failure and its outcome—without turning that event into
+a permanent profile fact. Episodes participate in semantic recall and future
+reflection, but remain out of the always-on memory slice. Inspect them at the
+authenticated `GET /api/learning/episodes` endpoint.
+
 AURA extracts durable facts automatically with the configured background model.
 These commands are also handled explicitly:
 

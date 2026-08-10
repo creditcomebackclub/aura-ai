@@ -421,6 +421,40 @@ test('automatic learning saves structured profile entries and semantic memory', 
   assert.equal(semanticMemory.rows.size, 1);
 });
 
+test('episodic memory records notable outcomes without polluting the owner profile', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  const memory = new MemoryV2({ profileStore, semanticMemory, client: null });
+  const result = await memory.rememberEpisode({
+    summary: 'Chris corrected the client sweep after an inactive account was reported as active.',
+    outcome: 'The workflow was revised to verify status before reporting.',
+    entities: ['client sweep', 'account status'],
+    importance: 0.9
+  });
+  assert.equal(result.saved, true);
+  const [episode] = await memory.listEpisodes();
+  assert.equal(episode.kind, 'episode');
+  assert.equal(episode.source, 'learning_review');
+  assert.match(episode.content, /Outcome: The workflow was revised/);
+  assert.deepEqual((await profileStore.getOwnerProfile()).entries, {});
+});
+
+test('episodic memory rejects routine or secret-bearing events', async () => {
+  const memory = new MemoryV2({
+    profileStore: createProfileStore(),
+    semanticMemory: createSemanticMemory(),
+    client: null
+  });
+  assert.equal((await memory.rememberEpisode({
+    summary: 'A routine greeting happened.',
+    importance: 0.2
+  })).reason, 'low_importance');
+  assert.equal((await memory.rememberEpisode({
+    summary: 'The API key was sk-abcdefghijklmnopqrstuvwxyz123456.',
+    importance: 1
+  })).reason, 'contains_secret');
+});
+
 test('relationship memory preserves and merges durable contact context', async () => {
   const profileStore = createProfileStore();
   const semanticMemory = createSemanticMemory();
