@@ -5,6 +5,7 @@ const {
   formatMorningBrief,
   formatCalendarSection,
   formatBlackboardSection,
+  findMorningBriefSparkPreference,
   filterUpcomingAssignments,
   runMorningBrief
 } = require('../morning_brief');
@@ -56,6 +57,35 @@ test('morning brief uses readable multi-line sections and greets Chris', () => {
   assert.match(brief.spoken, /On the calendar: Dentist at 2pm; Standup at 4pm\./);
   assert.match(brief.spoken, /Blackboard has 1 deadline on Wed, Aug 5: Week 5 Discussion\./);
   assert.doesNotMatch(brief.spoken, /•/);
+});
+
+test('morning brief formats a strange little spark for text and speech', () => {
+  const brief = buildMorningBrief({
+    goals: [{ title: 'Ship the proposal', created_at: NOW.toISOString() }],
+    spark: {
+      fact: 'Honey never spoils; sealed jars thousands of years old have remained edible.',
+      connection: 'For today, make one useful thing built to last.'
+    },
+    now: NOW,
+    timeZone: TZ
+  });
+
+  assert.match(brief.text, /Strange little spark\nHoney never spoils/);
+  assert.match(brief.text, /For today, make one useful thing built to last\./);
+  assert.match(brief.spoken, /Today's strange little spark\. Honey never spoils/);
+});
+
+test('spark preference is discovered from durable profile entries', () => {
+  const value = 'The owner prefers a daily morning brief with a unique “strange little spark”.';
+  assert.equal(findMorningBriefSparkPreference({
+    entries: {
+      unrelated: { value: 'Chris likes concise answers.' },
+      spark: { value }
+    }
+  }), value);
+  assert.equal(findMorningBriefSparkPreference({
+    entries: { unrelated: { value: 'Chris likes unusual facts.' } }
+  }), null);
 });
 
 test('calendar section cleans Event/Starts noise and clear days', () => {
@@ -130,4 +160,71 @@ test('morning brief runner sends spoken + telegramVoice options', async () => {
   });
   assert.equal(second.status, 'deduplicated');
   assert.equal(alerts.length, 1);
+});
+
+test('morning brief runner generates a spark only when the durable preference exists', async () => {
+  const alerts = [];
+  let generationInput = null;
+  const result = await runMorningBrief({
+    listOpenGoals: async () => [{ title: 'Finish the brief', created_at: NOW.toISOString() }],
+    getCalendarText: async () => 'No events scheduled today.',
+    getBlackboardUpcoming: async () => [],
+    getOwnerProfile: async () => ({
+      entries: {
+        spark: {
+          value: 'The owner prefers a daily morning brief with a unique strange little spark.'
+        }
+      }
+    }),
+    generateSpark: async input => {
+      generationInput = input;
+      return {
+        fact: 'A group of flamingos is called a flamboyance.',
+        connection: 'Bring a little more color to the one task that matters most.'
+      };
+    },
+    sendAlert: async (text, category, urgency, options) => {
+      alerts.push({ text, category, urgency, options });
+      return { id: 2, deduplicated: false };
+    },
+    timeZone: TZ,
+    now: NOW,
+    ownerName: 'Chris'
+  });
+
+  assert.equal(result.spark, true);
+  assert.equal(generationInput.goals[0].title, 'Finish the brief');
+  assert.match(alerts[0].text, /Strange little spark/);
+  assert.match(alerts[0].options.spoken, /Today's strange little spark/);
+  assert.deepEqual(alerts[0].options.metadata.morning_spark, {
+    fact: 'A group of flamingos is called a flamboyance.',
+    connection: 'Bring a little more color to the one task that matters most.'
+  });
+});
+
+test('morning brief still sends its useful sections if spark generation fails', async () => {
+  const alerts = [];
+  const result = await runMorningBrief({
+    listOpenGoals: async () => [{ title: 'Keep moving', created_at: NOW.toISOString() }],
+    getOwnerProfile: async () => ({
+      entries: {
+        spark: { value: 'Include a strange little spark in the morning brief.' }
+      }
+    }),
+    generateSpark: async () => {
+      throw new Error('temporary model outage');
+    },
+    sendAlert: async text => {
+      alerts.push(text);
+      return { id: 3, deduplicated: false };
+    },
+    timeZone: TZ,
+    now: NOW
+  });
+
+  assert.equal(result.status, 'sent');
+  assert.equal(result.spark, false);
+  assert.deepEqual(result.errors, ['spark:temporary model outage']);
+  assert.match(alerts[0], /Goals \(1\)/);
+  assert.doesNotMatch(alerts[0], /Strange little spark/);
 });

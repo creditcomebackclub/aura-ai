@@ -10,6 +10,9 @@ const {
 } = require('./daily_goals_digest');
 const { formatDueLabel, isDueToday, isOverdue } = require('./due_date');
 
+const MORNING_BRIEF_PATTERN = /\bmorning\s+brief\b/i;
+const SPARK_PATTERN = /\b(?:strange|weird)\s+(?:little\s+)?spark\b/i;
+
 function ownerDisplayName(name) {
   const trimmed = String(name || '').trim();
   return trimmed || 'Chris';
@@ -206,10 +209,46 @@ function spokenBlackboardSection(upcoming, { timeZone = 'America/Phoenix' } = {}
   return `Blackboard has ${items.length} deadline${items.length === 1 ? '' : 's'} ${groupBits.join('; ')}.`;
 }
 
+function findMorningBriefSparkPreference(profile) {
+  const entries = Object.values(profile?.entries || {});
+  for (const entry of entries) {
+    const value = String(entry?.value || '').trim();
+    if (MORNING_BRIEF_PATTERN.test(value) && SPARK_PATTERN.test(value)) return value;
+  }
+  return null;
+}
+
+function cleanSparkPart(value, maxLength) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.slice(0, maxLength).trim();
+}
+
+function normalizeMorningSpark(spark) {
+  if (!spark || typeof spark !== 'object') return null;
+  const fact = cleanSparkPart(spark.fact, 260);
+  const connection = cleanSparkPart(spark.connection, 220);
+  if (!fact || !connection) return null;
+  return { fact, connection };
+}
+
+function formatSparkSection(spark) {
+  const normalized = normalizeMorningSpark(spark);
+  if (!normalized) return null;
+  return ['Strange little spark', normalized.fact, normalized.connection].join('\n');
+}
+
+function spokenSparkSection(spark) {
+  const normalized = normalizeMorningSpark(spark);
+  if (!normalized) return null;
+  return `Today's strange little spark. ${normalized.fact} ${normalized.connection}`;
+}
+
 function buildMorningBrief({
   goals = [],
   calendarText = null,
   blackboardUpcoming = [],
+  spark = null,
   now = new Date(),
   timeZone = 'America/Phoenix',
   ownerName = 'Chris'
@@ -219,12 +258,14 @@ function buildMorningBrief({
   const textSections = [
     formatGoalsSection(goals, { nowMs, timeZone }),
     formatCalendarSection(calendarText),
-    formatBlackboardSection(blackboardUpcoming, { timeZone })
+    formatBlackboardSection(blackboardUpcoming, { timeZone }),
+    formatSparkSection(spark)
   ].filter(Boolean);
   const spokenSections = [
     spokenGoalsSection(goals, { nowMs, timeZone }),
     spokenCalendarSection(calendarText),
-    spokenBlackboardSection(blackboardUpcoming, { timeZone })
+    spokenBlackboardSection(blackboardUpcoming, { timeZone }),
+    spokenSparkSection(spark)
   ].filter(Boolean);
 
   if (!textSections.length) return null;
@@ -265,6 +306,8 @@ async function runMorningBrief({
   listOpenGoals,
   getCalendarText,
   getBlackboardUpcoming,
+  getOwnerProfile,
+  generateSpark,
   sendAlert,
   timeZone = 'America/Phoenix',
   now = new Date(),
@@ -277,6 +320,7 @@ async function runMorningBrief({
   const goals = await listOpenGoals();
   let calendarText = null;
   let blackboardUpcoming = [];
+  let spark = null;
   const errors = [];
 
   if (typeof getCalendarText === 'function') {
@@ -294,10 +338,32 @@ async function runMorningBrief({
     }
   }
 
+  if (typeof getOwnerProfile === 'function' && typeof generateSpark === 'function') {
+    try {
+      const profile = await getOwnerProfile();
+      const preference = findMorningBriefSparkPreference(profile);
+      if (preference) {
+        spark = normalizeMorningSpark(await generateSpark({
+          preference,
+          goals,
+          calendarText,
+          blackboardUpcoming,
+          now,
+          timeZone,
+          ownerName
+        }));
+        if (!spark) errors.push('spark:generator returned an invalid spark');
+      }
+    } catch (error) {
+      errors.push(`spark:${error.message || error}`);
+    }
+  }
+
   const brief = buildMorningBrief({
     goals,
     calendarText,
     blackboardUpcoming,
+    spark,
     now,
     timeZone,
     ownerName
@@ -311,13 +377,17 @@ async function runMorningBrief({
     dedupeKey,
     spoken: brief.spoken,
     telegramVoice: true,
-    metadata: { spoken: brief.spoken }
+    metadata: {
+      spoken: brief.spoken,
+      ...(spark ? { morning_spark: spark } : {})
+    }
   });
   if (notification?.deduplicated) {
     return {
       status: 'deduplicated',
       sent: false,
       count: goals.length,
+      spark: Boolean(notification?.metadata?.morning_spark || spark),
       dedupeKey,
       errors
     };
@@ -329,6 +399,7 @@ async function runMorningBrief({
     count: goals.length,
     calendar: Boolean(calendarText),
     blackboard: blackboardUpcoming.length,
+    spark: Boolean(spark),
     dedupeKey,
     errors
   };
@@ -340,6 +411,9 @@ module.exports = {
   formatGoalsSection,
   formatCalendarSection,
   formatBlackboardSection,
+  formatSparkSection,
+  findMorningBriefSparkPreference,
+  normalizeMorningSpark,
   filterUpcomingAssignments,
   runMorningBrief,
   // Re-export for callers that still want goals-only formatting.
