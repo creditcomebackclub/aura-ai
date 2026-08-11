@@ -139,6 +139,37 @@ test('waveform is driven by the actual AURA audio element', () => {
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)/);
 });
 
+test('wireframe energy-form emerges by state and follows real voice energy', () => {
+  assert.match(html, /<canvas id="aura-mesh"[^>]+aria-hidden="true"/);
+  assert.match(app, /function drawAuraMesh\(\)/);
+  assert.match(app, /Math\.max\(energyFloor, liveEnergy\)/);
+  assert.match(app, /function auraMeshPoint\(/);
+  assert.match(app, /requestAnimationFrame\(animateAuraMesh\)/);
+  for (const state of ['listening', 'thinking', 'speaking', 'error']) {
+    assert.match(css, new RegExp(`body\\[data-aura-state="${state}"\\] #aura-mesh`));
+  }
+  assert.match(css, /#aura-mesh\s*\{[^}]*animation:\s*none !important/s);
+  assert.doesNotMatch(css, /@keyframes think-spin/);
+  assert.match(app, /function applyLocalAuraPreview\(\)/);
+  assert.match(app, /\['localhost', '127\.0\.0\.1', '::1'\]/);
+  assert.match(app, /new URLSearchParams\(window\.location\.search\)\.get\('aura_preview'\)/);
+});
+
+test('listening mesh follows microphone energy with smoothly layered detail and glow', () => {
+  assert.match(app, /let microphoneEnergy = 0/);
+  assert.match(app, /function updateMicrophoneEnergy\(rms\)/);
+  assert.match(app, /function updateMicrophoneEnergyFromSamples\(samples\)/);
+  assert.match(app, /state === 'listening' \? microphoneEnergy : waveformEnergy/);
+  assert.match(app, /updateMicrophoneEnergy\(rms\)/);
+  assert.match(app, /updateMicrophoneEnergyFromSamples\(float32\)/);
+  assert.match(app, /latIndex % 2 === 0 \? 1 : detailMix/);
+  assert.match(app, /lonIndex % 2 === 0 \? 1 : detailMix/);
+  assert.match(app, /--mesh-saturation/);
+  assert.match(app, /--mesh-glow/);
+  assert.match(css, /body\[data-aura-state="listening"\] #aura-mesh\s*\{[^}]*var\(--mesh-glow/s);
+  assert.match(css, /body\[data-aura-state="speaking"\] #aura-mesh\s*\{[^}]*var\(--mesh-glow/s);
+});
+
 test('the wordmark glow tracks the orb state and respects reduced motion', () => {
   assert.match(app, /document\.body\.dataset\.auraState\s*=\s*state/);
   for (const state of ['listening', 'speaking', 'error']) {

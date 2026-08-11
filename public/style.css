@@ -3,7 +3,7 @@
   --orb-core: rgba(255, 255, 255, 0.95);
   --orb-glow-idle: rgba(0, 150, 255, 0.5);
   --orb-glow-listen: rgba(0, 255, 120, 0.7);
-  --orb-glow-speak: rgba(255, 120, 0, 0.7);
+  --orb-glow-speak: rgba(211, 55, 255, 0.72);
   --orb-glow-think: rgba(180, 50, 255, 0.7);
   --orb-glow-error: rgba(255, 50, 50, 0.7);
   /* Single source of truth for the wave's width. #source-panel derives its
@@ -337,17 +337,17 @@ body[data-aura-state="listening"] #aura-title::after {
 }
 
 body[data-aura-state="speaking"] #aura-title {
-  color: #fff6ec;
+  color: #f9efff;
   text-shadow:
     0 0 4px rgba(255, 255, 255, 0.95),
-    0 0 16px rgba(255, 196, 130, 0.85),
-    0 0 38px rgba(255, 140, 40, 0.6),
-    0 0 80px rgba(255, 110, 0, 0.38);
+    0 0 16px rgba(196, 166, 255, 0.9),
+    0 0 38px rgba(221, 71, 255, 0.68),
+    0 0 80px rgba(82, 112, 255, 0.42);
 }
 
 body[data-aura-state="speaking"] #aura-title::after {
-  background: linear-gradient(90deg, transparent, rgba(255, 196, 130, 0.95), transparent);
-  box-shadow: 0 0 16px rgba(255, 140, 40, 0.85);
+  background: linear-gradient(90deg, transparent, rgba(221, 121, 255, 0.95), transparent);
+  box-shadow: 0 0 16px rgba(185, 70, 255, 0.88);
 }
 
 body[data-aura-state="error"] #aura-title {
@@ -384,14 +384,12 @@ body[data-aura-state="error"] #aura-title {
 #orb-container::before {
   content: '';
   position: absolute;
-  width: 180px;
-  height: 180px;
+  width: 220px;
+  height: 220px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.02);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  background: radial-gradient(circle, rgba(71, 57, 186, 0.08), transparent 68%);
+  border: 0;
+  box-shadow: 0 0 58px rgba(62, 78, 255, 0.12);
   z-index: 0;
   transition: all 0.5s ease;
 }
@@ -413,56 +411,96 @@ body[data-aura-state="speaking"] #orb-container::after { border-color: var(--orb
 body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-glow-error); }
 
 #orb {
-  width: 110px;
-  height: 110px;
+  --voice-energy: 0;
+  width: 208px;
+  height: 208px;
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 35%, #ffffff 0%, rgba(255, 255, 255, 0.8) 25%, rgba(255, 255, 255, 0.3) 80%);
+  background: transparent;
   transition: all 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
   z-index: 1;
-  backdrop-filter: blur(15px);
-  -webkit-backdrop-filter: blur(15px);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  box-shadow: 0 0 50px rgba(255, 255, 255, 0.2), inset 0 0 20px rgba(255, 255, 255, 0.8);
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+  border: 0;
+  box-shadow: none;
+}
+
+/* The primary presence is a live wireframe energy-form inspired by a
+   topographic sphere. Canvas keeps the mesh fluid, resolution-independent,
+   and directly coupled to AURA's real playback energy. */
+#aura-mesh {
+  display: block;
+  width: 100%;
+  height: 100%;
+  opacity: 0.94;
+  filter: saturate(1.18) drop-shadow(0 0 8px rgba(102, 70, 255, 0.56));
+  pointer-events: none;
+  transition: opacity 320ms ease, filter 320ms ease;
+}
+
+body[data-aura-state="listening"] #aura-mesh {
+  opacity: 0.96;
+  filter:
+    saturate(var(--mesh-saturation, 1.12))
+    drop-shadow(0 0 var(--mesh-glow, 7px) rgba(82, 107, 255, 0.72));
+}
+
+body[data-aura-state="thinking"] #aura-mesh {
+  opacity: 1;
+  filter: saturate(1.35) drop-shadow(0 0 13px rgba(205, 64, 255, 0.68));
+}
+
+body[data-aura-state="speaking"] #aura-mesh {
+  opacity: 1;
+  filter:
+    saturate(var(--mesh-saturation, 1.24))
+    drop-shadow(0 0 var(--mesh-glow, 10px) rgba(246, 47, 255, 0.8));
+
+}
+
+body[data-aura-state="error"] #aura-mesh {
+  filter: saturate(1.35) drop-shadow(0 0 12px rgba(255, 56, 96, 0.78));
 }
 
 /* Idle State - gentle breathing */
 #orb.idle {
-  box-shadow: 0 0 70px 15px var(--orb-glow-idle), inset 0 0 30px rgba(0, 150, 255, 0.4);
+  box-shadow: none;
   animation: breathe 4.5s infinite cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Listening State - sharp, faster pulsing */
 #orb.listening {
-  box-shadow: 0 0 90px 25px var(--orb-glow-listen), inset 0 0 40px rgba(0, 255, 100, 0.6);
+  box-shadow: none;
   animation: pulse-listen 1.2s infinite cubic-bezier(0.4, 0, 0.2, 1);
   transform: scale(1.15);
-  background: radial-gradient(circle at 35% 35%, #ffffff 0%, rgba(200, 255, 200, 0.9) 30%, rgba(100, 255, 100, 0.5) 80%);
-  border-color: rgba(200, 255, 200, 0.6);
+  background: transparent;
+  border-color: rgba(107, 255, 207, 0.24);
 }
 
 /* Speaking State - dynamic waveform-like scaling */
 #orb.speaking {
-  box-shadow: 0 0 110px 35px var(--orb-glow-speak), inset 0 0 50px rgba(255, 100, 0, 0.6);
+  box-shadow: none;
   animation: speak-wave 0.7s infinite alternate cubic-bezier(0.4, 0, 0.2, 1);
-  background: radial-gradient(circle at 35% 35%, #ffffff 0%, rgba(255, 200, 150, 0.9) 30%, rgba(255, 100, 0, 0.5) 80%);
-  border-color: rgba(255, 200, 150, 0.6);
+  background: transparent;
+  border-color: rgba(238, 93, 255, 0.28);
 }
 
 /* Thinking State - rapid spinning or shifting glow */
 #orb.thinking {
-  box-shadow: 0 0 80px 20px var(--orb-glow-think), inset 0 0 40px rgba(150, 0, 255, 0.6);
-  animation: think-spin 2s infinite linear;
+  box-shadow: none;
+  animation: think-shift 2s infinite ease-in-out;
   transform: scale(0.95);
-  background: radial-gradient(circle at 35% 35%, #ffffff 0%, rgba(230, 200, 255, 0.9) 30%, rgba(150, 0, 255, 0.5) 80%);
-  border-color: rgba(230, 200, 255, 0.6);
+  background: transparent;
+  border-color: rgba(212, 112, 255, 0.26);
 }
 
 /* Error State */
 #orb.error {
-  box-shadow: 0 0 70px 15px var(--orb-glow-error), inset 0 0 30px rgba(255, 50, 50, 0.6);
+  box-shadow: none;
   animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both;
-  background: radial-gradient(circle at 35% 35%, #ffffff 0%, rgba(255, 200, 200, 0.9) 30%, rgba(255, 50, 50, 0.5) 80%);
-  border-color: rgba(255, 100, 100, 0.6);
+  background: transparent;
+  border-color: rgba(255, 97, 135, 0.28);
 }
 
 #voice-wave {
@@ -478,7 +516,7 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
 
 #voice-wave.speaking {
   opacity: 1;
-  filter: drop-shadow(0 0 14px rgba(255, 142, 55, 0.52));
+  filter: drop-shadow(0 0 14px rgba(224, 72, 255, 0.6));
 }
 
 #status-text {
@@ -833,23 +871,22 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
 /* Animations */
 @keyframes breathe {
   0%, 100% { transform: scale(1) translateY(0); }
-  50% { transform: scale(1.02) translateY(-4px); box-shadow: 0 0 85px 20px var(--orb-glow-idle), inset 0 0 35px rgba(0, 150, 255, 0.5); }
+  50% { transform: scale(1.02) translateY(-4px); }
 }
 
 @keyframes pulse-listen {
   0%, 100% { transform: scale(1.15); }
-  50% { transform: scale(1.22); box-shadow: 0 0 110px 30px var(--orb-glow-listen); }
+  50% { transform: scale(1.22); }
 }
 
 @keyframes speak-wave {
-  0% { transform: scale(1.08); border-radius: 50%; }
-  100% { transform: scale(1.25); border-radius: 46% 54% 48% 52%; box-shadow: 0 0 130px 45px var(--orb-glow-speak); }
+  0% { transform: scale(1.08); border-radius: 48% 52% 47% 53%; }
+  100% { transform: scale(1.2); border-radius: 51% 49% 53% 47%; }
 }
 
-@keyframes think-spin {
-  0% { transform: scale(0.95) rotate(0deg); border-radius: 49% 51% 48% 52%; }
-  50% { transform: scale(0.92) rotate(180deg); border-radius: 52% 48% 51% 49%; }
-  100% { transform: scale(0.95) rotate(360deg); border-radius: 49% 51% 48% 52%; }
+@keyframes think-shift {
+  0%, 100% { transform: scale(0.95) translateY(0); border-radius: 49% 51% 46% 54% / 44% 42% 58% 56%; }
+  50% { transform: scale(0.92) translateY(3px); border-radius: 52% 48% 51% 49% / 42% 46% 54% 58%; }
 }
 
 @keyframes shake {
@@ -908,6 +945,12 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   #voice-wave {
     animation: none !important;
     transition: none !important;
+  }
+
+  #aura-mesh {
+    animation: none !important;
+    transition: none !important;
+    filter: none !important;
   }
 
   #orb-container::after,

@@ -234,6 +234,8 @@ const webAnswer = document.getElementById('web-answer');
 const sourceLinks = document.getElementById('source-links');
 const voiceWave = document.getElementById('voice-wave');
 const voiceWaveContext = voiceWave.getContext('2d');
+const auraMesh = document.getElementById('aura-mesh');
+const auraMeshContext = auraMesh.getContext('2d');
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 // Global audio player for iOS Safari unlocking
@@ -288,6 +290,13 @@ let waveformFrame = null;
 let waveformPhase = 0;
 // Smoothed 0..1 loudness from her actual voice, used as amplitude gain.
 let waveformEnergy = 0;
+// Smoothed 0..1 loudness from Chris's microphone while AURA is listening.
+// Kept separate from playback energy so each side of the conversation can
+// give the mesh its own character without leaking across state changes.
+let microphoneEnergy = 0;
+let meshPhase = 0;
+let meshFrame = null;
+let meshLastFrameAt = 0;
 
 let mediaRecorder = null;
 let audioChunks = [];
@@ -372,6 +381,213 @@ function setOrbState(state, text) {
   statusText.textContent = text;
   // Lets the wordmark's neon track the orb without duplicating state.
   document.body.dataset.auraState = state;
+  drawAuraMesh();
+}
+
+function resizeAuraMesh() {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.round(auraMesh.clientWidth * pixelRatio));
+  const height = Math.max(1, Math.round(auraMesh.clientHeight * pixelRatio));
+  if (auraMesh.width !== width || auraMesh.height !== height) {
+    auraMesh.width = width;
+    auraMesh.height = height;
+  }
+}
+
+function auraMeshPalette(state, energy = 0) {
+  if (state === 'listening') {
+    // Quiet listening is cyan/teal; Chris's voice pulls the form through
+    // violet toward magenta as microphone energy rises.
+    return [
+      `hsl(${187 + energy * 9} 100% ${60 + energy * 8}%)`,
+      `hsl(${164 + energy * 92} 100% ${64 + energy * 5}%)`,
+      `hsl(${203 + energy * 105} 100% ${65 + energy * 5}%)`
+    ];
+  }
+  if (state === 'thinking') return ['#388cff', '#8557ff', '#f140ff'];
+  if (state === 'speaking') {
+    return [
+      `hsl(${192 + energy * 8} 100% ${60 + energy * 8}%)`,
+      `hsl(${247 + energy * 14} 100% ${65 + energy * 6}%)`,
+      `hsl(${305 + energy * 8} 100% ${61 + energy * 8}%)`
+    ];
+  }
+  if (state === 'error') return ['#ff775c', '#ff376f', '#db3dff'];
+  return ['#28bfff', '#5d68ff', '#d53cff'];
+}
+
+function auraMeshPoint(latitude, longitude, radius, phase, energy, state) {
+  const stateMotion = state === 'thinking' ? 1.45 : state === 'listening' ? 0.72 : 1;
+  const surfaceWave =
+    Math.sin(longitude * 2.7 + latitude * 1.9 + phase * 1.4) * 0.1 +
+    Math.sin(longitude * 5.4 - latitude * 3.2 - phase * 0.9) * 0.05 +
+    Math.cos(latitude * 7 + longitude * 1.3 + phase * 0.55) * 0.026;
+  const voiceWave = Math.sin(longitude * 4 + latitude * 3 - phase * 3.1) * energy * 0.19;
+  const breathing = Math.sin(phase * 0.9) * 0.022;
+  const deformedRadius = radius * (1 + breathing + surfaceWave * stateMotion + voiceWave);
+  const rotatedLongitude = longitude + phase * 0.11;
+  const cosLatitude = Math.cos(latitude);
+  const x3 = deformedRadius * cosLatitude * Math.cos(rotatedLongitude);
+  const z3 = deformedRadius * cosLatitude * Math.sin(rotatedLongitude);
+  const y3 = deformedRadius * Math.sin(latitude) +
+    radius * Math.sin(longitude * 2 - phase) * Math.cos(latitude) * 0.045;
+  const perspective = 1 + z3 / (radius * 4.6);
+  return { x: x3 * perspective, y: y3 * perspective, z: z3 / radius };
+}
+
+function drawAuraMesh() {
+  resizeAuraMesh();
+  const width = auraMesh.width;
+  const height = auraMesh.height;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radius = Math.min(width, height) * 0.34;
+  const state = orb.className || 'idle';
+  const sourceEnergy = state === 'listening' ? microphoneEnergy : waveformEnergy;
+  const liveEnergy = Math.max(0, Math.min(1, sourceEnergy));
+  const palette = auraMeshPalette(state, liveEnergy);
+  const energyFloor = state === 'thinking' ? 0.24 : state === 'listening' ? 0.12 : 0.045;
+  const energy = reducedMotion.matches ? energyFloor : Math.max(energyFloor, liveEnergy);
+  const detailMix = state === 'listening'
+    ? 0.08 + liveEnergy * 0.92
+    : state === 'speaking'
+      ? 0.55 + liveEnergy * 0.45
+      : 1;
+
+  auraMeshContext.clearRect(0, 0, width, height);
+  const innerGlow = auraMeshContext.createRadialGradient(
+    centerX, centerY, radius * 0.08,
+    centerX, centerY, radius * 1.28
+  );
+  innerGlow.addColorStop(0, 'rgba(74, 25, 126, 0.16)');
+  innerGlow.addColorStop(0.58, 'rgba(17, 25, 83, 0.08)');
+  innerGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  auraMeshContext.fillStyle = innerGlow;
+  auraMeshContext.fillRect(0, 0, width, height);
+
+  const lineGradient = auraMeshContext.createLinearGradient(
+    centerX - radius * 1.15, centerY - radius,
+    centerX + radius * 1.15, centerY + radius
+  );
+  lineGradient.addColorStop(0, palette[0]);
+  lineGradient.addColorStop(0.52, palette[1]);
+  lineGradient.addColorStop(1, palette[2]);
+  auraMeshContext.strokeStyle = lineGradient;
+  auraMeshContext.lineWidth = Math.max(0.5, width / 620);
+  auraMeshContext.lineCap = 'round';
+  auraMeshContext.lineJoin = 'round';
+  auraMeshContext.shadowBlur = Math.max(2, width / 90) * (1 + liveEnergy * 1.25);
+  auraMeshContext.shadowColor = palette[1];
+
+  const strokeMeshLine = (points, visibility = 1) => {
+    auraMeshContext.beginPath();
+    for (let index = 0; index < points.length; index += 1) {
+      const point = points[index];
+      const x = centerX + point.x;
+      const y = centerY + point.y;
+      if (index === 0) auraMeshContext.moveTo(x, y);
+      else auraMeshContext.lineTo(x, y);
+    }
+    const averageDepth = points.reduce((sum, point) => sum + point.z, 0) / points.length;
+    auraMeshContext.globalAlpha = (0.44 + Math.max(0, averageDepth) * 0.44) * visibility;
+    auraMeshContext.stroke();
+  };
+
+  for (let latIndex = 1; latIndex < 21; latIndex += 1) {
+    const latitude = -Math.PI / 2 + (latIndex / 21) * Math.PI;
+    const points = [];
+    for (let step = 0; step <= 72; step += 1) {
+      const longitude = (step / 72) * Math.PI * 2;
+      points.push(auraMeshPoint(latitude, longitude, radius, meshPhase, energy, state));
+    }
+    strokeMeshLine(points, latIndex % 2 === 0 ? 1 : detailMix);
+  }
+
+  for (let lonIndex = 0; lonIndex < 30; lonIndex += 1) {
+    const longitude = (lonIndex / 30) * Math.PI * 2;
+    const points = [];
+    for (let step = 0; step <= 48; step += 1) {
+      const latitude = -Math.PI / 2 + (step / 48) * Math.PI;
+      points.push(auraMeshPoint(latitude, longitude, radius, meshPhase, energy, state));
+    }
+    strokeMeshLine(points, lonIndex % 2 === 0 ? 1 : detailMix);
+  }
+
+  // A separately deformed perimeter breaks the perfect globe silhouette and
+  // gives the form the soft, topographic edge of a living energy cloud.
+  auraMeshContext.beginPath();
+  for (let step = 0; step <= 120; step += 1) {
+    const angle = (step / 120) * Math.PI * 2;
+    const edgeNoise =
+      Math.sin(angle * 3 + meshPhase * 1.2) * 0.06 +
+      Math.sin(angle * 7 - meshPhase * 0.8) * 0.032 +
+      Math.sin(angle * 11 + meshPhase * 0.4) * 0.014;
+    const edgeRadius = radius * (1.04 + edgeNoise + energy * Math.sin(angle * 5 - meshPhase * 2) * 0.07);
+    const x = centerX + Math.cos(angle) * edgeRadius;
+    const y = centerY + Math.sin(angle) * edgeRadius * 0.94;
+    if (step === 0) auraMeshContext.moveTo(x, y);
+    else auraMeshContext.lineTo(x, y);
+  }
+  auraMeshContext.closePath();
+  auraMeshContext.globalAlpha = 0.72;
+  auraMeshContext.lineWidth = Math.max(0.8, width / 420);
+  auraMeshContext.shadowBlur = Math.max(5, width / 48) * (1 + liveEnergy * 1.15);
+  auraMeshContext.stroke();
+
+  auraMeshContext.shadowBlur = 0;
+  for (let index = 0; index < 72; index += 1) {
+    const angle = index * 2.399963 + meshPhase * 0.08;
+    const seed = (Math.sin(index * 91.17) + 1) / 2;
+    const particleRadius = radius * (1.08 + seed * 0.34 + energy * 0.08);
+    const x = centerX + Math.cos(angle) * particleRadius;
+    const y = centerY + Math.sin(angle) * particleRadius * (0.82 + seed * 0.14);
+    const particleResponse = state === 'listening' || state === 'speaking'
+      ? 0.58 + liveEnergy * 0.72
+      : 1;
+    auraMeshContext.globalAlpha = Math.min(1, (0.18 + seed * 0.48) * particleResponse);
+    auraMeshContext.fillStyle = palette[index % palette.length];
+    auraMeshContext.beginPath();
+    auraMeshContext.arc(x, y, Math.max(0.45, width / 520) * (0.7 + seed), 0, Math.PI * 2);
+    auraMeshContext.fill();
+  }
+  auraMeshContext.globalAlpha = 1;
+  orb.style.setProperty('--voice-energy', liveEnergy.toFixed(3));
+  const meshSaturation = state === 'listening'
+    ? 1.12 + liveEnergy * 0.46
+    : state === 'speaking'
+      ? 1.24 + liveEnergy * 0.42
+      : 1.25;
+  const meshGlow = state === 'listening'
+    ? 7 + liveEnergy * 15
+    : state === 'speaking'
+      ? 10 + liveEnergy * 15
+      : 11;
+  orb.style.setProperty('--mesh-saturation', meshSaturation.toFixed(3));
+  orb.style.setProperty('--mesh-glow', `${meshGlow.toFixed(1)}px`);
+}
+
+function animateAuraMesh(timestamp = 0) {
+  if (reducedMotion.matches) {
+    meshFrame = null;
+    drawAuraMesh();
+    return;
+  }
+  if (timestamp - meshLastFrameAt >= 30) {
+    const state = orb.className || 'idle';
+    const speed = state === 'speaking' ? 0.052 : state === 'thinking' ? 0.036 : state === 'listening' ? 0.024 : 0.014;
+    meshPhase += speed;
+    meshLastFrameAt = timestamp;
+    drawAuraMesh();
+  }
+  meshFrame = requestAnimationFrame(animateAuraMesh);
+}
+
+function startAuraMesh() {
+  if (meshFrame) cancelAnimationFrame(meshFrame);
+  meshFrame = null;
+  meshLastFrameAt = 0;
+  drawAuraMesh();
+  if (!reducedMotion.matches) meshFrame = requestAnimationFrame(animateAuraMesh);
 }
 
 function resizeVoiceWave() {
@@ -395,7 +611,7 @@ function drawVoiceWave(samples = null) {
   const gradient = voiceWaveContext.createLinearGradient(0, 0, width, 0);
   gradient.addColorStop(0, 'rgba(57, 137, 255, 0.08)');
   gradient.addColorStop(0.5, isSpeaking
-    ? 'rgba(255, 174, 91, 0.95)'
+    ? 'rgba(221, 90, 255, 0.95)'
     : 'rgba(100, 185, 255, 0.48)');
   gradient.addColorStop(1, 'rgba(57, 137, 255, 0.08)');
 
@@ -406,7 +622,7 @@ function drawVoiceWave(samples = null) {
   voiceWaveContext.lineJoin = 'round';
   voiceWaveContext.shadowBlur = isSpeaking ? 18 : 8;
   voiceWaveContext.shadowColor = isSpeaking
-    ? 'rgba(255, 137, 45, 0.7)'
+    ? 'rgba(200, 69, 255, 0.74)'
     : 'rgba(72, 168, 255, 0.34)';
 
   // Travelling wave, always in motion while speaking. Her voice raises the
@@ -468,6 +684,7 @@ function stopVoiceWave() {
   voiceWave.classList.remove('speaking');
   waveformEnergy = 0;
   drawVoiceWave();
+  drawAuraMesh();
 }
 
 function animateVoiceWave() {
@@ -584,10 +801,33 @@ function startVoiceWave() {
 }
 
 drawVoiceWave();
+startAuraMesh();
 window.addEventListener('resize', () => drawVoiceWave(
   isSpeaking && waveformSamples ? waveformSamples : null
 ));
-reducedMotion.addEventListener?.('change', () => drawVoiceWave());
+reducedMotion.addEventListener?.('change', () => {
+  drawVoiceWave();
+  startAuraMesh();
+});
+
+// Local visual QA: preview a state without opening the microphone, calling
+// the backend, or playing audio. The hostname guard makes the query inert on
+// Render even if someone copies a preview URL there.
+function applyLocalAuraPreview() {
+  if (!['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)) return;
+  const previewState = new URLSearchParams(window.location.search).get('aura_preview');
+  if (!['idle', 'listening', 'thinking', 'speaking', 'error'].includes(previewState)) return;
+
+  isSpeaking = previewState === 'speaking';
+  waveformEnergy = isSpeaking ? 0.72 : 0;
+  microphoneEnergy = previewState === 'listening' ? 0.68 : 0;
+  setOrbState(previewState, `${previewState} preview`);
+  voiceWave.classList.toggle('speaking', isSpeaking);
+  drawVoiceWave();
+  drawAuraMesh();
+}
+
+window.setTimeout(applyLocalAuraPreview, 120);
 
 function safeWebUrl(value) {
   try {
@@ -755,6 +995,28 @@ function stopWakeListening() {
   wakeListener?.stop?.();
 }
 
+function updateMicrophoneEnergy(rms) {
+  // Normalize typical close-mic speech into a useful 0..1 visual range while
+  // keeping room noise from making the form look permanently excited.
+  const target = Math.max(0, Math.min(1, (rms - 0.008) / 0.11));
+  const smoothing = target > microphoneEnergy ? 0.38 : 0.14;
+  microphoneEnergy += (target - microphoneEnergy) * smoothing;
+}
+
+function updateMicrophoneEnergyFromSamples(samples) {
+  if (!samples?.length) return;
+  let sum = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = samples[index];
+    sum += value * value;
+  }
+  updateMicrophoneEnergy(Math.sqrt(sum / samples.length));
+}
+
+function resetMicrophoneEnergy() {
+  microphoneEnergy = 0;
+}
+
 function clearSilenceWatch() {
   if (silenceWatchFrame) {
     cancelAnimationFrame(silenceWatchFrame);
@@ -764,9 +1026,10 @@ function clearSilenceWatch() {
     silenceListenContext.close().catch(() => {});
     silenceListenContext = null;
   }
+  resetMicrophoneEnergy();
 }
 
-function armSilenceAutoStop(stream) {
+function armSilenceAutoStop(stream, { autoStop = true } = {}) {
   clearSilenceWatch();
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtx) return;
@@ -793,18 +1056,19 @@ function armSilenceAutoStop(stream) {
       sum += v * v;
     }
     const rms = Math.sqrt(sum / samples.length);
+    updateMicrophoneEnergy(rms);
     const elapsed = Date.now() - startedAt;
-    if (!heardSpeech && elapsed >= NO_SPEECH_IDLE_MS) {
+    if (autoStop && !heardSpeech && elapsed >= NO_SPEECH_IDLE_MS) {
       cancelListeningToIdle();
       return;
     }
-    if (elapsed >= MAX_UTTERANCE_MS) {
+    if (autoStop && elapsed >= MAX_UTTERANCE_MS) {
       stopListening();
       return;
     }
     // Skip RMS speech detection during the arming grace window so residual
     // speaker bleed from her last sentence doesn't trip heardSpeech.
-    if (elapsed >= LISTEN_ARM_GRACE_MS) {
+    if (autoStop && elapsed >= LISTEN_ARM_GRACE_MS) {
       const threshold = heardSpeech ? SPEECH_RMS_CONTINUE : SPEECH_RMS_START;
       if (rms >= threshold) {
         heardSpeech = true;
@@ -1305,6 +1569,7 @@ async function teardownStreamCapture() {
     streamMedia.getTracks().forEach(track => track.stop());
     streamMedia = null;
   }
+  resetMicrophoneEnergy();
 }
 
 function requestStreamStop() {
@@ -1319,6 +1584,7 @@ async function attachPcmCapture(audioCtx, mediaStream) {
   mute.gain.value = 0;
   const emitPcm = float32 => {
     if (!streamListenActive || !isListening) return;
+    updateMicrophoneEnergyFromSamples(float32);
     const down = downsampleFloat32(float32, audioCtx.sampleRate, DEEPGRAM_STREAM_SAMPLE_RATE);
     const pcm = floatTo16BitPCM(down);
     socket.emit('stt:audio', pcm.buffer);
@@ -1574,11 +1840,9 @@ async function startListeningBatch({ fromConversation = false } = {}) {
         ? 'Listening... pause to send'
         : 'Listening... Tap to stop'
     );
-    // Conversation follow-ups (and normal listens while conversation mode is
-    // on) end on a short pause so you don't have to re-tap the orb.
-    if (fromConversation || isConversationMode()) {
-      armSilenceAutoStop(stream);
-    }
+    // Every listen gets microphone-driven visuals. Conversation follow-ups
+    // additionally end on a short pause so you don't have to re-tap the orb.
+    armSilenceAutoStop(stream, { autoStop: fromConversation || isConversationMode() });
   } catch (err) {
     console.error('Mic error:', err);
     listeningFromConversation = false;
