@@ -3,7 +3,7 @@
 const { resolveDeepgramModel, DEEPGRAM_KEYTERMS } = require('./stt_provider');
 
 const DEFAULT_ENDPOINTING_MS = 400;
-const DEFAULT_UTTERANCE_END_MS = 1000;
+const DEFAULT_UTTERANCE_END_MS = 1800;
 const DEFAULT_SAMPLE_RATE = 16000;
 
 function resolveDeepgramEndpointingMs(env = process.env) {

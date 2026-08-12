@@ -424,6 +424,7 @@ body[data-aura-state="error"] #orb-container::after { border-color: var(--orb-gl
   overflow: visible;
   border: 0;
   box-shadow: none;
+  will-change: transform, opacity;
 }
 
 /* The primary presence is a live wireframe energy-form inspired by a

@@ -237,6 +237,30 @@ const voiceWaveContext = voiceWave.getContext('2d');
 const auraMesh = document.getElementById('aura-mesh');
 const auraMeshContext = auraMesh.getContext('2d');
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const mobileMesh = window.matchMedia('(max-width: 700px), (pointer: coarse)');
+const localMeshQualityPreview = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
+  ? new URLSearchParams(window.location.search).get('aura_mesh_quality')
+  : null;
+
+const DESKTOP_MESH_PROFILE = Object.freeze({
+  name: 'desktop', pixelRatio: 2, fps: 30,
+  latitudeLines: 20, longitudeLines: 30,
+  latitudeSteps: 72, longitudeSteps: 48,
+  edgeSteps: 120, particles: 72, lineGlow: true
+});
+const MOBILE_MESH_PROFILE = Object.freeze({
+  name: 'mobile', pixelRatio: 1.5, fps: 30,
+  latitudeLines: 12, longitudeLines: 18,
+  latitudeSteps: 48, longitudeSteps: 32,
+  edgeSteps: 72, particles: 42, lineGlow: false
+});
+const LOW_MESH_PROFILE = Object.freeze({
+  name: 'low', pixelRatio: 1.25, fps: 20,
+  latitudeLines: 9, longitudeLines: 14,
+  latitudeSteps: 36, longitudeSteps: 24,
+  edgeSteps: 54, particles: 28, lineGlow: false
+});
+const MICROPHONE_VISUAL_INTERVAL_MS = 1000 / 30;
 
 // Global audio player for iOS Safari unlocking
 const audioPlayer = new Audio();
@@ -255,14 +279,17 @@ const PLAYBACK_VOLUME_LEVELS = {
   medium: 1.7,
   high: 2.25
 };
-const SILENCE_HANGOVER_MS = 400;
+// Give natural pauses more room before the batch fallback submits a long
+// thought. Deepgram's streaming endpointing remains independently fixed at
+// 400ms; this only affects the local RMS fallback path.
+const SILENCE_HANGOVER_MS = 750;
 const MIN_UTTERANCE_MS = 350;
-const MAX_UTTERANCE_MS = 20000;
-const STREAM_MAX_UTTERANCE_MS = 12000;
+const MAX_UTTERANCE_MS = 60000;
+const STREAM_MAX_UTTERANCE_MS = 60000;
 const DEEPGRAM_STREAM_SAMPLE_RATE = 16000;
 // If the mic arms after her reply and nobody speaks, drop back to idle
 // instead of holding the mic open until MAX_UTTERANCE_MS.
-const NO_SPEECH_IDLE_MS = 4000;
+const NO_SPEECH_IDLE_MS = 8000;
 // Ignore the first beat after arming so speaker bleed / room echo from her
 // last sentence doesn't look like the start of Chris's reply.
 const LISTEN_ARM_GRACE_MS = 500;
@@ -294,9 +321,15 @@ let waveformEnergy = 0;
 // Kept separate from playback energy so each side of the conversation can
 // give the mesh its own character without leaking across state changes.
 let microphoneEnergy = 0;
+let microphoneEnergyUpdatedAt = 0;
+let microphoneEnergySquareSum = 0;
+let microphoneEnergyReadingCount = 0;
 let meshPhase = 0;
 let meshFrame = null;
 let meshLastFrameAt = 0;
+let meshSlowFrameScore = 0;
+let meshLowQuality = false;
+let meshStyleSignature = '';
 
 let mediaRecorder = null;
 let audioChunks = [];
@@ -384,8 +417,14 @@ function setOrbState(state, text) {
   drawAuraMesh();
 }
 
-function resizeAuraMesh() {
-  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+function currentAuraMeshProfile() {
+  if (localMeshQualityPreview === 'low') return LOW_MESH_PROFILE;
+  if (!mobileMesh.matches && localMeshQualityPreview !== 'mobile') return DESKTOP_MESH_PROFILE;
+  return meshLowQuality ? LOW_MESH_PROFILE : MOBILE_MESH_PROFILE;
+}
+
+function resizeAuraMesh(profile = currentAuraMeshProfile()) {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, profile.pixelRatio);
   const width = Math.max(1, Math.round(auraMesh.clientWidth * pixelRatio));
   const height = Math.max(1, Math.round(auraMesh.clientHeight * pixelRatio));
   if (auraMesh.width !== width || auraMesh.height !== height) {
@@ -436,7 +475,8 @@ function auraMeshPoint(latitude, longitude, radius, phase, energy, state) {
 }
 
 function drawAuraMesh() {
-  resizeAuraMesh();
+  const profile = currentAuraMeshProfile();
+  resizeAuraMesh(profile);
   const width = auraMesh.width;
   const height = auraMesh.height;
   const centerX = width / 2;
@@ -476,7 +516,11 @@ function drawAuraMesh() {
   auraMeshContext.lineWidth = Math.max(0.5, width / 620);
   auraMeshContext.lineCap = 'round';
   auraMeshContext.lineJoin = 'round';
-  auraMeshContext.shadowBlur = Math.max(2, width / 90) * (1 + liveEnergy * 1.25);
+  // Per-path canvas blur is the most expensive part of this effect on iOS.
+  // Phones keep the bright perimeter glow below but draw fine lines cleanly.
+  auraMeshContext.shadowBlur = profile.lineGlow
+    ? Math.max(2, width / 90) * (1 + liveEnergy * 1.25)
+    : 0;
   auraMeshContext.shadowColor = palette[1];
 
   const strokeMeshLine = (points, visibility = 1) => {
@@ -493,21 +537,21 @@ function drawAuraMesh() {
     auraMeshContext.stroke();
   };
 
-  for (let latIndex = 1; latIndex < 21; latIndex += 1) {
-    const latitude = -Math.PI / 2 + (latIndex / 21) * Math.PI;
+  for (let latIndex = 1; latIndex <= profile.latitudeLines; latIndex += 1) {
+    const latitude = -Math.PI / 2 + (latIndex / (profile.latitudeLines + 1)) * Math.PI;
     const points = [];
-    for (let step = 0; step <= 72; step += 1) {
-      const longitude = (step / 72) * Math.PI * 2;
+    for (let step = 0; step <= profile.latitudeSteps; step += 1) {
+      const longitude = (step / profile.latitudeSteps) * Math.PI * 2;
       points.push(auraMeshPoint(latitude, longitude, radius, meshPhase, energy, state));
     }
     strokeMeshLine(points, latIndex % 2 === 0 ? 1 : detailMix);
   }
 
-  for (let lonIndex = 0; lonIndex < 30; lonIndex += 1) {
-    const longitude = (lonIndex / 30) * Math.PI * 2;
+  for (let lonIndex = 0; lonIndex < profile.longitudeLines; lonIndex += 1) {
+    const longitude = (lonIndex / profile.longitudeLines) * Math.PI * 2;
     const points = [];
-    for (let step = 0; step <= 48; step += 1) {
-      const latitude = -Math.PI / 2 + (step / 48) * Math.PI;
+    for (let step = 0; step <= profile.longitudeSteps; step += 1) {
+      const latitude = -Math.PI / 2 + (step / profile.longitudeSteps) * Math.PI;
       points.push(auraMeshPoint(latitude, longitude, radius, meshPhase, energy, state));
     }
     strokeMeshLine(points, lonIndex % 2 === 0 ? 1 : detailMix);
@@ -516,8 +560,8 @@ function drawAuraMesh() {
   // A separately deformed perimeter breaks the perfect globe silhouette and
   // gives the form the soft, topographic edge of a living energy cloud.
   auraMeshContext.beginPath();
-  for (let step = 0; step <= 120; step += 1) {
-    const angle = (step / 120) * Math.PI * 2;
+  for (let step = 0; step <= profile.edgeSteps; step += 1) {
+    const angle = (step / profile.edgeSteps) * Math.PI * 2;
     const edgeNoise =
       Math.sin(angle * 3 + meshPhase * 1.2) * 0.06 +
       Math.sin(angle * 7 - meshPhase * 0.8) * 0.032 +
@@ -531,11 +575,12 @@ function drawAuraMesh() {
   auraMeshContext.closePath();
   auraMeshContext.globalAlpha = 0.72;
   auraMeshContext.lineWidth = Math.max(0.8, width / 420);
-  auraMeshContext.shadowBlur = Math.max(5, width / 48) * (1 + liveEnergy * 1.15);
+  auraMeshContext.shadowBlur = Math.max(4, width / (profile.lineGlow ? 48 : 66)) *
+    (1 + liveEnergy * (profile.lineGlow ? 1.15 : 0.65));
   auraMeshContext.stroke();
 
   auraMeshContext.shadowBlur = 0;
-  for (let index = 0; index < 72; index += 1) {
+  for (let index = 0; index < profile.particles; index += 1) {
     const angle = index * 2.399963 + meshPhase * 0.08;
     const seed = (Math.sin(index * 91.17) + 1) / 2;
     const particleRadius = radius * (1.08 + seed * 0.34 + energy * 0.08);
@@ -551,19 +596,44 @@ function drawAuraMesh() {
     auraMeshContext.fill();
   }
   auraMeshContext.globalAlpha = 1;
-  orb.style.setProperty('--voice-energy', liveEnergy.toFixed(3));
+  // Avoid a style/filter repaint for every tiny energy fluctuation. Desktop
+  // uses twenty visual steps; phones keep one state-level compositor glow
+  // while the canvas itself continues to respond smoothly.
+  const styleEnergy = profile.name === 'desktop'
+    ? Math.round(liveEnergy * 20) / 20
+    : state === 'listening' ? 0.45 : state === 'speaking' ? 0.65 : 0;
   const meshSaturation = state === 'listening'
-    ? 1.12 + liveEnergy * 0.46
+    ? 1.12 + styleEnergy * 0.46
     : state === 'speaking'
-      ? 1.24 + liveEnergy * 0.42
+      ? 1.24 + styleEnergy * 0.42
       : 1.25;
   const meshGlow = state === 'listening'
-    ? 7 + liveEnergy * 15
+    ? 7 + styleEnergy * 15
     : state === 'speaking'
-      ? 10 + liveEnergy * 15
+      ? 10 + styleEnergy * 15
       : 11;
-  orb.style.setProperty('--mesh-saturation', meshSaturation.toFixed(3));
-  orb.style.setProperty('--mesh-glow', `${meshGlow.toFixed(1)}px`);
+  const styleSignature = `${state}:${styleEnergy}:${profile.name}`;
+  if (styleSignature !== meshStyleSignature) {
+    meshStyleSignature = styleSignature;
+    orb.style.setProperty('--voice-energy', styleEnergy.toFixed(3));
+    orb.style.setProperty('--mesh-saturation', meshSaturation.toFixed(3));
+    orb.style.setProperty('--mesh-glow', `${meshGlow.toFixed(1)}px`);
+  }
+  auraMesh.dataset.quality = profile.name;
+}
+
+function recordAuraMeshPerformance(renderMs, frameGap, profile) {
+  if (profile.name !== 'mobile' || meshLowQuality) return;
+  const frameInterval = 1000 / profile.fps;
+  const missedFrame = meshLastFrameAt > 0 && frameGap > frameInterval * 1.55;
+  const overloaded = renderMs > 16 || missedFrame;
+  meshSlowFrameScore = Math.max(0, meshSlowFrameScore + (overloaded ? 1 : -0.35));
+  if (meshSlowFrameScore < 6) return;
+
+  // Stay in the cheaper mode for the session instead of oscillating between
+  // quality levels whenever a busy phone briefly catches up.
+  meshLowQuality = true;
+  meshStyleSignature = '';
 }
 
 function animateAuraMesh(timestamp = 0) {
@@ -572,12 +642,19 @@ function animateAuraMesh(timestamp = 0) {
     drawAuraMesh();
     return;
   }
-  if (timestamp - meshLastFrameAt >= 30) {
+  const profile = currentAuraMeshProfile();
+  const frameInterval = 1000 / profile.fps;
+  const frameGap = meshLastFrameAt ? timestamp - meshLastFrameAt : frameInterval;
+  if (!meshLastFrameAt || frameGap >= frameInterval - 1) {
     const state = orb.className || 'idle';
     const speed = state === 'speaking' ? 0.052 : state === 'thinking' ? 0.036 : state === 'listening' ? 0.024 : 0.014;
-    meshPhase += speed;
-    meshLastFrameAt = timestamp;
+    const phaseFrameRatio = Math.min(100, frameGap) / (1000 / 30);
+    meshPhase += speed * phaseFrameRatio;
+    const renderStartedAt = performance.now();
     drawAuraMesh();
+    const renderMs = performance.now() - renderStartedAt;
+    recordAuraMeshPerformance(renderMs, frameGap, profile);
+    meshLastFrameAt = timestamp;
   }
   meshFrame = requestAnimationFrame(animateAuraMesh);
 }
@@ -809,6 +886,12 @@ reducedMotion.addEventListener?.('change', () => {
   drawVoiceWave();
   startAuraMesh();
 });
+mobileMesh.addEventListener?.('change', () => {
+  meshLowQuality = false;
+  meshSlowFrameScore = 0;
+  meshStyleSignature = '';
+  startAuraMesh();
+});
 
 // Local visual QA: preview a state without opening the microphone, calling
 // the backend, or playing audio. The hostname guard makes the query inert on
@@ -995,26 +1078,51 @@ function stopWakeListening() {
   wakeListener?.stop?.();
 }
 
-function updateMicrophoneEnergy(rms) {
-  // Normalize typical close-mic speech into a useful 0..1 visual range while
-  // keeping room noise from making the form look permanently excited.
-  const target = Math.max(0, Math.min(1, (rms - 0.008) / 0.11));
-  const smoothing = target > microphoneEnergy ? 0.38 : 0.14;
+function updateMicrophoneEnergy(rms, timestamp = performance.now()) {
+  if (!Number.isFinite(rms) || rms < 0) return false;
+  microphoneEnergySquareSum += rms * rms;
+  microphoneEnergyReadingCount += 1;
+
+  const elapsed = microphoneEnergyUpdatedAt
+    ? timestamp - microphoneEnergyUpdatedAt
+    : MICROPHONE_VISUAL_INTERVAL_MS;
+  if (elapsed < MICROPHONE_VISUAL_INTERVAL_MS) return false;
+
+  const windowRms = Math.sqrt(
+    microphoneEnergySquareSum / Math.max(1, microphoneEnergyReadingCount)
+  );
+  microphoneEnergySquareSum = 0;
+  microphoneEnergyReadingCount = 0;
+
+  // Time-based attack/release remains equally smooth whether AudioWorklet
+  // delivers hundreds of tiny buffers or the fallback analyser runs at 60Hz.
+  const target = Math.max(0, Math.min(1, (windowRms - 0.008) / 0.11));
+  const timeConstant = target > microphoneEnergy ? 70 : 190;
+  const smoothing = 1 - Math.exp(-elapsed / timeConstant);
   microphoneEnergy += (target - microphoneEnergy) * smoothing;
+  microphoneEnergyUpdatedAt = timestamp;
+  return true;
 }
 
 function updateMicrophoneEnergyFromSamples(samples) {
   if (!samples?.length) return;
   let sum = 0;
-  for (let index = 0; index < samples.length; index += 1) {
+  let sampled = 0;
+  // Every fourth PCM sample is plenty for a visual loudness envelope and
+  // avoids duplicating full-rate audio work already required by STT.
+  for (let index = 0; index < samples.length; index += 4) {
     const value = samples[index];
     sum += value * value;
+    sampled += 1;
   }
-  updateMicrophoneEnergy(Math.sqrt(sum / samples.length));
+  updateMicrophoneEnergy(Math.sqrt(sum / Math.max(1, sampled)));
 }
 
 function resetMicrophoneEnergy() {
   microphoneEnergy = 0;
+  microphoneEnergyUpdatedAt = 0;
+  microphoneEnergySquareSum = 0;
+  microphoneEnergyReadingCount = 0;
 }
 
 function clearSilenceWatch() {
@@ -1043,12 +1151,18 @@ function armSilenceAutoStop(stream, { autoStop = true } = {}) {
   const startedAt = Date.now();
   let heardSpeech = false;
   let silenceStartedAt = null;
+  let lastAnalysisAt = 0;
 
-  const tick = () => {
+  const tick = (timestamp = performance.now()) => {
     if (!isListening || !mediaRecorder || mediaRecorder.state === 'inactive') {
       clearSilenceWatch();
       return;
     }
+    if (lastAnalysisAt && timestamp - lastAnalysisAt < MICROPHONE_VISUAL_INTERVAL_MS) {
+      silenceWatchFrame = requestAnimationFrame(tick);
+      return;
+    }
+    lastAnalysisAt = timestamp;
     analyser.getByteTimeDomainData(samples);
     let sum = 0;
     for (let i = 0; i < samples.length; i++) {

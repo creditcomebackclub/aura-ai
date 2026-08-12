@@ -157,7 +157,7 @@ test('wireframe energy-form emerges by state and follows real voice energy', () 
 
 test('listening mesh follows microphone energy with smoothly layered detail and glow', () => {
   assert.match(app, /let microphoneEnergy = 0/);
-  assert.match(app, /function updateMicrophoneEnergy\(rms\)/);
+  assert.match(app, /function updateMicrophoneEnergy\(rms,/);
   assert.match(app, /function updateMicrophoneEnergyFromSamples\(samples\)/);
   assert.match(app, /state === 'listening' \? microphoneEnergy : waveformEnergy/);
   assert.match(app, /updateMicrophoneEnergy\(rms\)/);
@@ -168,6 +168,30 @@ test('listening mesh follows microphone energy with smoothly layered detail and 
   assert.match(app, /--mesh-glow/);
   assert.match(css, /body\[data-aura-state="listening"\] #aura-mesh\s*\{[^}]*var\(--mesh-glow/s);
   assert.match(css, /body\[data-aura-state="speaking"\] #aura-mesh\s*\{[^}]*var\(--mesh-glow/s);
+});
+
+test('mobile mesh has a bounded render budget and adaptive fallback', () => {
+  assert.match(app, /const MOBILE_MESH_PROFILE = Object\.freeze\(\{[^}]*pixelRatio: 1\.5, fps: 30/s);
+  assert.match(app, /const MOBILE_MESH_PROFILE = Object\.freeze\(\{[^}]*latitudeLines: 12, longitudeLines: 18/s);
+  assert.match(app, /const LOW_MESH_PROFILE = Object\.freeze\(\{[^}]*pixelRatio: 1\.25, fps: 20/s);
+  assert.match(app, /lineGlow: false/);
+  assert.match(app, /function recordAuraMeshPerformance\(/);
+  assert.match(app, /meshSlowFrameScore < 6/);
+  assert.match(app, /frameGap >= frameInterval - 1/);
+  assert.match(app, /auraMesh\.dataset\.quality = profile\.name/);
+  assert.match(app, /localMeshQualityPreview === 'low'/);
+  assert.match(app, /localMeshQualityPreview !== 'mobile'/);
+  assert.match(css, /#orb\s*\{[^}]*will-change:\s*transform, opacity/s);
+});
+
+test('microphone visual energy is throttled and smoothed by elapsed time', () => {
+  assert.match(app, /MICROPHONE_VISUAL_INTERVAL_MS = 1000 \/ 30/);
+  assert.match(app, /elapsed < MICROPHONE_VISUAL_INTERVAL_MS/);
+  assert.match(app, /1 - Math\.exp\(-elapsed \/ timeConstant\)/);
+  assert.match(app, /index \+= 4/);
+  assert.match(app, /timestamp - lastAnalysisAt < MICROPHONE_VISUAL_INTERVAL_MS/);
+  assert.match(app, /microphoneEnergySquareSum = 0/);
+  assert.match(app, /microphoneEnergyReadingCount = 0/);
 });
 
 test('the wordmark glow tracks the orb state and respects reduced motion', () => {
@@ -206,7 +230,10 @@ test('streamed voice uses connected TTS groups instead of resetting every senten
   assert.match(app, /function cancelActiveTurn\(/);
   assert.match(app, /turnAbortController/);
   assert.match(app, /isSpeaking \|\| isProcessing/);
-  assert.match(app, /SILENCE_HANGOVER_MS = 400/);
+  assert.match(app, /SILENCE_HANGOVER_MS = 750/);
+  assert.match(app, /MAX_UTTERANCE_MS = 60000/);
+  assert.match(app, /STREAM_MAX_UTTERANCE_MS = 60000/);
+  assert.match(app, /NO_SPEECH_IDLE_MS = 8000/);
 });
 
 test('tap interrupt copy and hey Aura wake wiring are present', () => {

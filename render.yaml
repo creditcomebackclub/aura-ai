@@ -28,7 +28,7 @@ services:
       - key: AURA_DEEPGRAM_ENDPOINTING_MS
         value: "400"
       - key: AURA_DEEPGRAM_UTTERANCE_END_MS
-        value: "1000"
+        value: "1800"
       - key: DEEPGRAM_API_KEY
         sync: false
       - key: AURA_REASONING_EFFORT
