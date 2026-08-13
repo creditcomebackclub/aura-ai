@@ -46,9 +46,9 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Ship Phase 8B phase-timing telemetry.** Persist privacy-bounded per-tool and per-model-round
-  durations in existing assistant metadata, then aggregate them at `/api/agents/telemetry` so
-  production latency can be attributed without storing prompts or tool payloads.
+- **Eliminate false tool-unavailable replies.** Broaden natural-language routing and recover
+  generic capability denials with mandatory safe reads, while preserving specialist allowlists,
+  web-search privacy/quota gates, and write/action authorization.
 
 ## Blocked
 
@@ -66,6 +66,8 @@ Name exactly what's needed and from whom.*
 
 - Goal connections were production-baselined: the authenticated index and ledger endpoints are
   healthy, and both are correctly empty while the owner has no open tasks.
+- Phase 8B merged in #38: existing assistant metadata now attributes latency to individual tools
+  and model rounds, with privacy-bounded p50/p95 summaries at `/api/agents/telemetry`.
 - Phase 8A merged in #37: routine cross-domain briefings stay at low reasoning while explicit
   analysis/strategy/decision turns still raise effort; local production-model reproduction
   improved from 13.4s to 7.8–9.1s with the correct tools.

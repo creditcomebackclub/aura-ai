@@ -82,12 +82,16 @@ function containsTextToolCallMarker(text) {
 // Already-spoken clean prefix sentences cannot be unsaid; the denying
 // sentence itself never reaches the client, and beginCorrection() re-opens
 // the gate so the replacement answer can stream live.
-function createSentenceGate(onSentence, { availableToolNames = [] } = {}) {
+function createSentenceGate(onSentence, {
+  availableToolNames = [],
+  capabilityToolNames = availableToolNames
+} = {}) {
   let accumulated = '';
   let suppressed = false;
   let correctionOpen = false;
   let denial = null;
   let protocolLeak = null;
+  const attemptedToolNames = new Set();
 
   const emit = typeof onSentence === 'function' ? onSentence : null;
 
@@ -112,7 +116,10 @@ function createSentenceGate(onSentence, { availableToolNames = [] } = {}) {
             emit(text);
             return;
           }
-          const hit = findFalseCapabilityDenial(next, availableToolNames);
+          const hit = findFalseCapabilityDenial(next, capabilityToolNames, {
+            attemptedToolNames: [...attemptedToolNames],
+            genericToolNames: availableToolNames
+          });
           if (hit) {
             suppressed = true;
             denial = hit;
@@ -127,6 +134,9 @@ function createSentenceGate(onSentence, { availableToolNames = [] } = {}) {
     },
     getProtocolLeak() {
       return protocolLeak;
+    },
+    markToolAttempted(name) {
+      if (typeof name === 'string' && name) attemptedToolNames.add(name);
     },
     wasSuppressed() {
       return suppressed;

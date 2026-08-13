@@ -200,6 +200,12 @@ Adaptive reasoning raises effort for explicit analysis, comparison, strategy,
 planning, and decisions. Routine multi-source status reads stay at the configured
 base effort; the number of tool groups alone is not treated as reasoning depth.
 
+Natural-language tool routing recognizes direct requests and contextual retries.
+Explicit public lookups require a web-search call, and if AURA claims an untried
+capability is unavailable, the reply is suppressed and retried with the relevant
+safe tool. A genuine failure may be reported only after that tool was attempted;
+action recovery never widens the normal router or bypasses authorization.
+
 ## Agent routing telemetry
 
 Authenticated `GET /api/agents/telemetry` reports routing volume, policy anomalies,
