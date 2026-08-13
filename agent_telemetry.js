@@ -4,6 +4,12 @@ const { DEFAULT_AGENTS } = require('./agent_router');
 
 const DEFAULT_MIN_SPECIALIST_TURNS = 20;
 const KNOWN_AGENT_IDS = new Set(Object.keys(DEFAULT_AGENTS));
+const MODEL_ROUND_PHASES = new Set([
+  'initial',
+  'tool_followup',
+  'tool_budget_exhausted',
+  'capability_correction'
+]);
 
 function finiteNumber(value) {
   if (value == null || value === '') return null;
@@ -19,6 +25,35 @@ function percentile(values, quantile) {
   if (!sorted.length) return null;
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * quantile) - 1));
   return sorted[index];
+}
+
+function boundedRound(value) {
+  const number = finiteNumber(value);
+  return Number.isInteger(number) && number <= 20 ? number : null;
+}
+
+function modelIdentifier(value, fallback = 'unknown') {
+  const model = String(value || '').trim();
+  return model && /^[a-z0-9._:/-]+$/i.test(model)
+    ? model.slice(0, 120)
+    : fallback;
+}
+
+function latencyStats(items, field) {
+  const values = items.map(item => item[field]).filter(value => value != null);
+  return {
+    samples: values.length,
+    median: percentile(values, 0.5),
+    p95: percentile(values, 0.95)
+  };
+}
+
+function groupedLatency(items, field, bucket) {
+  const keys = [...new Set(items.map(item => item[field]))].sort();
+  return Object.fromEntries(keys.map(key => [
+    key,
+    bucket(items.filter(item => item[field] === key))
+  ]));
 }
 
 function normalizeAgentTelemetryMessage(message) {
@@ -39,10 +74,36 @@ function normalizeAgentTelemetryMessage(message) {
     : {};
   const tools = (Array.isArray(metadata.evidence) ? metadata.evidence : [])
     .filter(item => item && typeof item.tool === 'string' && item.tool)
-    .map(item => ({
-      name: item.tool.slice(0, 120),
-      ok: item.ok === true ? true : item.ok === false ? false : null
-    }));
+    .map(item => {
+      const tool = {
+        name: item.tool.slice(0, 120),
+        ok: item.ok === true ? true : item.ok === false ? false : null
+      };
+      const durationMs = finiteNumber(item.duration_ms);
+      const round = boundedRound(item.round);
+      if (durationMs != null) tool.duration_ms = durationMs;
+      if (round != null) tool.round = round;
+      return tool;
+    });
+  const modelRounds = (Array.isArray(timing.model_rounds) ? timing.model_rounds : [])
+    .slice(0, 10)
+    .map(item => {
+      if (!item || typeof item !== 'object') return null;
+      const durationMs = finiteNumber(item.duration_ms);
+      if (durationMs == null) return null;
+      const phase = MODEL_ROUND_PHASES.has(item.phase) ? item.phase : 'unknown';
+      const normalized = {
+        phase,
+        model: modelIdentifier(item.model, modelIdentifier(brain.model)),
+        duration_ms: durationMs
+      };
+      const round = boundedRound(item.round);
+      const firstDeltaMs = finiteNumber(item.first_delta_ms);
+      if (round != null) normalized.round = round;
+      if (firstDeltaMs != null) normalized.first_delta_ms = firstDeltaMs;
+      return normalized;
+    })
+    .filter(Boolean);
   const allowlist = Array.isArray(routing.allowed_tools)
     ? routing.allowed_tools.filter(tool => typeof tool === 'string' && tool).slice(0, 20)
     : DEFAULT_AGENTS[agent]?.allowed_tools;
@@ -66,11 +127,28 @@ function normalizeAgentTelemetryMessage(message) {
     registry_refresh_ms: finiteNumber(routing.registry_refresh_ms),
     route_resolution_ms: finiteNumber(routing.resolution_ms),
     response_ready_ms: finiteNumber(timing.response_ready_ms),
-    model: String(brain.model || 'unknown').slice(0, 120),
+    model: modelIdentifier(brain.model),
     reasoning_effort: String(brain.reasoning_effort || 'unknown').slice(0, 40),
     tools,
+    model_rounds: modelRounds,
     failed_tool_calls: tools.filter(tool => tool.ok === false).length,
     allowlist_violations: allowlistViolations
+  };
+}
+
+function toolLatencyBucket(tools) {
+  return {
+    calls: tools.length,
+    failures: tools.filter(tool => tool.ok === false).length,
+    duration_ms: latencyStats(tools, 'duration_ms')
+  };
+}
+
+function modelRoundLatencyBucket(rounds) {
+  return {
+    calls: rounds.length,
+    duration_ms: latencyStats(rounds, 'duration_ms'),
+    first_delta_ms: latencyStats(rounds, 'first_delta_ms')
   };
 }
 
@@ -113,6 +191,8 @@ function summarizeAgentTelemetry(messages, {
   const riskCeilingViolations = specialistEvents.filter(
     event => event.maximum_risk !== 'read'
   ).length;
+  const toolEvents = events.flatMap(event => event.tools);
+  const modelRoundEvents = events.flatMap(event => event.model_rounds);
   const registryStatus = {};
   for (const event of events) {
     registryStatus[event.registry_status] = (registryStatus[event.registry_status] || 0) + 1;
@@ -142,6 +222,17 @@ function summarizeAgentTelemetry(messages, {
     specialist_risk_ceiling_violations: riskCeilingViolations,
     registry_status: registryStatus,
     by_agent: byAgent,
+    latency: {
+      tools: {
+        ...toolLatencyBucket(toolEvents),
+        by_tool: groupedLatency(toolEvents, 'name', toolLatencyBucket)
+      },
+      model_rounds: {
+        ...modelRoundLatencyBucket(modelRoundEvents),
+        by_phase: groupedLatency(modelRoundEvents, 'phase', modelRoundLatencyBucket),
+        by_model: groupedLatency(modelRoundEvents, 'model', modelRoundLatencyBucket)
+      }
+    },
     readiness: {
       status: readinessStatus,
       observed_specialist_turns: specialistEvents.length,

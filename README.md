@@ -200,6 +200,15 @@ Adaptive reasoning raises effort for explicit analysis, comparison, strategy,
 planning, and decisions. Routine multi-source status reads stay at the configured
 base effort; the number of tool groups alone is not treated as reasoning depth.
 
+## Agent routing telemetry
+
+Authenticated `GET /api/agents/telemetry` reports routing volume, policy anomalies,
+and latency percentiles from assistant metadata already stored with each turn. The
+latency summary separates tool execution from model rounds, grouped by tool name,
+fixed model phase, and model id, so a slow integration can be distinguished from a
+slow synthesis pass. Recent events expose only those operational fields; reply text,
+model input, tool arguments, and tool results are never returned.
+
 ## Voice interface
 
 The phone and home-screen interface is text-free. A canvas waveform reacts to

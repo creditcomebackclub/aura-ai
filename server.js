@@ -2328,9 +2328,13 @@ function isCapabilityCorrectionToolAllowed(name) {
     !CAPABILITY_CORRECTION_BLOCKED_TOOLS.has(name);
 }
 
-function buildToolEvidence(toolCall, parsedToolResult) {
+function buildToolEvidence(toolCall, parsedToolResult, { durationMs, round } = {}) {
   const tool = toolCall?.function?.name || 'unknown';
   const evidence = { tool, ok: parsedToolResult?.ok === true };
+  if (Number.isFinite(durationMs) && durationMs >= 0) {
+    evidence.duration_ms = Math.round(durationMs);
+  }
+  if (Number.isInteger(round) && round >= 0) evidence.round = round;
   if (tool === 'view_skill' && evidence.ok && parsedToolResult?.data?.name) {
     evidence.skill = {
       name: String(parsedToolResult.data.name).slice(0, 80),
@@ -2339,6 +2343,23 @@ function buildToolEvidence(toolCall, parsedToolResult) {
     };
   }
   return evidence;
+}
+
+function appendModelRoundTiming(modelRounds, response, { phase, round } = {}) {
+  if (!Array.isArray(modelRounds) || !response?._timing) return;
+  const durationMs = Number(response._timing.stream_ms);
+  if (!Number.isFinite(durationMs) || durationMs < 0) return;
+  const timing = {
+    phase,
+    round,
+    model: response._model || chatModel,
+    duration_ms: Math.round(durationMs)
+  };
+  const firstDeltaMs = Number(response._timing.first_delta_ms);
+  if (Number.isFinite(firstDeltaMs) && firstDeltaMs >= 0) {
+    timing.first_delta_ms = Math.round(firstDeltaMs);
+  }
+  modelRounds.push(timing);
 }
 
 // If the model verbally denies a capability whose tool was offered this turn,
@@ -2355,7 +2376,8 @@ async function correctFalseCapabilityDenial({
   sentenceGate = null,
   signal = null,
   agent = DEFAULT_AGENTS.aura_core,
-  reasoningEffort: turnReasoningEffort = null
+  reasoningEffort: turnReasoningEffort = null,
+  modelRounds = null
 }) {
   throwIfAborted(signal);
   const availableToolNames = (turnTools || []).map(tool => tool?.function?.name).filter(Boolean);
@@ -2407,6 +2429,7 @@ async function correctFalseCapabilityDenial({
     ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
     _traceLabel: 'capability correction'
   });
+  appendModelRoundTiming(modelRounds, response, { phase: 'capability_correction', round: 0 });
   response = recoverTextToolCalls(response, correctionTools, sentenceGate);
 
   // Allow one short tool round so the correction can actually look the fact up
@@ -2416,6 +2439,7 @@ async function correctFalseCapabilityDenial({
     chatHistory.push(responseMessage);
     for (const toolCall of responseMessage.tool_calls) {
       throwIfAborted(signal);
+      const toolStartedAtMs = Date.now();
       let functionResult;
       try {
         const toolName = toolCall?.function?.name;
@@ -2445,7 +2469,10 @@ async function correctFalseCapabilityDenial({
         parsedToolResult = { ok: false };
       }
       if (Array.isArray(evidence)) {
-        evidence.push(buildToolEvidence(toolCall, parsedToolResult));
+        evidence.push(buildToolEvidence(toolCall, parsedToolResult, {
+          durationMs: Date.now() - toolStartedAtMs,
+          round
+        }));
       }
       chatHistory.push({
         role: 'tool',
@@ -2462,6 +2489,10 @@ async function correctFalseCapabilityDenial({
       _signal: signal,
       ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
       _traceLabel: `capability correction round ${round + 1}`
+    });
+    appendModelRoundTiming(modelRounds, response, {
+      phase: 'capability_correction',
+      round: round + 1
     });
     response = recoverTextToolCalls(response, correctionTools, sentenceGate);
   }
@@ -3532,6 +3563,7 @@ async function processOwnerText(text, {
 
     const preModelMs = Date.now() - requestStartedAtMs;
     onPhase('model-round-0');
+    const modelRounds = [];
     let response = await createBrainCompletionStreamed({
       messages: chatHistory,
       ...(turnTools.length ? { tools: turnTools, tool_choice: 'auto' } : {}),
@@ -3541,6 +3573,7 @@ async function processOwnerText(text, {
       ...(!usePrimaryModel && modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
       _traceLabel: 'round 0'
     });
+    appendModelRoundTiming(modelRounds, response, { phase: 'initial', round: 0 });
     response = recoverTextToolCalls(response, turnTools, sentenceGate);
     // Prefer the first content delta across rounds (tool-only round 0 has none).
     let firstDeltaMs = response._timing?.first_delta_ms ?? null;
@@ -3579,6 +3612,7 @@ async function processOwnerText(text, {
 
       const runOneTool = async (toolCall) => {
         throwIfAborted(signal);
+        const toolStartedAtMs = Date.now();
         let functionResult;
         let webSearchUnitReserved = false;
         let forceToolFree = false;
@@ -3632,7 +3666,6 @@ async function processOwnerText(text, {
             }
             await dailyWebSearchLimiter.consume();
             webSearchUnitReserved = true;
-            const toolStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
             functionResult = await handleToolCall(toolCall, {
               publicSearchInput,
               turn: requestTurn,
@@ -3641,11 +3674,7 @@ async function processOwnerText(text, {
               signal
             });
             throwIfAborted(signal);
-            if (process.env.AURA_TIMING_TRACE) {
-              console.log(`[timing] tool ${toolName}: ${Date.now() - toolStartedAtMs}ms`);
-            }
           } else {
-            const toolStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
             functionResult = await handleToolCall(toolCall, {
               turn: requestTurn,
               requestStartedAtMs,
@@ -3654,9 +3683,6 @@ async function processOwnerText(text, {
               signal
             });
             throwIfAborted(signal);
-            if (process.env.AURA_TIMING_TRACE) {
-              console.log(`[timing] tool ${toolName}: ${Date.now() - toolStartedAtMs}ms`);
-            }
           }
         } catch (toolError) {
           if (webSearchUnitReserved) {
@@ -3683,10 +3709,15 @@ async function processOwnerText(text, {
         } catch {
           parsedToolResult = { ok: false };
         }
+        const durationMs = Date.now() - toolStartedAtMs;
+        if (process.env.AURA_TIMING_TRACE) {
+          console.log(`[timing] tool ${toolCall?.function?.name || 'unknown'}: ${durationMs}ms`);
+        }
         return {
           toolCall,
           functionResult,
           parsedToolResult,
+          durationMs,
           forceToolFree,
           privateContext: PRIVATE_CONTEXT_TOOLS.has(toolCall?.function?.name)
         };
@@ -3705,7 +3736,10 @@ async function processOwnerText(text, {
         if (outcome.privateContext && outcome.toolCall?.function?.name !== 'search_web') {
           privateContextToolCompleted = true;
         }
-        evidence.push(buildToolEvidence(outcome.toolCall, outcome.parsedToolResult));
+        evidence.push(buildToolEvidence(outcome.toolCall, outcome.parsedToolResult, {
+          durationMs: outcome.durationMs,
+          round
+        }));
         if (outcome.toolCall?.function?.name === 'search_web' && outcome.parsedToolResult.ok === true) {
           await settleWebSearchUsage(outcome.parsedToolResult.data?.billable_searches);
           webSearchSucceeded = true;
@@ -3748,6 +3782,10 @@ async function processOwnerText(text, {
             _reasoningEffort: turnReasoningEffort,
             _traceLabel: `round ${round + 1}`
           });
+      appendModelRoundTiming(modelRounds, response, {
+        phase: 'tool_followup',
+        round: round + 1
+      });
       if (!forceToolFreeAnswer) {
         response = recoverTextToolCalls(response, turnTools, sentenceGate);
       }
@@ -3775,6 +3813,10 @@ async function processOwnerText(text, {
         _reasoningEffort: turnReasoningEffort,
         _traceLabel: 'round cap exhausted'
       });
+      appendModelRoundTiming(modelRounds, response, {
+        phase: 'tool_budget_exhausted',
+        round: 7
+      });
     }
 
     let reply = response.choices[0].message.content || "Sorry, I wasn't able to put together an answer for that.";
@@ -3787,7 +3829,8 @@ async function processOwnerText(text, {
       sentenceGate,
       signal,
       agent: activeAgent,
-      reasoningEffort: turnReasoningEffort
+      reasoningEffort: turnReasoningEffort,
+      modelRounds
     });
     throwIfAborted(signal);
     const leakedFinalCalls = extractTextToolCalls(reply, { allowedToolNames: availableToolNames });
@@ -3817,7 +3860,8 @@ async function processOwnerText(text, {
           response_ready_ms: responseReadyMs,
           context_build_ms: contextBuildMs,
           pre_model_ms: preModelMs,
-          first_delta_ms: firstDeltaMs
+          first_delta_ms: firstDeltaMs,
+          model_rounds: modelRounds
         }
       },
       memory_extraction: memoryJob
@@ -4218,9 +4262,10 @@ app.get('/api/learning/summary', async (req, res) => {
   res.json({ summary: await skillOutcomeStore.summary() });
 });
 
-// Read-only routing evidence. No owner text or tool payloads leave this
-// endpoint; it reports only selected lenses, timings, tool names/outcomes, and
-// specialist allowlist anomalies already present in assistant metadata.
+// Read-only routing evidence. No owner text, model input, tool arguments, or
+// tool results leave this endpoint; it reports only selected lenses, timings,
+// tool names/outcomes, and specialist allowlist anomalies already present in
+// assistant metadata.
 app.get('/api/agents/telemetry', async (req, res) => {
   if (!cloudState) {
     return res.status(503).json({ error: 'Durable agent telemetry is not enabled.' });
