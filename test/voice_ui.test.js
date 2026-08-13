@@ -56,8 +56,8 @@ test('the panel shows receipts only — search evidence or number-heavy replies'
   assert.match(app, /function looksLikeReceipt\(/);
   assert.match(app, /else if \(looksLikeReceipt\(replyText\)\)/);
   assert.match(app, /sourceLabel\.textContent = isSearchResult \? 'Live web result' : 'Receipt'/);
-  assert.match(app, /LISTEN_ARM_GRACE_MS/);
-  assert.match(app, /elapsed >= LISTEN_ARM_GRACE_MS/);
+  assert.match(app, /LISTEN_ARM_GRACE_MS = 650/);
+  assert.match(app, /createAdaptiveVad/);
 });
 
 test('the search panel sits right of the wave, never over it, and syncs to speech start', () => {
@@ -248,10 +248,11 @@ test('streamed voice uses connected TTS groups instead of resetting every senten
   assert.match(app, /function cancelActiveTurn\(/);
   assert.match(app, /turnAbortController/);
   assert.match(app, /isSpeaking \|\| isProcessing/);
-  assert.match(app, /SILENCE_HANGOVER_MS = 750/);
+  assert.match(app, /SILENCE_HANGOVER_MS = 700/);
   assert.match(app, /MAX_UTTERANCE_MS = 60000/);
   assert.match(app, /STREAM_MAX_UTTERANCE_MS = 60000/);
   assert.match(app, /NO_SPEECH_IDLE_MS = 8000/);
+  assert.match(app, /!heardSpeech && elapsed >= NO_SPEECH_IDLE_MS/);
 });
 
 test('tap interrupt copy and hey Aura wake wiring are present', () => {
@@ -281,17 +282,19 @@ test('Deepgram streaming listen path is wired', () => {
 });
 
 test('conversation mode supports voice barge-in with preroll and server cancellation', () => {
-  assert.match(app, /BARGE_IN_SUSTAIN_MS = 320/);
-  assert.match(app, /BARGE_IN_GAP_TOLERANCE_MS = 140/);
+  assert.match(app, /BARGE_IN_SUSTAIN_MS = 220/);
+  assert.match(app, /BARGE_IN_GAP_TOLERANCE_MS = 120/);
   assert.match(app, /BARGE_IN_PRE_ROLL_SAMPLES = 3200/);
   assert.match(app, /BARGE_IN_CAPTURE_MAX_SAMPLES = 64000/);
   assert.match(app, /function beginBargeInUtterance/);
   assert.match(app, /appendBargeInUtterancePcm/);
   assert.match(app, /async function startBargeInMonitor/);
   assert.match(app, /async function triggerVoiceBargeIn/);
-  assert.match(app, /echoCancellation: true/);
-  assert.match(app, /noiseSuppression: true/);
-  assert.match(app, /autoGainControl: false/);
+  assert.match(app, /processedMicrophoneConstraints/);
+  assert.match(app, /buildProcessedAudioConstraints/);
+  assert.match(app, /createAdaptiveVad/);
+  assert.match(app, /recordVadDiagnostic\('false_start', 'barge_in'/);
+  assert.match(app, /suspected_false_cutoff/);
   assert.match(app, /existingMedia: preservedMedia/);
   assert.match(app, /initialPcmProvider: readInterruption/);
   assert.match(app, /startBargeInMonitor\(\)/);
