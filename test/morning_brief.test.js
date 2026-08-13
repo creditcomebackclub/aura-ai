@@ -228,3 +228,43 @@ test('morning brief still sends its useful sections if spark generation fails', 
   assert.match(alerts[0], /Goals \(1\)/);
   assert.doesNotMatch(alerts[0], /Strange little spark/);
 });
+
+test('morning brief runner honors trusted durable section preferences', async () => {
+  let goalsRead = false;
+  let calendarRead = false;
+  let blackboardOptions = null;
+  const alerts = [];
+  const result = await runMorningBrief({
+    listOpenGoals: async () => {
+      goalsRead = true;
+      return [{ title: 'Should not appear', created_at: NOW.toISOString() }];
+    },
+    getCalendarText: async () => {
+      calendarRead = true;
+      return 'Event: Keep this';
+    },
+    getBlackboardUpcoming: async options => {
+      blackboardOptions = options;
+      return [{ title: 'Due soon', due_at: '2026-08-06T18:00:00Z' }];
+    },
+    getOwnerProfile: async () => ({
+      entries: {
+        format: { kind: 'preference', value: 'Only include calendar and Blackboard from the next 6 days in my morning brief.' }
+      }
+    }),
+    sendAlert: async text => {
+      alerts.push(text);
+      return { deduplicated: false };
+    },
+    timeZone: TZ,
+    now: NOW
+  });
+
+  assert.equal(result.status, 'sent');
+  assert.equal(goalsRead, false);
+  assert.equal(calendarRead, true);
+  assert.deepEqual(blackboardOptions, { withinDays: 6 });
+  assert.doesNotMatch(alerts[0], /Goals/);
+  assert.match(alerts[0], /Calendar/);
+  assert.match(alerts[0], /Blackboard/);
+});

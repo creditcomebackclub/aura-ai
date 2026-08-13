@@ -9,6 +9,7 @@ const {
   STALE_MS
 } = require('./daily_goals_digest');
 const { formatDueLabel, isDueToday, isOverdue } = require('./due_date');
+const { resolveMorningBriefPreferences } = require('./proactive_preferences');
 
 const MORNING_BRIEF_PATTERN = /\bmorning\s+brief\b/i;
 const SPARK_PATTERN = /\b(?:strange|weird)\s+(?:little\s+)?spark\b/i;
@@ -317,30 +318,38 @@ async function runMorningBrief({
     throw new Error('runMorningBrief requires listOpenGoals and sendAlert.');
   }
 
-  const goals = await listOpenGoals();
+  let profile = null;
+  const errors = [];
+  if (typeof getOwnerProfile === 'function') {
+    try {
+      profile = await getOwnerProfile();
+    } catch (error) {
+      errors.push(`profile:${error.message || error}`);
+    }
+  }
+  const preferences = resolveMorningBriefPreferences(profile);
+  const goals = preferences.goals ? await listOpenGoals() : [];
   let calendarText = null;
   let blackboardUpcoming = [];
   let spark = null;
-  const errors = [];
 
-  if (typeof getCalendarText === 'function') {
+  if (preferences.calendar && typeof getCalendarText === 'function') {
     try {
       calendarText = await getCalendarText();
     } catch (error) {
       errors.push(`calendar:${error.message || error}`);
     }
   }
-  if (typeof getBlackboardUpcoming === 'function') {
+  if (preferences.blackboard && typeof getBlackboardUpcoming === 'function') {
     try {
-      blackboardUpcoming = await getBlackboardUpcoming() || [];
+      blackboardUpcoming = await getBlackboardUpcoming({ withinDays: preferences.blackboardDays }) || [];
     } catch (error) {
       errors.push(`blackboard:${error.message || error}`);
     }
   }
 
-  if (typeof getOwnerProfile === 'function' && typeof generateSpark === 'function') {
+  if (profile && typeof generateSpark === 'function') {
     try {
-      const profile = await getOwnerProfile();
       const preference = findMorningBriefSparkPreference(profile);
       if (preference) {
         spark = normalizeMorningSpark(await generateSpark({

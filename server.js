@@ -20,7 +20,7 @@ const mac = require('./mac_integration');
 const ccc = require('./ccc_database');
 const { generateSimplePdf } = require('./pdf_generator');
 const { isTelegramConfigured, sendTelegramMessage, sendTelegramAudio, isFromOwnerChat, downloadTelegramFile } = require('./telegram');
-const { runDailyGoalsDigest } = require('./daily_goals_digest');
+const { runDailyGoalsDigest, phoenixDateKey } = require('./daily_goals_digest');
 const { runMorningBrief, filterUpcomingAssignments } = require('./morning_brief');
 const { parseDueAt } = require('./due_date');
 const {
@@ -101,6 +101,8 @@ const {
   formatEventSummary
 } = require('./google_calendar');
 const { createExecutiveLoop } = require('./executive_loop');
+const { resolveExecutivePreferences } = require('./proactive_preferences');
+const { findBusinessSummaryPreference, formatBusinessSummary } = require('./business_summary');
 const {
   brainRequestOptions,
   resolveModelConfig,
@@ -1141,7 +1143,7 @@ async function listOpenGoals() {
   `).all();
 }
 
-async function peekBlackboardUpcoming() {
+async function peekBlackboardUpcoming({ withinDays = 3 } = {}) {
   const scraped = await scraper.checkBlackboardAssignments();
   if (!scraped || typeof scraped !== 'string' || scraped.startsWith('BLACKBOARD_')) {
     return [];
@@ -1149,7 +1151,7 @@ async function peekBlackboardUpcoming() {
   try {
     const calendar = JSON.parse(scraped);
     if (calendar?.source === 'blackboard_ical' && Array.isArray(calendar.assignments)) {
-      return filterUpcomingAssignments(calendar.assignments);
+      return filterUpcomingAssignments(calendar.assignments, { withinDays });
     }
   } catch {
     // Browser scrape text isn't structured — morning brief skips it.
@@ -1254,7 +1256,7 @@ async function generateMorningSpark({
 }
 
 async function deliverMorningBrief() {
-  return runMorningBrief({
+  const result = await runMorningBrief({
     listOpenGoals,
     getCalendarText: peekTodaysCalendar,
     getBlackboardUpcoming: peekBlackboardUpcoming,
@@ -1263,6 +1265,29 @@ async function deliverMorningBrief() {
     sendAlert: sendProactiveAlert,
     timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
   });
+  try {
+    const profile = await (cloudState || localProfileStore).getOwnerProfile();
+    const preference = findBusinessSummaryPreference(profile);
+    if (!preference) return { ...result, businessSummary: false };
+    const activity = await ccc.getRecentBusinessActivity({ hours: preference.hours });
+    const summary = formatBusinessSummary(activity, { hours: preference.hours });
+    const dateKey = phoenixDateKey(process.env.AURA_TIMEZONE || 'America/Phoenix', new Date());
+    const notification = await sendProactiveAlert(summary, 'business_summary', 'normal', {
+      dedupeKey: `business-summary:${dateKey}`,
+      telegram: true,
+      metadata: {
+        hours: preference.hours,
+        invoices: activity.invoices.length,
+        leads: activity.leads.length,
+        letters: activity.letters.length,
+        errors: activity.errors
+      }
+    });
+    return { ...result, businessSummary: !notification?.deduplicated };
+  } catch (error) {
+    console.warn('[Morning brief] Business summary failed:', error.message || error);
+    return { ...result, businessSummary: false, errors: [...(result.errors || []), `business:${error.message || error}`] };
+  }
 }
 
 // Back-compat alias used by older cron SQL / docs.
@@ -1276,6 +1301,12 @@ async function deliverDailyGoalsDigest() {
 }
 
 const executiveLoopEnabled = process.env.AURA_EXECUTIVE_LOOP !== 'false';
+const executivePreferenceDefaults = {
+  quietStartHour: process.env.AURA_EXECUTIVE_QUIET_START || 21,
+  quietEndHour: process.env.AURA_EXECUTIVE_QUIET_END || 7,
+  meetingBriefMinMinutes: process.env.AURA_MEETING_BRIEF_MIN_MINUTES || 8,
+  meetingBriefMaxMinutes: process.env.AURA_MEETING_BRIEF_MAX_MINUTES || 20
+};
 const runExecutiveLoop = createExecutiveLoop({
   listUnreadEmails: () => isDirectEmailConfigured()
     ? listDirectUnreadEmailItems({ maxResults: 30 })
@@ -1319,14 +1350,15 @@ const runExecutiveLoop = createExecutiveLoop({
     }
     return { clientSnapshots };
   },
+  getPreferences: async () => resolveExecutivePreferences(
+    await (cloudState || localProfileStore).getOwnerProfile(),
+    executivePreferenceDefaults
+  ),
   getState: getAlertState,
   setState: setAlertState,
   sendAlert: sendProactiveAlert,
   timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
-  quietStartHour: process.env.AURA_EXECUTIVE_QUIET_START || 21,
-  quietEndHour: process.env.AURA_EXECUTIVE_QUIET_END || 7,
-  meetingBriefMinMinutes: process.env.AURA_MEETING_BRIEF_MIN_MINUTES || 8,
-  meetingBriefMaxMinutes: process.env.AURA_MEETING_BRIEF_MAX_MINUTES || 20
+  ...executivePreferenceDefaults
 });
 
 app.post('/internal/scheduled/executive-loop', authenticateCron, rateLimit, async (req, res) => {

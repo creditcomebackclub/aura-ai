@@ -238,6 +238,7 @@ function createExecutiveLoop({
   listOpenTasks,
   createCommitment,
   getMeetingContext,
+  getPreferences,
   getState,
   setState,
   sendAlert,
@@ -257,7 +258,23 @@ function createExecutiveLoop({
   async function execute() {
     const currentTime = now();
     const currentMs = currentTime.getTime();
-    const quiet = isQuietTime(currentTime, { timeZone, quietStartHour, quietEndHour });
+    let preferences = {};
+    if (typeof getPreferences === 'function') {
+      try {
+        preferences = await getPreferences() || {};
+      } catch (error) {
+        console.warn('[Executive Loop] Preference lookup failed:', error.message || error);
+      }
+    }
+    const activeQuietStartHour = Number(preferences.quietStartHour ?? quietStartHour);
+    const activeQuietEndHour = Number(preferences.quietEndHour ?? quietEndHour);
+    const activeBriefMinMinutes = Number(preferences.meetingBriefMinMinutes ?? meetingBriefMinMinutes);
+    const activeBriefMaxMinutes = Number(preferences.meetingBriefMaxMinutes ?? meetingBriefMaxMinutes);
+    const quiet = isQuietTime(currentTime, {
+      timeZone,
+      quietStartHour: activeQuietStartHour,
+      quietEndHour: activeQuietEndHour
+    });
     const previous = await getState(EXECUTIVE_LOOP_STATE_KEY);
     const initialized = Boolean(previous?.initialized_at);
     let emailInitialized = Boolean(previous?.email_initialized_at);
@@ -438,7 +455,7 @@ function createExecutiveLoop({
       if (startMs == null) continue;
       const minutesUntil = (startMs - currentMs) / 60000;
       const briefKey = `${event.id}:${event.start.dateTime}`;
-      if (minutesUntil < meetingBriefMinMinutes || minutesUntil > meetingBriefMaxMinutes || briefed.has(briefKey)) {
+      if (minutesUntil < activeBriefMinMinutes || minutesUntil > activeBriefMaxMinutes || briefed.has(briefKey)) {
         continue;
       }
       const alert = await sendAlert(

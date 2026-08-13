@@ -86,6 +86,60 @@ function getLedgerTransactionDate(entry) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+async function getRecentBusinessActivity({ hours = 48, now = new Date() } = {}) {
+  const db = initSupabase();
+  if (!db) throw new Error('Database connection not configured.');
+  const safeHours = Math.max(1, Math.min(168, Number(hours) || 48));
+  const sinceMs = now.getTime() - safeHours * 60 * 60 * 1000;
+  const recent = value => {
+    const timestamp = new Date(value || '').getTime();
+    return Number.isFinite(timestamp) && timestamp >= sinceMs && timestamp <= now.getTime();
+  };
+
+  const [clientResult, leadResult, letterResult] = await Promise.all([
+    db.from('clients').select('name, ledger'),
+    db.from('leads').select('*').limit(500),
+    db.from('letters')
+      .select('client_name, furnisher, phase, mailed_date')
+      .gte('mailed_date', new Date(sinceMs).toISOString())
+  ]);
+
+  const errors = [];
+  if (clientResult.error) errors.push(`invoices:${clientResult.error.message}`);
+  if (leadResult.error) errors.push(`leads:${leadResult.error.message}`);
+  if (letterResult.error) errors.push(`letters:${letterResult.error.message}`);
+
+  const invoices = [];
+  for (const client of clientResult.data || []) {
+    for (const entry of Array.isArray(client.ledger) ? client.ledger : []) {
+      const created = entry.created_at || entry.date;
+      if (!isOutstanding(entry.status) || !recent(created)) continue;
+      invoices.push({
+        client: client.name,
+        amount: Number(entry.amount) || 0,
+        description: entry.description || null,
+        created_at: created
+      });
+    }
+  }
+
+  const leads = (leadResult.data || [])
+    .filter(lead => recent(lead.created_at || lead.date || lead.submitted_at))
+    .map(lead => ({
+      name: lead.name || lead.full_name || lead.client_name || lead.email || 'Unnamed lead',
+      created_at: lead.created_at || lead.date || lead.submitted_at
+    }));
+
+  const letters = (letterResult.data || []).map(letter => ({
+    client_name: letter.client_name,
+    furnisher: letter.furnisher,
+    phase: letter.phase,
+    mailed_date: letter.mailed_date
+  }));
+
+  return { hours: safeHours, invoices, leads, letters, errors };
+}
+
 // Lists every client with money still owed, reading inside the ledger JSON.
 // Needed because the ledger is a nested array that plain column filters can't reach.
 async function getOutstandingBalances() {
@@ -919,5 +973,6 @@ module.exports = {
   getClientCurrentPhase,
   normalizePhaseLabel,
   isOutstanding,
-  getLedgerTransactionDate
+  getLedgerTransactionDate,
+  getRecentBusinessActivity
 };

@@ -106,7 +106,7 @@ test('meeting briefs include attendees and matching unread email context', () =>
   assert.doesNotMatch(brief, /Unrelated/);
 });
 
-function createHarness({ now = new Date('2026-08-03T16:00:00Z') } = {}) {
+function createHarness({ now = new Date('2026-08-03T16:00:00Z'), getPreferences } = {}) {
   let currentTime = now;
   let state = null;
   let emails = [];
@@ -120,6 +120,7 @@ function createHarness({ now = new Date('2026-08-03T16:00:00Z') } = {}) {
     listUnreadEmails: async () => emails,
     listSentEmails: async () => sentEmails,
     getEmailIdentity: async () => 'creditcomebackclub@gmail.com',
+    getPreferences,
     listCalendarEvents: async () => events,
     listOpenTasks: async () => tasks,
     getState: async key => key === EXECUTIVE_LOOP_STATE_KEY ? state : null,
@@ -152,6 +153,23 @@ function createHarness({ now = new Date('2026-08-03T16:00:00Z') } = {}) {
     setTasks: value => { tasks = value; }
   };
 }
+
+test('durable preferences can move the active quiet-hours window', async () => {
+  const harness = createHarness({
+    now: new Date('2026-08-03T16:00:00Z'), // 9am Phoenix
+    getPreferences: async () => ({ quietStartHour: 8, quietEndHour: 10 })
+  });
+  await harness.run();
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEmails([{
+    id: 'routine-during-custom-quiet',
+    from: 'Mike <mike@example.com>',
+    subject: 'Can you review this?',
+    snippet: 'Please take a look.'
+  }]);
+  const result = await harness.run();
+  assert.equal(result.sent, 0);
+});
 
 test('first run baselines old data, then alerts once for new executive events', async () => {
   const harness = createHarness();
