@@ -55,6 +55,7 @@ const {
   correctCommonSpeechTerms,
   shouldSkipSemanticMemory,
   isDirectFinancialMetricsAsk,
+  reasoningEffortForTurn,
   formatFinancialMetricsPromptBlock,
   BUSINESS_INTEL_TOOL_NAMES
 } = require('./turn_context');
@@ -174,6 +175,7 @@ app.get('/healthz', (req, res) => {
       provider: aiProvider,
       model: chatModel,
       reasoning_effort: reasoningEffort || null,
+      adaptive_reasoning: true,
       memory_model: backgroundModel,
       stt_provider: sttProvider,
       stt_streaming: sttStreaming,
@@ -806,7 +808,9 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, _signal,
     _timing: {
       stream_ms: streamMs,
       first_delta_ms: firstDeltaAtMs
-    }
+    },
+    _model: options.model,
+    _reasoning_effort: options.reasoning_effort || null
   };
 }
 
@@ -1929,7 +1933,8 @@ async function correctFalseCapabilityDenial({
   onSentence,
   evidence,
   sentenceGate = null,
-  signal = null
+  signal = null,
+  reasoningEffort: turnReasoningEffort = null
 }) {
   throwIfAborted(signal);
   const availableToolNames = (turnTools || []).map(tool => tool?.function?.name).filter(Boolean);
@@ -1978,6 +1983,7 @@ async function correctFalseCapabilityDenial({
     tool_choice: 'auto',
     onSentence: streamSentence,
     _signal: signal,
+    ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
     _traceLabel: 'capability correction'
   });
   response = recoverTextToolCalls(response, correctionTools, sentenceGate);
@@ -2032,6 +2038,7 @@ async function correctFalseCapabilityDenial({
       tool_choice: 'auto',
       onSentence: streamSentence,
       _signal: signal,
+      ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
       _traceLabel: `capability correction round ${round + 1}`
     });
     response = recoverTextToolCalls(response, correctionTools, sentenceGate);
@@ -2625,6 +2632,11 @@ async function processOwnerText(text, {
       }, { role: 'user', content: text }];
       const turnTools = selectToolsForTurn(text);
       const availableToolNames = turnTools.map(tool => tool.function.name);
+      const turnReasoningEffort = reasoningEffortForTurn(text, {
+        baseEffort: reasoningEffort,
+        toolNames: availableToolNames
+      });
+      const usePrimaryModel = ['medium', 'high'].includes(turnReasoningEffort);
       const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
       const streamSentence = sentenceGate.onSentence;
       let response = await createBrainCompletionStreamed({
@@ -2633,7 +2645,8 @@ async function processOwnerText(text, {
         tool_choice: 'auto',
         onSentence: streamSentence,
         _signal: signal,
-        ...(modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
+        _reasoningEffort: turnReasoningEffort,
+        ...(!usePrimaryModel && modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
         _traceLabel: 'isolated round 0'
       });
       response = recoverTextToolCalls(response, turnTools, sentenceGate);
@@ -2725,6 +2738,7 @@ async function processOwnerText(text, {
           tool_choice: 'auto',
           onSentence: streamSentence,
           _signal: signal,
+          _reasoningEffort: turnReasoningEffort,
           _traceLabel: `isolated round ${round + 1}`
         });
         response = recoverTextToolCalls(response, turnTools, sentenceGate);
@@ -2743,6 +2757,7 @@ async function processOwnerText(text, {
           messages: chatHistory,
           onSentence: streamSentence,
           _signal: signal,
+          _reasoningEffort: turnReasoningEffort,
           _traceLabel: 'isolated round cap exhausted'
         });
       }
@@ -2754,7 +2769,8 @@ async function processOwnerText(text, {
         onSentence: streamSentence,
         evidence,
         sentenceGate,
-        signal
+        signal,
+        reasoningEffort: turnReasoningEffort
       });
       const isolatedProtocolLeak = sentenceGate.getProtocolLeak?.() ||
         extractTextToolCalls(reply, { allowedToolNames: availableToolNames })[0];
@@ -2769,7 +2785,12 @@ async function processOwnerText(text, {
         evidence,
         sources: webSources.slice(0, 12),
         web_results: webResults.slice(0, 2),
-        brain: { tier: 'isolated_eval', model: chatModel }
+        brain: {
+          tier: 'isolated_eval',
+          model: response._model || chatModel,
+          reasoning_effort: turnReasoningEffort,
+          provider_reasoning_effort: response._reasoning_effort || null
+        }
       };
     }
 
@@ -2985,6 +3006,11 @@ async function processOwnerText(text, {
       turnTools = turnTools.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
     }
     const availableToolNames = turnTools.map(tool => tool.function.name);
+    const turnReasoningEffort = reasoningEffortForTurn(text, {
+      baseEffort: reasoningEffort,
+      toolNames: availableToolNames
+    });
+    const usePrimaryModel = ['medium', 'high'].includes(turnReasoningEffort);
     const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
     const streamSentence = sentenceGate.onSentence;
 
@@ -2994,7 +3020,8 @@ async function processOwnerText(text, {
       ...(turnTools.length ? { tools: turnTools, tool_choice: 'auto' } : {}),
       onSentence: streamSentence,
       _signal: signal,
-      ...(modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
+      _reasoningEffort: turnReasoningEffort,
+      ...(!usePrimaryModel && modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
       _traceLabel: 'round 0'
     });
     response = recoverTextToolCalls(response, turnTools, sentenceGate);
@@ -3178,6 +3205,7 @@ async function processOwnerText(text, {
             messages: chatHistory,
             onSentence: streamSentence,
             _signal: signal,
+            _reasoningEffort: turnReasoningEffort,
             _traceLabel: `round ${round + 1} (forced tool-free)`
           })
         : await createBrainCompletionStreamed({
@@ -3186,6 +3214,7 @@ async function processOwnerText(text, {
             tool_choice: 'auto',
             onSentence: streamSentence,
             _signal: signal,
+            _reasoningEffort: turnReasoningEffort,
             _traceLabel: `round ${round + 1}`
           });
       if (!forceToolFreeAnswer) {
@@ -3212,6 +3241,7 @@ async function processOwnerText(text, {
         messages: chatHistory,
         onSentence: streamSentence,
         _signal: signal,
+        _reasoningEffort: turnReasoningEffort,
         _traceLabel: 'round cap exhausted'
       });
     }
@@ -3224,7 +3254,8 @@ async function processOwnerText(text, {
       onSentence: streamSentence,
       evidence,
       sentenceGate,
-      signal
+      signal,
+      reasoningEffort: turnReasoningEffort
     });
     throwIfAborted(signal);
     const leakedFinalCalls = extractTextToolCalls(reply, { allowedToolNames: availableToolNames });
@@ -3240,7 +3271,11 @@ async function processOwnerText(text, {
     throwIfAborted(signal);
     const assistantMessage = await addConversationMessage('assistant', reply, {
       evidence,
-      brain: { model: chatModel, reasoning_effort: reasoningEffort },
+      brain: {
+        model: response._model || chatModel,
+        reasoning_effort: turnReasoningEffort,
+        provider_reasoning_effort: response._reasoning_effort || null
+      },
       memory_extraction: memoryJob
         ? { status: memoryJob.status, job_id: memoryJob.id }
         : { status: 'scheduled_local' }
@@ -3291,8 +3326,9 @@ async function processOwnerText(text, {
       web_results: webResults.slice(0, 2),
       brain: {
         tier: chatModel === 'gpt-5.6-sol' ? 'sol' : 'configured',
-        model: chatModel,
-        reasoning_effort: reasoningEffort
+        model: response._model || chatModel,
+        reasoning_effort: turnReasoningEffort,
+        provider_reasoning_effort: response._reasoning_effort || null
       },
       timing: {
         lightweight,

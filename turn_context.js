@@ -93,6 +93,29 @@ const DIRECT_METRICS_MAX_CHARS = 160;
 const DIRECT_METRICS_HISTORY_LIMIT = 8;
 const DIRECT_METRICS_PATTERN = /\b(mrr|mmr|outstanding(?:\s+balances?)?|lifetime\s+revenue|commission(?:\s+owed)?|(?:monthly\s+)?recurring\s+revenue|financial\s+metrics)\b/i;
 
+// Deeper reasoning is selected deterministically so deciding how hard to think
+// never adds another model round. Keep this intent-based: message length alone
+// is a poor proxy (a pasted name can be long; "why?" can be short).
+const MEDIUM_REASONING_PATTERN = /\b(?:analy[sz]e|analysis|compare|contrast|evaluate|assess|recommend|recommendation|advise|advice|strateg(?:y|ic|ize)|prioriti[sz]e|trade[ -]?offs?|pros and cons|root cause|reason through|think (?:this |it )?through|think hard|figure out why|explain|planning)\b/i;
+const WHY_REASONING_PATTERN = /\bwhy\s+(?:did|does|do|is|are|was|were|would|could|should|has|have|can)\b/i;
+const DECISION_REASONING_PATTERN = /\b(?:what should (?:i|we)|what would you do|help me (?:decide|choose|plan)|make (?:me )?a plan|plan (?:this|it|that|out|for))\b/i;
+const INTERPRETATION_REASONING_PATTERN = /\bwhat does\b.{0,100}\bmean\b/i;
+
+const REASONING_TOOL_GROUPS = [
+  BUSINESS_INTEL_TOOL_NAMES,
+  new Set([...OUTBOUND_EMAIL_TOOL_NAMES, ...EMAIL_READ_TOOL_NAMES]),
+  new Set([...CALENDAR_WRITE_TOOL_NAMES, ...CALENDAR_READ_TOOL_NAMES]),
+  GOAL_TOOL_NAMES,
+  BLACKBOARD_TOOL_NAMES,
+  TELEGRAM_TOOL_NAMES,
+  WEB_SEARCH_TOOL_NAMES,
+  SKILL_TOOL_NAMES,
+  PERSONAL_FINANCE_TOOL_NAMES,
+  MEMORY_WRITE_TOOL_NAMES
+];
+
+const REASONING_EFFORT_RANK = Object.freeze({ none: 0, low: 1, medium: 2, high: 3 });
+
 function isLightweightChitchat(text) {
   const trimmed = String(text || '').trim();
   if (!trimmed || trimmed.length > LIGHTWEIGHT_MAX_CHARS) return false;
@@ -110,11 +133,56 @@ function needsSemanticMemory(text) {
 function isDirectFinancialMetricsAsk(text) {
   const trimmed = String(text || '').trim();
   if (!trimmed || trimmed.length > DIRECT_METRICS_MAX_CHARS) return false;
+  if (
+    MEDIUM_REASONING_PATTERN.test(trimmed) ||
+    WHY_REASONING_PATTERN.test(trimmed) ||
+    DECISION_REASONING_PATTERN.test(trimmed) ||
+    INTERPRETATION_REASONING_PATTERN.test(trimmed)
+  ) return false;
   // Multi-intent turns still need the normal tool loop.
   if (/\b(client|clients|letter|letters|phase|email|e-?mail|calendar|send|search)\b/i.test(trimmed)) {
     return false;
   }
   return DIRECT_METRICS_PATTERN.test(trimmed);
+}
+
+function reasoningEffortForTurn(
+  text,
+  { baseEffort = 'low', toolNames = [] } = {}
+) {
+  const normalizedBase = Object.hasOwn(REASONING_EFFORT_RANK, baseEffort)
+    ? baseEffort
+    : 'low';
+  // An explicit deployment setting above low remains a floor. Adaptive mode
+  // deepens selected turns; it never silently weakens an operator override.
+  if (REASONING_EFFORT_RANK[normalizedBase] >= REASONING_EFFORT_RANK.medium) {
+    return normalizedBase;
+  }
+
+  const value = String(text || '').trim();
+  if (!value || isLightweightChitchat(value)) {
+    return normalizedBase;
+  }
+  if (
+    MEDIUM_REASONING_PATTERN.test(value) ||
+    WHY_REASONING_PATTERN.test(value) ||
+    DECISION_REASONING_PATTERN.test(value) ||
+    INTERPRETATION_REASONING_PATTERN.test(value)
+  ) {
+    return 'medium';
+  }
+  if (isDirectFinancialMetricsAsk(value)) return normalizedBase;
+
+  const selectedNames = new Set(
+    (Array.isArray(toolNames) ? toolNames : [])
+      .map(name => String(name || '').trim())
+      .filter(Boolean)
+  );
+  const activeGroups = REASONING_TOOL_GROUPS.reduce(
+    (count, group) => count + ([...group].some(name => selectedNames.has(name)) ? 1 : 0),
+    0
+  );
+  return activeGroups >= 2 ? 'medium' : normalizedBase;
 }
 
 function shouldSkipSemanticMemory(text) {
@@ -229,6 +297,7 @@ module.exports = {
   isLightweightChitchat,
   needsSemanticMemory,
   isDirectFinancialMetricsAsk,
+  reasoningEffortForTurn,
   shouldSkipSemanticMemory,
   shouldSkipHeavyMemory,
   formatFinancialMetricsPromptBlock,

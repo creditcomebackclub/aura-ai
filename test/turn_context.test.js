@@ -8,6 +8,7 @@ const {
   needsSemanticMemory,
   shouldSkipSemanticMemory,
   isDirectFinancialMetricsAsk,
+  reasoningEffortForTurn,
   selectToolsForTurn,
   historyLimitForTurn,
   LIGHTWEIGHT_HISTORY_LIMIT,
@@ -66,6 +67,38 @@ test('direct financial metrics asks are detected', () => {
   assert.equal(isDirectFinancialMetricsAsk("What's my MRR?"), true);
   assert.equal(isDirectFinancialMetricsAsk('Yes, I meant MRR.'), true);
   assert.equal(isDirectFinancialMetricsAsk('email me the MRR'), false);
+  assert.equal(isDirectFinancialMetricsAsk('Why did MRR fall, and what should I do?'), false);
+});
+
+test('adaptive reasoning keeps direct answers fast and deepens analysis', () => {
+  assert.equal(reasoningEffortForTurn('Who paid me last?', { baseEffort: 'low' }), 'low');
+  assert.equal(reasoningEffortForTurn("What's my MRR?", { baseEffort: 'low' }), 'low');
+  assert.equal(
+    reasoningEffortForTurn('Why did MRR fall, and what should I do?', { baseEffort: 'low' }),
+    'medium'
+  );
+  assert.equal(
+    reasoningEffortForTurn('Compare delinquent clients and prioritize follow-up', { baseEffort: 'low' }),
+    'medium'
+  );
+  assert.equal(
+    reasoningEffortForTurn('Think this through before you answer', { baseEffort: 'none' }),
+    'medium'
+  );
+});
+
+test('adaptive reasoning deepens cross-domain work and honors operator floors', () => {
+  assert.equal(
+    reasoningEffortForTurn('Check both for me', {
+      baseEffort: 'low',
+      toolNames: ['check_email', 'check_calendar']
+    }),
+    'medium'
+  );
+  assert.equal(
+    reasoningEffortForTurn('Who paid me last?', { baseEffort: 'medium' }),
+    'medium'
+  );
 });
 
 test('selectToolsForTurn keeps finance tools for MMR speech typo', () => {

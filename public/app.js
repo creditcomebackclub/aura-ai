@@ -2319,7 +2319,8 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
               `, context ${event.timing.context_build_ms ?? '?'}ms` +
               `${event.timing.lightweight ? ', lightweight' : ''}` +
               `${event.timing.skip_semantic ? ', no-semantic' : ''}` +
-              `${event.timing.direct_metrics ? ', direct-metrics' : ''})`
+              `${event.timing.direct_metrics ? ', direct-metrics' : ''}` +
+              `${event.brain?.reasoning_effort ? `, reasoning ${event.brain.reasoning_effort}` : ''})`
             );
           }
         } else if (event.type === 'error') {
@@ -2484,7 +2485,8 @@ async function processAudio(audioBlob) {
               `, context ${event.timing.context_build_ms ?? '?'}ms` +
               `${event.timing.lightweight ? ', lightweight' : ''}` +
               `${event.timing.skip_semantic ? ', no-semantic' : ''}` +
-              `${event.timing.direct_metrics ? ', direct-metrics' : ''})`
+              `${event.timing.direct_metrics ? ', direct-metrics' : ''}` +
+              `${event.brain?.reasoning_effort ? `, reasoning ${event.brain.reasoning_effort}` : ''})`
             );
           }
         } else if (event.type === 'error') {

@@ -80,10 +80,14 @@ function resolveModelConfig(env = process.env) {
 }
 
 function brainRequestOptions(config, options = {}) {
-  const model = options.model || config.primaryModel;
-  const hasFunctionTools = Array.isArray(options.tools) && options.tools.length > 0;
+  const { _reasoningEffort, ...requestOptions } = options;
+  const model = requestOptions.model || config.primaryModel;
+  const effectiveReasoningEffort = OPENAI_REASONING_EFFORTS.has(_reasoningEffort)
+    ? _reasoningEffort
+    : config.reasoningEffort;
+  const hasFunctionTools = Array.isArray(requestOptions.tools) && requestOptions.tools.length > 0;
   const request = {
-    ...options,
+    ...requestOptions,
     model
   };
   // Key off the model id, not AI_PROVIDER — round-0 may call Luna via the
@@ -99,10 +103,10 @@ function brainRequestOptions(config, options = {}) {
     );
     request.reasoning_effort = (hasFunctionTools || isRouterRound)
       ? 'none'
-      : config.reasoningEffort;
+      : effectiveReasoningEffort;
   } else if (!openAiModel && config.provider === 'xai') {
     // Always send effort for Grok — omitting it defaults to high.
-    request.reasoning_effort = resolveXaiReasoningEffort(config.reasoningEffort);
+    request.reasoning_effort = resolveXaiReasoningEffort(effectiveReasoningEffort);
   }
 
   return request;

@@ -1015,6 +1015,27 @@ test('xAI reasoning_effort coerces none to low and honors medium/high', () => {
     brainRequestOptions(medium, { messages: [] }).reasoning_effort,
     'medium'
   );
+  assert.deepEqual(
+    brainRequestOptions(resolveModelConfig({ AI_PROVIDER: 'xai' }), {
+      messages: [],
+      _reasoningEffort: 'medium'
+    }),
+    {
+      messages: [],
+      model: 'grok-4.5',
+      reasoning_effort: 'medium'
+    }
+  );
+  assert.equal(
+    Object.hasOwn(
+      brainRequestOptions(resolveModelConfig({ AI_PROVIDER: 'xai' }), {
+        messages: [],
+        _reasoningEffort: 'medium'
+      }),
+      '_reasoningEffort'
+    ),
+    false
+  );
 });
 
 test('bureau-specific letter labels become concise client phases', () => {

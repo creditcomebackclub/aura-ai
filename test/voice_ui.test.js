@@ -221,6 +221,14 @@ test('voice path logs wall-clock TTFA marks in the browser console', () => {
   assert.match(app, /audioBitsPerSecond:\s*48000/);
 });
 
+test('chat routes adaptive reasoning and reports the selected effort', () => {
+  assert.match(server, /reasoningEffortForTurn\(text,/);
+  assert.match(server, /!usePrimaryModel && modelConfig\.routerModel/);
+  assert.match(server, /_reasoningEffort:\s*turnReasoningEffort/);
+  assert.match(server, /reasoning_effort:\s*turnReasoningEffort/);
+  assert.match(app, /reasoning \$\{event\.brain\.reasoning_effort\}/);
+});
+
 test('streamed voice uses connected TTS groups instead of resetting every sentence', () => {
   assert.match(app, /function enqueueSpeechAudio/);
   assert.match(server, /createSpeechChunkAccumulator\(onSentence\)/);
