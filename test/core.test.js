@@ -161,6 +161,26 @@ test('create_calendar_event is a validated reversible write', () => {
   assert.deepEqual(parsed.args.attendees, ['client@example.com']);
 });
 
+test('set_reminder validates a durable recurrence', () => {
+  assert.equal(getToolPolicy('set_reminder'), 'reversible_write');
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('set_reminder', {
+      message: 'Discussion post', when: 'Thursday at 9 AM', recurrence: 'sometimes'
+    })),
+    /once, daily, or weekly/
+  );
+  const parsed = parseAndAuthorizeToolCall(toolCall('set_reminder', {
+    message: 'Discussion post', when: 'Thursday at 9 AM', recurrence: 'weekly'
+  }));
+  assert.equal(parsed.args.recurrence, 'weekly');
+  assert.equal(getToolPolicy('get_reminders'), 'read');
+  assert.equal(getToolPolicy('cancel_reminder'), 'reversible_write');
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('cancel_reminder', { id: 'made-up' })),
+    /Reminder id/
+  );
+});
+
 test('send_email requires a valid recipient address, unlike the fixed-recipient owner tools', () => {
   // The asymmetry itself is the safety-relevant fact here: send_owner_email
   // and send_telegram_message deliberately have no recipient argument at all

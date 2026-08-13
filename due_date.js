@@ -60,6 +60,19 @@ function addLocalDays(parts, days, timeZone) {
   return endOfLocalDay(next.year, next.month, next.day, timeZone);
 }
 
+function parseClock(input) {
+  const value = String(input || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (value === 'noon') return { hour: 12, minute: 0 };
+  if (value === 'midnight') return { hour: 0, minute: 0 };
+  const match = value.match(/^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)$/);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  if (hour < 1 || hour > 12) return null;
+  if (match[3] === 'am') hour = hour === 12 ? 0 : hour;
+  else hour = hour === 12 ? 12 : hour + 12;
+  return { hour, minute: Number(match[2] || 0) };
+}
+
 function parseDueAt(input, { timeZone = 'America/Phoenix', now = new Date() } = {}) {
   if (input == null || input === '') return null;
   if (input instanceof Date && Number.isFinite(input.getTime())) return input.toISOString();
@@ -74,6 +87,39 @@ function parseDueAt(input, { timeZone = 'America/Phoenix', now = new Date() } = 
 
   const lower = raw.toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
   const parts = zonedParts(now, timeZone);
+
+  const timed = lower.replace(/^every\s+/, '').match(
+    /^(today|tomorrow|(?:next\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)|in\s+\d+\s+days?)\s+at\s+(\d{1,2}(?::[0-5]\d)?\s*(?:am|pm)|noon|midnight)$/
+  );
+  if (timed) {
+    const clock = parseClock(timed[2]);
+    if (!clock) return null;
+    const weekdayName = timed[1].toLowerCase();
+    const weekdayIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday);
+    if (!weekdayName.startsWith('next ') && Object.hasOwn(WEEKDAYS, weekdayName) &&
+        WEEKDAYS[weekdayName] === weekdayIndex) {
+      const todayAtTime = utcFromZoned(
+        parts.year,
+        parts.month,
+        parts.day,
+        clock.hour,
+        clock.minute,
+        timeZone
+      );
+      if (todayAtTime.getTime() > now.getTime()) return todayAtTime.toISOString();
+    }
+    const dateOnly = parseDueAt(timed[1], { timeZone, now });
+    if (!dateOnly) return null;
+    const target = zonedParts(new Date(dateOnly), timeZone);
+    return utcFromZoned(
+      target.year,
+      target.month,
+      target.day,
+      clock.hour,
+      clock.minute,
+      timeZone
+    ).toISOString();
+  }
 
   if (lower === 'today') {
     return endOfLocalDay(parts.year, parts.month, parts.day, timeZone).toISOString();
@@ -134,6 +180,7 @@ function formatDueLabel(dueAt, { timeZone = 'America/Phoenix', now = new Date() 
 
 module.exports = {
   parseDueAt,
+  parseClock,
   isDueToday,
   isOverdue,
   formatDueLabel,

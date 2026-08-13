@@ -44,6 +44,10 @@ uses Supabase Auth instead.
   reversible writes, or blocked.
 - Tool results, emails, webpages, database values, and memories are explicitly
   treated as untrusted data rather than agent instructions.
+- The live reply gate suppresses claims that an action was scheduled, sent,
+  saved, updated, or completed until the matching tool returns a successful
+  current-turn receipt. A failed external action is reported, never silently
+  retried by the correction pass.
 - Public web searches use a supported provider rather than scraping search-result
   HTML. Search calls have normal OpenAI model and web-tool usage costs.
 - Search is capped at two attempts per request, three provider tool calls per
@@ -242,7 +246,16 @@ enabling it does not replay old mail or events. Later runs surface:
   attendee matches a client;
 - goal connections, when a new email or calendar invitation involves someone
   tied to an open goal (see "Goal connections" below); and
-- due or recently overdue tasks.
+- due or recently overdue tasks; and
+- durable one-time, daily, or weekly reminders created with `set_reminder`.
+
+Reminders use the existing task ledger rather than a second scheduler table.
+They are persisted before AURA confirms them, delivered as normal AURA
+notifications, mirrored to Telegram when configured, and recurring reminders
+advance only after a durable notification receipt. A recurring reminder requires
+an owner-supplied clock time; AURA asks once rather than inventing one. The
+`get_reminders` and `cancel_reminder` tools make active reminders inspectable and
+reversibly stoppable by exact id.
 
 Routine email and task alerts are deferred during quiet hours (9:00 PM–7:00 AM
 Phoenix by default); urgent email and calendar cancellations still surface.

@@ -15,6 +15,9 @@ const TOOL_POLICIES = Object.freeze({
   search_web: 'read',
   list_deletable_test_letters: 'read',
   add_goal: 'reversible_write',
+  get_reminders: 'read',
+  set_reminder: 'reversible_write',
+  cancel_reminder: 'reversible_write',
   set_goal_plan: 'reversible_write',
   update_goal_step: 'reversible_write',
   update_goal_status: 'reversible_write',
@@ -225,6 +228,14 @@ function validateToolArguments(name, args) {
       }
     }
   }
+  if (name === 'set_reminder') {
+    requireString('message', 1000);
+    requireString('when', 120);
+    if (!['once', 'daily', 'weekly'].includes(args.recurrence)) {
+      throw new Error('Reminder recurrence must be once, daily, or weekly.');
+    }
+  }
+  if (name === 'cancel_reminder') requireGoalId(args.id, 'Reminder id');
   if (name === 'set_goal_plan') {
     if (args.id !== undefined && args.id !== null) requireGoalId(args.id);
     requireString('title', 1000);

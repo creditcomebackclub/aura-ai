@@ -41,6 +41,7 @@ const GOAL_WRITE_TOOL_NAMES = new Set([
   'update_goal_step',
   'update_goal_status'
 ]);
+const REMINDER_TOOL_NAMES = new Set(['get_reminders', 'set_reminder', 'cancel_reminder']);
 const BLACKBOARD_TOOL_NAMES = new Set(['check_blackboard']);
 const TELEGRAM_TOOL_NAMES = new Set(['send_telegram_message']);
 const WEB_SEARCH_TOOL_NAMES = new Set(['search_web']);
@@ -65,7 +66,7 @@ const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
 
 const OUTBOUND_EMAIL_KEYWORD_PATTERN = /\b(email|e-?mail|send)\b/i;
 const CALENDAR_WRITE_KEYWORD_PATTERN = /\b(schedule|scheduling|scheduled|book|booking|invite|invitation|calendar event|add (?:this |it |an? )?to (?:my )?calendar|put .+ on (?:my )?calendar|block off|hold on my calendar)\b/i;
-const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|plan|planning|milestone|search|remember|memory|profile|mail|consult|consultation|schedule|book|invite|skill|skills|procedure|workflow)\b/i;
+const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|plan|planning|milestone|search|remember|remind|reminder|memory|profile|mail|consult|consultation|schedule|book|invite|skill|skills|procedure|workflow)\b/i;
 const GOAL_KEYWORD_PATTERN = /\b(goal|goals|todo|to-?do|task|tasks|plan|planning|milestone|milestones|next action|prioriti[sz]e|what should (?:i|we) do next|what(?:'s| is) next|where should (?:i|we) start)\b/i;
 const BLACKBOARD_KEYWORD_PATTERN = /\b(blackboard|consult|consultation)\b/i;
 const TELEGRAM_KEYWORD_PATTERN = /\b(telegram|text (?:him|her|me|chris)|message (?:chris|me))\b/i;
@@ -79,6 +80,7 @@ const PERSONAL_FINANCE_KEYWORD_PATTERN = /\b(expense|expenses|spent|spending|bud
 const MEMORY_WRITE_KEYWORD_PATTERN = /\b(remember(?:\s+that|\s+this)?|save (?:this|that)|memorize)\b/i;
 const EMAIL_READ_KEYWORD_PATTERN = /\b(email(?:s|ed|ing)?|e-?mails?|inbox|mail|outreach)\b/i;
 const CALENDAR_READ_KEYWORD_PATTERN = /\b(calendar|schedule|meeting|meetings|appointment|agenda|am i free|what'?s on)\b/i;
+const REMINDER_KEYWORD_PATTERN = /\b(remind|reminder|check[- ]?in with me|nudge|prompt me)\b/i;
 const DAILY_PLATE_PATTERN = /\b(?:(?:what(?:['’]s| is)|whats)\s+on\s+my\s+plate(?:\s+today)?|what\s+does\s+my\s+plate\s+look\s+like(?:\s+today)?|(?:give|show|tell)\s+me\s+(?:today['’]?s|my)\s+(?:real\s+)?(?:agenda|plate|priorities)(?:\s+(?:for\s+today|and\s+deadlines))?)\b/i;
 
 // Embedding + in-process scan of up to 1000 memory rows is multi-second.
@@ -256,6 +258,9 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
       selected,
       needsDailyPlateTools ? GOAL_WRITE_TOOL_NAMES : GOAL_TOOL_NAMES
     );
+  }
+  if (!REMINDER_KEYWORD_PATTERN.test(combined)) {
+    selected = dropToolsByName(selected, REMINDER_TOOL_NAMES);
   }
   if (!BLACKBOARD_KEYWORD_PATTERN.test(combined) && !needsDailyPlateTools) {
     selected = dropToolsByName(selected, BLACKBOARD_TOOL_NAMES);

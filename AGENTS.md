@@ -102,6 +102,14 @@ atomically creates or revises the definition of done and ordered steps,
 `update_goal_step` records proven progress, and `goal_plans.js` deterministically
 selects one next action. Stored plan text is inert and never authorizes the
 external action it describes.
+Core also owns durable reminders in the same task ledger: `set_reminder` stores
+one-time/daily/weekly reminder metadata in `aura_tasks.input.reminder`, and the
+Executive Loop delivers due reminders through AURA's notification channel plus
+the configured Telegram mirror. `get_reminders` and `cancel_reminder` provide
+read/control lifecycle operations. Recurring reminders advance only after a durable
+notification receipt. The live reply gate suppresses unsupported completion
+claims across reminders and other write/action tools until a successful current-turn
+tool receipt exists.
 Assistant-message `brain.agent` metadata records which lens answered each model
 turn. New turns also record the requested/selected lens, registry outcome and
 resolution time, response-ready timing, model, reasoning effort, and tool
@@ -241,6 +249,7 @@ Mac companion tools.
 | Global tool authorization | `agent_policy.js` | Live; composed with specialist allowlist/risk checks |
 | Task-to-agent assignment | `aura_tasks.assigned_agent`, `supabase_state_store.js` | Core tasks are attributed; specialists are read-only |
 | Goal plan ledger + next-action selection | `goal_plans.js`, `aura_tasks.input.goal_plan`, `server.js` | Core-only internal planning; read at `GET /api/goals/plans` |
+| Durable reminders + completion receipts | `reminders.js`, `action_receipts.js`, `executive_loop.js`, `server.js` | Core-only; one-time/daily/weekly delivery through notifications and Telegram mirror |
 | Action-to-agent attribution | `aura_actions.agent_id`, `supabase_state_store.js` | Resolved active Core id is stamped by the tool handler |
 | Mac capability delegation (cloud → Mac) | `companion_client.js` (`CompanionClient.execute`) | Live |
 | Mac capability execution (on the Mac) | `companion_worker.js`, `mac_integration.js` | Live, runs as launchd service `com.aura.companion` |

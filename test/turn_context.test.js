@@ -35,6 +35,9 @@ const ALL_NAMES = [
   'set_goal_plan',
   'update_goal_step',
   'update_goal_status',
+  'set_reminder',
+  'get_reminders',
+  'cancel_reminder',
   'search_web',
   'send_telegram_message',
   'list_skills',
@@ -217,6 +220,21 @@ test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
   assert.equal(names.has('create_calendar_event'), true);
   assert.equal(names.has('check_calendar'), true);
   assert.equal(names.has('send_owner_email'), false);
+});
+
+test('selectToolsForTurn offers durable reminders only for reminder turns', () => {
+  const reminder = selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'Remind me every Thursday at 9 AM about my discussion post'
+  );
+  assert.equal(reminder.some(tool => tool.function.name === 'set_reminder'), true);
+  assert.equal(reminder.some(tool => tool.function.name === 'get_reminders'), true);
+  assert.equal(reminder.some(tool => tool.function.name === 'cancel_reminder'), true);
+
+  const greet = selectToolsForTurn(fakeTools(ALL_NAMES), 'Hey, what is up?');
+  assert.equal(greet.some(tool => tool.function.name === 'set_reminder'), false);
+  assert.equal(greet.some(tool => tool.function.name === 'get_reminders'), false);
+  assert.equal(greet.some(tool => tool.function.name === 'cancel_reminder'), false);
 });
 
 test('selectToolsForTurn treats whats on my plate as todays agenda', () => {
