@@ -58,7 +58,7 @@ const {
   formatFinancialMetricsPromptBlock,
   BUSINESS_INTEL_TOOL_NAMES
 } = require('./turn_context');
-const { createSentenceGate } = require('./reply_stream');
+const { createSentenceGate, extractTextToolCalls } = require('./reply_stream');
 const { CompanionClient } = require('./companion_client');
 const { SupabaseStateStore } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
@@ -709,13 +709,13 @@ function createBrainCompletion({ _traceLabel, ...requestOptions } = {}) {
 // a new performance at every comma or sentence boundary. If the model calls
 // tools instead, no sentence fires - tool-call content is not conversational
 // text.
-async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...requestOptions } = {}) {
+async function createBrainCompletionStreamed({ _traceLabel, onSentence, _signal, ...requestOptions } = {}) {
   const startedAtMs = Date.now();
   const options = brainRequestOptions(modelConfig, requestOptions);
-  const stream = await resolveBrainClient(options.model).chat.completions.create({
-    ...options,
-    stream: true
-  });
+  const stream = await resolveBrainClient(options.model).chat.completions.create(
+    { ...options, stream: true },
+    _signal ? { signal: _signal } : undefined
+  );
 
   let contentBuffer = '';
   let emittedLength = 0;
@@ -808,6 +808,48 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, ...reque
       first_delta_ms: firstDeltaAtMs
     }
   };
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error('AURA turn cancelled.');
+  error.name = 'AbortError';
+  throw error;
+}
+
+// Recover the narrow provider failure where a model prints structured tool
+// JSON as its entire text reply. Only tools offered on this turn AND governed
+// as ordinary reads are promotable. Writes, public web search, mixed prose,
+// and unknown names are never executed from text.
+function recoverTextToolCalls(response, turnTools, sentenceGate) {
+  const message = response?.choices?.[0]?.message;
+  if (!message || message.tool_calls?.length || typeof message.content !== 'string') return response;
+  const allowedToolNames = (turnTools || [])
+    .map(tool => tool?.function?.name)
+    .filter(name => name && isCapabilityCorrectionToolAllowed(name));
+  const recovered = extractTextToolCalls(message.content, { allowedToolNames });
+  if (!recovered.length) return response;
+
+  let remainder = message.content;
+  for (const call of recovered) remainder = remainder.replace(call.raw, '');
+  remainder = remainder
+    .replace(/`+/g, '')
+    .replace(/\b(?:json|arduino)\b/gi, '')
+    .trim();
+  if (remainder) return response;
+
+  console.warn('[tool protocol] recovered text tool calls:', recovered.map(call => call.name));
+  message.content = null;
+  message.tool_calls = recovered.map(call => ({
+    id: `recovered_${crypto.randomUUID()}`,
+    type: 'function',
+    function: {
+      name: call.name,
+      arguments: JSON.stringify(call.arguments || {})
+    }
+  }));
+  sentenceGate?.resetAfterToolRecovery?.();
+  return response;
 }
 
 function scheduleConversationSummary() {
@@ -1886,8 +1928,10 @@ async function correctFalseCapabilityDenial({
   turnTools,
   onSentence,
   evidence,
-  sentenceGate = null
+  sentenceGate = null,
+  signal = null
 }) {
+  throwIfAborted(signal);
   const availableToolNames = (turnTools || []).map(tool => tool?.function?.name).filter(Boolean);
   const denial = findFalseCapabilityDenial(reply, availableToolNames) ||
     sentenceGate?.getDenial?.() ||
@@ -1933,8 +1977,10 @@ async function correctFalseCapabilityDenial({
     tools: correctionTools,
     tool_choice: 'auto',
     onSentence: streamSentence,
+    _signal: signal,
     _traceLabel: 'capability correction'
   });
+  response = recoverTextToolCalls(response, correctionTools, sentenceGate);
 
   // Allow one short tool round so the correction can actually look the fact up
   // instead of only apologizing for the false denial.
@@ -1942,6 +1988,7 @@ async function correctFalseCapabilityDenial({
     const responseMessage = response.choices[0].message;
     chatHistory.push(responseMessage);
     for (const toolCall of responseMessage.tool_calls) {
+      throwIfAborted(signal);
       let functionResult;
       try {
         const toolName = toolCall?.function?.name;
@@ -1951,9 +1998,12 @@ async function correctFalseCapabilityDenial({
         functionResult = await handleToolCall(toolCall, {
           turn: conversationTurn,
           requestStartedAtMs: Date.now(),
-          userInstruction: ''
+          userInstruction: '',
+          signal
         });
+        throwIfAborted(signal);
       } catch (toolError) {
+        if (signal?.aborted || toolError?.name === 'AbortError') throw toolError;
         functionResult = JSON.stringify({
           tool: toolCall?.function?.name || 'unknown',
           ok: false,
@@ -1981,8 +2031,10 @@ async function correctFalseCapabilityDenial({
       tools: correctionTools,
       tool_choice: 'auto',
       onSentence: streamSentence,
+      _signal: signal,
       _traceLabel: `capability correction round ${round + 1}`
     });
+    response = recoverTextToolCalls(response, correctionTools, sentenceGate);
   }
 
   const corrected = response.choices[0].message.content || reply;
@@ -2050,6 +2102,7 @@ async function redeemStagedDeletion(letterId, requestStartedAtMs, ownerMessage) 
 }
 
 async function handleToolCall(toolCall, options = {}) {
+  throwIfAborted(options.signal);
   const { name, policy, args } = parseAndAuthorizeToolCall(toolCall);
   if (process.env.AURA_TOOL_TRACE) console.log('[tool]', name, JSON.stringify(args).slice(0,200));
   const turn = options.turn ?? conversationTurn;
@@ -2512,8 +2565,14 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
 // behavior to before streaming existed - the model calls still stream
 // internally, but nothing observes it mid-flight, so the returned value is
 // the same complete result either way.
-async function processOwnerText(text, { onSentence, isolated = false } = {}) {
+async function processOwnerText(text, {
+  onSentence,
+  isolated = false,
+  signal = null,
+  interruptedContext = ''
+} = {}) {
   {
+    throwIfAborted(signal);
     if (typeof text !== 'string' || !text.trim() || text.length > 10000) {
       throw new Error('Text must be between 1 and 10,000 characters.');
     }
@@ -2573,9 +2632,11 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         tools: turnTools,
         tool_choice: 'auto',
         onSentence: streamSentence,
+        _signal: signal,
         ...(modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
         _traceLabel: 'isolated round 0'
       });
+      response = recoverTextToolCalls(response, turnTools, sentenceGate);
       const evidence = [];
       const webSources = [];
       const webResults = [];
@@ -2588,6 +2649,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
           && !toolCalls.some(call => call?.function?.name === 'search_web');
 
         const runOne = async (toolCall) => {
+          throwIfAborted(signal);
           let functionResult;
           let webSearchUnitReserved = false;
           try {
@@ -2605,10 +2667,13 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             functionResult = await handleToolCall(toolCall, {
               turn: -1,
               requestStartedAtMs,
-              userInstruction: text
+              userInstruction: text,
+              signal
             });
+            throwIfAborted(signal);
           } catch (toolError) {
             if (webSearchUnitReserved) await settleWebSearchUsage(toolError?.billableSearches);
+            if (signal?.aborted || toolError?.name === 'AbortError') throw toolError;
             functionResult = JSON.stringify({
               tool: toolCall?.function?.name || 'unknown',
               ok: false,
@@ -2659,8 +2724,10 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
           tools: turnTools,
           tool_choice: 'auto',
           onSentence: streamSentence,
+          _signal: signal,
           _traceLabel: `isolated round ${round + 1}`
         });
+        response = recoverTextToolCalls(response, turnTools, sentenceGate);
       }
       if (response.choices[0].message.tool_calls) {
         chatHistory.push(response.choices[0].message);
@@ -2675,6 +2742,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         response = await createBrainCompletionStreamed({
           messages: chatHistory,
           onSentence: streamSentence,
+          _signal: signal,
           _traceLabel: 'isolated round cap exhausted'
         });
       }
@@ -2685,8 +2753,17 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         turnTools,
         onSentence: streamSentence,
         evidence,
-        sentenceGate
+        sentenceGate,
+        signal
       });
+      const isolatedProtocolLeak = sentenceGate.getProtocolLeak?.() ||
+        extractTextToolCalls(reply, { allowedToolNames: availableToolNames })[0];
+      if (isolatedProtocolLeak) {
+        reply = 'I hit a tool-routing error and stopped before giving you an unreliable answer. Please try that once more.';
+        sentenceGate.resetAfterToolRecovery?.();
+        streamSentence?.(reply);
+      }
+      throwIfAborted(signal);
       return {
         reply,
         evidence,
@@ -2719,6 +2796,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
     // Explicit memory commands are deterministic. They should not depend on a
     // model deciding whether to call a memory tool.
     if (memoryCommand) {
+      throwIfAborted(signal);
       await userMessagePromise;
       let reply;
       let commandResult;
@@ -2836,6 +2914,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       metricsPromise,
       beliefsPromise
     ]);
+    throwIfAborted(signal);
     const contextBuildMs = Date.now() - contextBuildStartedAtMs;
     if (process.env.AURA_TIMING_TRACE) {
       console.log(
@@ -2871,7 +2950,15 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       ? [...conversationContext.messages]
       : [];
     const lastMessage = messages[messages.length - 1];
-    if (!(lastMessage?.role === 'user' && lastMessage?.content === text)) {
+    const currentUserAlreadyPresent = lastMessage?.role === 'user' && lastMessage?.content === text;
+    if (interruptedContext) {
+      if (currentUserAlreadyPresent) messages.pop();
+      messages.push({
+        role: 'assistant',
+        content: `${interruptedContext}\n[This reply was interrupted by the owner before it finished.]`
+      });
+      messages.push({ role: 'user', content: text });
+    } else if (!currentUserAlreadyPresent) {
       messages.push({ role: 'user', content: text });
     }
     
@@ -2906,9 +2993,11 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       messages: chatHistory,
       ...(turnTools.length ? { tools: turnTools, tool_choice: 'auto' } : {}),
       onSentence: streamSentence,
+      _signal: signal,
       ...(modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
       _traceLabel: 'round 0'
     });
+    response = recoverTextToolCalls(response, turnTools, sentenceGate);
     // Prefer the first content delta across rounds (tool-only round 0 has none).
     let firstDeltaMs = response._timing?.first_delta_ms ?? null;
 
@@ -2945,6 +3034,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       const parallelOk = toolCalls.length > 1 && !roundToolNames.has('search_web');
 
       const runOneTool = async (toolCall) => {
+        throwIfAborted(signal);
         let functionResult;
         let webSearchUnitReserved = false;
         let forceToolFree = false;
@@ -2998,13 +3088,15 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             await dailyWebSearchLimiter.consume();
             webSearchUnitReserved = true;
             const toolStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
-            functionResult = await handleToolCall(toolCall, { publicSearchInput, turn: requestTurn, requestStartedAtMs });
+            functionResult = await handleToolCall(toolCall, { publicSearchInput, turn: requestTurn, requestStartedAtMs, signal });
+            throwIfAborted(signal);
             if (process.env.AURA_TIMING_TRACE) {
               console.log(`[timing] tool ${toolName}: ${Date.now() - toolStartedAtMs}ms`);
             }
           } else {
             const toolStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
-            functionResult = await handleToolCall(toolCall, { turn: requestTurn, requestStartedAtMs, userInstruction: text });
+            functionResult = await handleToolCall(toolCall, { turn: requestTurn, requestStartedAtMs, userInstruction: text, signal });
+            throwIfAborted(signal);
             if (process.env.AURA_TIMING_TRACE) {
               console.log(`[timing] tool ${toolName}: ${Date.now() - toolStartedAtMs}ms`);
             }
@@ -3016,6 +3108,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             webSearchBilledSearches += Number.isFinite(billed) ? Math.max(0, Math.trunc(billed)) : 1;
             await settleWebSearchUsage(toolError?.billableSearches);
           }
+          if (signal?.aborted || toolError?.name === 'AbortError') throw toolError;
           console.error(`[Tool ${toolCall?.function?.name || 'unknown'}]`, {
             code: toolError.code || 'TOOL_ERROR',
             status: toolError.status || toolError.cause?.status || null,
@@ -3084,6 +3177,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
         ? await createBrainCompletionStreamed({
             messages: chatHistory,
             onSentence: streamSentence,
+            _signal: signal,
             _traceLabel: `round ${round + 1} (forced tool-free)`
           })
         : await createBrainCompletionStreamed({
@@ -3091,8 +3185,12 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
             tools: turnTools,
             tool_choice: 'auto',
             onSentence: streamSentence,
+            _signal: signal,
             _traceLabel: `round ${round + 1}`
           });
+      if (!forceToolFreeAnswer) {
+        response = recoverTextToolCalls(response, turnTools, sentenceGate);
+      }
       if (firstDeltaMs == null && response._timing?.first_delta_ms != null) {
         firstDeltaMs = response._timing.first_delta_ms;
       }
@@ -3113,6 +3211,7 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       response = await createBrainCompletionStreamed({
         messages: chatHistory,
         onSentence: streamSentence,
+        _signal: signal,
         _traceLabel: 'round cap exhausted'
       });
     }
@@ -3124,11 +3223,21 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
       turnTools,
       onSentence: streamSentence,
       evidence,
-      sentenceGate
+      sentenceGate,
+      signal
     });
+    throwIfAborted(signal);
+    const leakedFinalCalls = extractTextToolCalls(reply, { allowedToolNames: availableToolNames });
+    if (leakedFinalCalls.length || sentenceGate.getProtocolLeak?.()) {
+      console.warn('[tool protocol] blocked unrecovered text tool reply');
+      reply = 'I hit a tool-routing error and stopped before giving you an unreliable answer. Please try that once more.';
+      sentenceGate.resetAfterToolRecovery?.();
+      streamSentence?.(reply);
+    }
     // Extraction enqueue was kicked off earlier; only need the job id before
     // we stamp it on the assistant row (not before the model starts).
     const memoryJob = await memoryJobPromise.catch(() => null);
+    throwIfAborted(signal);
     const assistantMessage = await addConversationMessage('assistant', reply, {
       evidence,
       brain: { model: chatModel, reasoning_effort: reasoningEffort },
@@ -3207,8 +3316,34 @@ async function processOwnerText(text, { onSentence, isolated = false } = {}) {
 // any sentence has streamed (headers not yet switched to NDJSON); once
 // streaming has started, a later failure is reported as an NDJSON `error`
 // event instead, since the response is already committed to that shape.
+const activeChatTurns = new Map();
+
+app.post('/api/chat/cancel', (req, res) => {
+  const turnId = typeof req.body?.turn_id === 'string' ? req.body.turn_id.trim() : '';
+  if (!/^[A-Za-z0-9_-]{8,100}$/.test(turnId)) {
+    return res.status(400).json({ error: 'A valid turn_id is required.' });
+  }
+  const controller = activeChatTurns.get(turnId);
+  if (controller && !controller.signal.aborted) controller.abort();
+  return res.json({ cancelled: Boolean(controller) });
+});
+
 app.post('/api/chat', async (req, res) => {
   let streamStarted = false;
+  const suppliedTurnId = typeof req.body?.turn_id === 'string' ? req.body.turn_id.trim() : '';
+  const turnId = /^[A-Za-z0-9_-]{8,100}$/.test(suppliedTurnId)
+    ? suppliedTurnId
+    : crypto.randomUUID();
+  if (activeChatTurns.has(turnId)) {
+    return res.status(409).json({ error: 'That chat turn is already active.' });
+  }
+  const turnController = new AbortController();
+  activeChatTurns.set(turnId, turnController);
+  const abortTurn = () => turnController.abort();
+  req.once('aborted', abortTurn);
+  res.once('close', () => {
+    if (!res.writableEnded) abortTurn();
+  });
   const routeStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
   let firstSentenceLogged = false;
   const startStream = () => {
@@ -3220,7 +3355,12 @@ app.post('/api/chat', async (req, res) => {
   try {
     const result = await processOwnerText(req.body.text, {
       isolated: req.body.eval === true,
+      signal: turnController.signal,
+      interruptedContext: typeof req.body?.interrupted_reply === 'string'
+        ? req.body.interrupted_reply.trim().slice(0, 2000)
+        : '',
       onSentence: sentence => {
+        throwIfAborted(turnController.signal);
         startStream();
         if (process.env.AURA_TIMING_TRACE && !firstSentenceLogged) {
           firstSentenceLogged = true;
@@ -3233,6 +3373,10 @@ app.post('/api/chat', async (req, res) => {
     res.write(JSON.stringify({ type: 'done', ...result }) + '\n');
     res.end();
   } catch (error) {
+    if (turnController.signal.aborted || error?.name === 'AbortError') {
+      if (!res.writableEnded && !res.destroyed) res.end();
+      return;
+    }
     console.error('Error in /api/chat:', error);
     if (streamStarted) {
       res.write(JSON.stringify({ type: 'error', error: error.message }) + '\n');
@@ -3240,6 +3384,9 @@ app.post('/api/chat', async (req, res) => {
     } else {
       res.status(500).json({ error: error.message });
     }
+  } finally {
+    if (activeChatTurns.get(turnId) === turnController) activeChatTurns.delete(turnId);
+    req.off('aborted', abortTurn);
   }
 });
 

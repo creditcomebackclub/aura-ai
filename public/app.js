@@ -347,6 +347,32 @@ let streamPartialHandler = null;
 let streamErrorHandler = null;
 let streamEndpointAt = null;
 
+// Conversation-mode barge-in capture. This is deliberately separate from
+// ordinary listening: it watches only while AURA audio is actually playing,
+// keeps a short pre-roll, and hands that same microphone route to Deepgram
+// when Chris speaks over her.
+const BARGE_IN_GRACE_MS = 650;
+const BARGE_IN_SUSTAIN_MS = 320;
+const BARGE_IN_GAP_TOLERANCE_MS = 140;
+const BARGE_IN_PRE_ROLL_SAMPLES = 3200; // 200ms at 16kHz
+const BARGE_IN_CAPTURE_MAX_SAMPLES = 64000; // preserve up to 4s through handoff
+const BARGE_IN_MIN_RMS = 0.03;
+let bargeInActive = false;
+let bargeInTriggered = false;
+let bargeInMedia = null;
+let bargeInAudioCtx = null;
+let bargeInSource = null;
+let bargeInProcessor = null;
+let bargeInMute = null;
+let bargeInStartedAt = 0;
+let bargeInVoiceStartedAt = 0;
+let bargeInVoiceLastAboveAt = 0;
+let bargeInNoiseFloor = 0.008;
+let bargeInPreRoll = [];
+let bargeInPreRollSamples = 0;
+let bargeInUtterancePcm = [];
+let bargeInUtteranceSamples = 0;
+
 // True from the moment a recording is handed off to processAudio() until
 // its reply (or error) is fully resolved. Guards against a second tap
 // during a slow request (e.g. a cold Render boot) starting an overlapping
@@ -367,6 +393,10 @@ let currentAudioUrl = null;
 let playbackCancelled = false;
 // Aborts in-flight transcribe/chat/TTS fetches when Chris barges in.
 let turnAbortController = null;
+let activeChatTurnId = null;
+let currentStreamedReplyParts = [];
+let pendingInterruptedReply = '';
+let preserveBargeInOnNextCancel = false;
 // Idle "hey Aura" wake listener (Web Speech). Created after startListening exists.
 let wakeListener = null;
 
@@ -374,10 +404,31 @@ let wakeListener = null;
 // abort network work, and drop the speech queue so a barge-in can't get
 // overwritten by a stale reply that finishes later.
 function cancelActiveTurn() {
+  const preserveBargeInMonitor = preserveBargeInOnNextCancel;
+  preserveBargeInOnNextCancel = false;
   playbackCancelled = true;
   currentTurn += 1;
   isProcessing = false;
   stopWakeListening();
+  showSearchEvidence([], []);
+  resetVoiceQueue();
+  if (!preserveBargeInMonitor) stopBargeInMonitor();
+  const cancelledChatTurnId = activeChatTurnId;
+  if (cancelledChatTurnId && currentStreamedReplyParts.length) {
+    pendingInterruptedReply = currentStreamedReplyParts.join(' ').slice(0, 2000);
+  }
+  currentStreamedReplyParts = [];
+  activeChatTurnId = null;
+  if (cancelledChatTurnId) {
+    // Do not attach this to turnAbortController: the cancellation request has
+    // to survive the local fetch abort long enough to stop server-side model
+    // work and prevent a partial assistant reply from being persisted.
+    authenticatedFetch('/api/chat/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ turn_id: cancelledChatTurnId })
+    }).catch(() => {});
+  }
   if (streamListenActive) {
     discardNextRecording = true;
     requestStreamStop();
@@ -394,10 +445,8 @@ function cancelActiveTurn() {
   audioPlayer.pause();
   audioPlayer.currentTime = 0;
   releaseAudioUrl();
-  resetVoiceQueue();
   isSpeaking = false;
   stopVoiceWave();
-  showSearchEvidence([], []);
   hideTranscript();
 }
 
@@ -406,6 +455,11 @@ function cancelActiveTurn() {
 function stopSpeaking() {
   cancelActiveTurn();
   setOrbState('idle', idleStatusText());
+}
+
+function createChatTurnId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `turn_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
 }
 
 // State Management
@@ -1058,6 +1112,7 @@ function setConversationMode(on) {
   syncConversationToggle();
   if (!on) {
     wakeListener?.stop?.();
+    stopBargeInMonitor();
   }
   if (!isListening && !isSpeaking && !isProcessing) {
     setOrbState('idle', idleStatusText());
@@ -1435,20 +1490,20 @@ function enqueueSpeechAudio(text, isFirst, timing = null, signal = null) {
     if (playbackCancelled || signal?.aborted || generation !== voiceGeneration) return;
 
     const sampleRate = Number(response.headers.get('X-Aura-Sample-Rate')) || 24000;
-    const onPlayStart = isFirst && timing
+    const onPlayStart = isFirst
       ? () => {
-        timing.ttsMs = Math.round(performance.now() - ttsStartedAt);
-        timing.ttfaMs = Math.round(performance.now() - timing.t0);
-        console.log(
-          `[timing] TTFA ${timing.ttfaMs}ms` +
-          ` (stt ${timing.sttMs ?? timing.whisperMs ?? '?'}ms` +
-          `, first_sentence ${timing.firstSentenceMs ?? '?'}ms` +
-          `, tts ${timing.ttsMs ?? '?'}ms)`
-        );
-      }
-      : (isFirst
-        ? () => { /* orb already speaking */ }
-        : null);
+          startBargeInMonitor();
+          if (!timing) return;
+          timing.ttsMs = Math.round(performance.now() - ttsStartedAt);
+          timing.ttfaMs = Math.round(performance.now() - timing.t0);
+          console.log(
+            `[timing] TTFA ${timing.ttfaMs}ms` +
+            ` (stt ${timing.sttMs ?? timing.whisperMs ?? '?'}ms` +
+            `, first_sentence ${timing.firstSentenceMs ?? '?'}ms` +
+            `, tts ${timing.ttsMs ?? '?'}ms)`
+          );
+        }
+      : null;
 
     try {
       if (response.body && typeof response.body.getReader === 'function') {
@@ -1459,7 +1514,7 @@ function enqueueSpeechAudio(text, isFirst, timing = null, signal = null) {
         if (timing && isFirst) {
           timing.ttsMs = Math.round(performance.now() - ttsStartedAt);
         }
-        await playBlobAndWait(blob, { onPlayStart: isFirst && timing ? onPlayStart : null });
+        await playBlobAndWait(blob, { onPlayStart });
       }
     } catch (error) {
       if (error?.name === 'AbortError' || playbackCancelled) return;
@@ -1475,6 +1530,7 @@ function finishVoiceQueue() {
   const generation = voiceGeneration;
   voiceQueueTail = voiceQueueTail.then(async () => {
     if (playbackCancelled || generation !== voiceGeneration) return;
+    await stopBargeInMonitor();
     isSpeaking = false;
     stopVoiceWave();
     releaseAudioUrl();
@@ -1692,11 +1748,15 @@ function requestStreamStop() {
   try { socket.emit('stt:stop'); } catch { /* ignore */ }
 }
 
-async function attachPcmCapture(audioCtx, mediaStream) {
+async function attachPcmCapture(audioCtx, mediaStream, onSamples = null) {
   const source = audioCtx.createMediaStreamSource(mediaStream);
   const mute = audioCtx.createGain();
   mute.gain.value = 0;
   const emitPcm = float32 => {
+    if (typeof onSamples === 'function') {
+      onSamples(float32);
+      return;
+    }
     if (!streamListenActive || !isListening) return;
     updateMicrophoneEnergyFromSamples(float32);
     const down = downsampleFloat32(float32, audioCtx.sampleRate, DEEPGRAM_STREAM_SAMPLE_RATE);
@@ -1750,7 +1810,176 @@ async function attachPcmCapture(audioCtx, mediaStream) {
   return { source, processor, mute };
 }
 
-async function startStreamingListen({ fromConversation = false } = {}) {
+function pcmRms(samples) {
+  if (!samples?.length) return 0;
+  let sum = 0;
+  for (let index = 0; index < samples.length; index += 4) {
+    const sample = samples[index];
+    sum += sample * sample;
+  }
+  return Math.sqrt(sum / Math.max(1, Math.ceil(samples.length / 4)));
+}
+
+function rememberBargeInPcm(float32, sampleRate) {
+  const downsampled = downsampleFloat32(float32, sampleRate, DEEPGRAM_STREAM_SAMPLE_RATE);
+  const pcm = floatTo16BitPCM(downsampled);
+  if (!pcm.length) return null;
+  bargeInPreRoll.push(pcm);
+  bargeInPreRollSamples += pcm.length;
+  while (bargeInPreRollSamples > BARGE_IN_PRE_ROLL_SAMPLES && bargeInPreRoll.length > 1) {
+    const removed = bargeInPreRoll.shift();
+    bargeInPreRollSamples -= removed.length;
+  }
+  return pcm;
+}
+
+function appendBargeInUtterancePcm(pcm) {
+  if (!pcm?.length || bargeInUtteranceSamples >= BARGE_IN_CAPTURE_MAX_SAMPLES) return;
+  const remaining = BARGE_IN_CAPTURE_MAX_SAMPLES - bargeInUtteranceSamples;
+  const kept = pcm.length > remaining ? pcm.slice(0, remaining) : new Int16Array(pcm);
+  bargeInUtterancePcm.push(kept);
+  bargeInUtteranceSamples += kept.length;
+}
+
+function beginBargeInUtterance() {
+  bargeInUtterancePcm = bargeInPreRoll.map(chunk => new Int16Array(chunk));
+  bargeInUtteranceSamples = bargeInUtterancePcm.reduce((total, chunk) => total + chunk.length, 0);
+}
+
+async function stopBargeInMonitor({ preserveMedia = false } = {}) {
+  const media = bargeInMedia;
+  try { bargeInProcessor?.disconnect(); } catch { /* ignore */ }
+  try { bargeInSource?.disconnect(); } catch { /* ignore */ }
+  try { bargeInMute?.disconnect(); } catch { /* ignore */ }
+  bargeInProcessor = null;
+  bargeInSource = null;
+  bargeInMute = null;
+  if (media && !preserveMedia) media.getTracks().forEach(track => track.stop());
+  if (bargeInAudioCtx) {
+    try { await bargeInAudioCtx.close(); } catch { /* ignore */ }
+    bargeInAudioCtx = null;
+  }
+  bargeInMedia = null;
+  bargeInActive = false;
+  if (!preserveMedia) {
+    bargeInTriggered = false;
+    bargeInPreRoll = [];
+    bargeInPreRollSamples = 0;
+    bargeInUtterancePcm = [];
+    bargeInUtteranceSamples = 0;
+  }
+  return media;
+}
+
+async function triggerVoiceBargeIn() {
+  if (!bargeInActive || bargeInTriggered || !bargeInMedia) return;
+  bargeInTriggered = true;
+  const preservedMedia = bargeInMedia;
+  const readInterruption = () => {
+    const captured = bargeInUtterancePcm.length ? bargeInUtterancePcm : bargeInPreRoll;
+    return captured.map(chunk => new Int16Array(chunk));
+  };
+  console.log(`[barge-in] triggered with ${Math.round(bargeInUtteranceSamples / 16)}ms captured`);
+  preserveBargeInOnNextCancel = true;
+  cancelActiveTurn();
+  setOrbState('listening', 'Listening...');
+  try {
+    await startStreamingListen({
+      fromConversation: true,
+      existingMedia: preservedMedia,
+      initialPcmProvider: readInterruption
+    });
+  } catch (error) {
+    await stopBargeInMonitor();
+    preservedMedia.getTracks().forEach(track => track.stop());
+    console.warn('Voice barge-in handoff failed:', error.message || error);
+    setOrbState('idle', idleStatusText());
+  }
+}
+
+async function startBargeInMonitor() {
+  if (!isConversationMode() || !sttStreamingEnabled || !isSpeaking || isListening || bargeInActive) return;
+  try {
+    bargeInMedia = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: false,
+        channelCount: 1
+      }
+    });
+    if (!isConversationMode() || !isSpeaking || playbackCancelled) {
+      await stopBargeInMonitor();
+      return;
+    }
+    bargeInAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (bargeInAudioCtx.state === 'suspended') await bargeInAudioCtx.resume().catch(() => {});
+    bargeInStartedAt = performance.now();
+    bargeInVoiceStartedAt = 0;
+    bargeInVoiceLastAboveAt = 0;
+    bargeInNoiseFloor = 0.008;
+    bargeInPreRoll = [];
+    bargeInPreRollSamples = 0;
+    bargeInUtterancePcm = [];
+    bargeInUtteranceSamples = 0;
+    bargeInTriggered = false;
+    bargeInActive = true;
+    const capture = await attachPcmCapture(bargeInAudioCtx, bargeInMedia, samples => {
+      if (!bargeInActive) return;
+      const pcm = rememberBargeInPcm(samples, bargeInAudioCtx.sampleRate);
+      if (bargeInTriggered) {
+        appendBargeInUtterancePcm(pcm);
+        return;
+      }
+      const now = performance.now();
+      const rms = pcmRms(samples);
+      const elapsed = now - bargeInStartedAt;
+      if (elapsed < BARGE_IN_GRACE_MS) {
+        bargeInNoiseFloor = bargeInNoiseFloor * 0.9 + rms * 0.1;
+        return;
+      }
+      const threshold = Math.max(
+        BARGE_IN_MIN_RMS,
+        bargeInNoiseFloor * 2.8,
+        waveformEnergy * 0.06
+      );
+      if (rms >= threshold) {
+        if (!bargeInVoiceStartedAt) {
+          bargeInVoiceStartedAt = now;
+          beginBargeInUtterance();
+        } else {
+          appendBargeInUtterancePcm(pcm);
+        }
+        bargeInVoiceLastAboveAt = now;
+        if (now - bargeInVoiceStartedAt >= BARGE_IN_SUSTAIN_MS) triggerVoiceBargeIn();
+      } else if (
+        bargeInVoiceStartedAt &&
+        now - bargeInVoiceLastAboveAt <= BARGE_IN_GAP_TOLERANCE_MS
+      ) {
+        appendBargeInUtterancePcm(pcm);
+        if (now - bargeInVoiceStartedAt >= BARGE_IN_SUSTAIN_MS) triggerVoiceBargeIn();
+      } else {
+        bargeInVoiceStartedAt = 0;
+        bargeInVoiceLastAboveAt = 0;
+        bargeInUtterancePcm = [];
+        bargeInUtteranceSamples = 0;
+        bargeInNoiseFloor = bargeInNoiseFloor * 0.985 + rms * 0.015;
+      }
+    });
+    bargeInSource = capture.source;
+    bargeInProcessor = capture.processor;
+    bargeInMute = capture.mute;
+  } catch (error) {
+    await stopBargeInMonitor();
+    console.warn('[barge-in] microphone monitor unavailable:', error.message || error);
+  }
+}
+
+async function startStreamingListen({
+  fromConversation = false,
+  existingMedia = null,
+  initialPcmProvider = null
+} = {}) {
   stopWakeListening();
   discardNextRecording = false;
   listeningFromConversation = fromConversation;
@@ -1780,8 +2009,13 @@ async function startStreamingListen({ fromConversation = false } = {}) {
   });
 
   try {
-    streamMedia = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
+    streamMedia = existingMedia || await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: false,
+        channelCount: 1
+      }
     });
     await ready;
 
@@ -1794,7 +2028,13 @@ async function startStreamingListen({ fromConversation = false } = {}) {
     streamProcessor = capture.processor;
     streamMute = capture.mute;
 
+    // Keep the old monitor capturing until the new Deepgram socket and audio
+    // graph are ready, then hand over its final 500ms so “wait—” survives.
+    const initialPcm = typeof initialPcmProvider === 'function' ? initialPcmProvider() : [];
+    if (existingMedia) await stopBargeInMonitor({ preserveMedia: true });
+
     isListening = true;
+    for (const chunk of initialPcm) socket.emit('stt:audio', chunk.buffer);
     setOrbState(
       'listening',
       fromConversation || isConversationMode()
@@ -1875,6 +2115,7 @@ async function startStreamingListen({ fromConversation = false } = {}) {
     detachStreamSocketHandlers();
     clearStreamTimers();
     isListening = false;
+    if (existingMedia) await stopBargeInMonitor();
     await teardownStreamCapture();
     console.warn('[stt] streaming start failed, using batch:', error.message || error);
     await startListeningBatch({ fromConversation });
@@ -2006,6 +2247,7 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
   isProcessing = true;
   const myTurn = ++currentTurn;
   const timing = { t0: performance.now(), sttMs, whisperMs: sttMs, streamed };
+  let chatTurnId = null;
   const stale = () => myTurn !== currentTurn || signal.aborted;
   try {
     console.log('User:', transcript);
@@ -2018,10 +2260,19 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
 
     setOrbState('thinking', 'Thinking...');
     const chatStartedAt = performance.now();
+    chatTurnId = createChatTurnId();
+    activeChatTurnId = chatTurnId;
+    currentStreamedReplyParts = [];
+    const interruptedReply = pendingInterruptedReply;
+    pendingInterruptedReply = '';
     const chatRes = await authenticatedFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: transcript }),
+      body: JSON.stringify({
+        text: transcript,
+        turn_id: chatTurnId,
+        ...(interruptedReply ? { interrupted_reply: interruptedReply } : {})
+      }),
       signal
     });
 
@@ -2051,6 +2302,7 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
         const event = JSON.parse(line);
         if (event.type === 'sentence') {
           if (stale()) continue;
+          currentStreamedReplyParts.push(event.text);
           speechChunkCount += 1;
           if (speechChunkCount === 1) {
             timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
@@ -2103,6 +2355,7 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
       maybeStartWakeListening();
     }, 3000);
   } finally {
+    if (activeChatTurnId === chatTurnId) activeChatTurnId = null;
     if (myTurn === currentTurn) {
       isProcessing = false;
       turnAbortController = null;
@@ -2127,6 +2380,7 @@ async function processAudio(audioBlob) {
   // Wall-clock voice latency marks: mic-stop → first audible audio.
   // Open the browser console on a live turn to read `[timing] TTFA …`.
   const timing = { t0: performance.now() };
+  let chatTurnId = null;
   // True once this turn has been superseded (a newer tap started, or this
   // one errored out) - any UI write after that point is a stale reply and
   // must be dropped instead of displayed/spoken.
@@ -2165,10 +2419,19 @@ async function processAudio(audioBlob) {
     // `done` event. The opening sentence begins TTS while the rest of the
     // reply is still being generated; later groups preserve voice continuity.
     const chatStartedAt = performance.now();
+    chatTurnId = createChatTurnId();
+    activeChatTurnId = chatTurnId;
+    currentStreamedReplyParts = [];
+    const interruptedReply = pendingInterruptedReply;
+    pendingInterruptedReply = '';
     const chatRes = await authenticatedFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: transcript }),
+      body: JSON.stringify({
+        text: transcript,
+        turn_id: chatTurnId,
+        ...(interruptedReply ? { interrupted_reply: interruptedReply } : {})
+      }),
       signal
     });
 
@@ -2202,6 +2465,7 @@ async function processAudio(audioBlob) {
         const event = JSON.parse(line);
         if (event.type === 'sentence') {
           if (stale()) continue;
+          currentStreamedReplyParts.push(event.text);
           speechChunkCount += 1;
           if (speechChunkCount === 1) {
             timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
@@ -2268,6 +2532,7 @@ async function processAudio(audioBlob) {
       maybeStartWakeListening();
     }, 3000);
   } finally {
+    if (activeChatTurnId === chatTurnId) activeChatTurnId = null;
     // Only the live turn clears the processing lock — a cancelled turn's
     // finally must not unlock while a newer barge-in turn is running.
     if (myTurn === currentTurn) {
@@ -2300,6 +2565,7 @@ wakeListener = window.AuraWakeWord?.createWakeWordListener({
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     stopWakeListening();
+    stopBargeInMonitor();
     return;
   }
   if (!isListening && !isSpeaking && !isProcessing) {

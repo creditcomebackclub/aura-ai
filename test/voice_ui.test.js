@@ -261,3 +261,32 @@ test('Deepgram streaming listen path is wired', () => {
   assert.match(server, /speech_final/);
   assert.match(server, /utterance_end/);
 });
+
+test('conversation mode supports voice barge-in with preroll and server cancellation', () => {
+  assert.match(app, /BARGE_IN_SUSTAIN_MS = 320/);
+  assert.match(app, /BARGE_IN_GAP_TOLERANCE_MS = 140/);
+  assert.match(app, /BARGE_IN_PRE_ROLL_SAMPLES = 3200/);
+  assert.match(app, /BARGE_IN_CAPTURE_MAX_SAMPLES = 64000/);
+  assert.match(app, /function beginBargeInUtterance/);
+  assert.match(app, /appendBargeInUtterancePcm/);
+  assert.match(app, /async function startBargeInMonitor/);
+  assert.match(app, /async function triggerVoiceBargeIn/);
+  assert.match(app, /echoCancellation: true/);
+  assert.match(app, /noiseSuppression: true/);
+  assert.match(app, /autoGainControl: false/);
+  assert.match(app, /existingMedia: preservedMedia/);
+  assert.match(app, /initialPcmProvider: readInterruption/);
+  assert.match(app, /startBargeInMonitor\(\)/);
+  assert.match(app, /\/api\/chat\/cancel/);
+  assert.match(app, /interrupted_reply/);
+  assert.match(server, /app\.post\('\/api\/chat\/cancel'/);
+  assert.match(server, /activeChatTurns/);
+  assert.match(server, /interruptedContext/);
+});
+
+test('server blocks text tool protocol from speech and promotes only safe reads', () => {
+  assert.match(server, /recoverTextToolCalls/);
+  assert.match(server, /isCapabilityCorrectionToolAllowed/);
+  assert.match(server, /blocked unrecovered text tool reply/);
+  assert.match(server, /_signal \? \{ signal: _signal \}/);
+});
