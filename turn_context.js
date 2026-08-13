@@ -28,6 +28,7 @@ const CALENDAR_WRITE_TOOL_NAMES = new Set([
 ]);
 
 const GOAL_TOOL_NAMES = new Set(['get_goals', 'add_goal', 'update_goal_status']);
+const GOAL_WRITE_TOOL_NAMES = new Set(['add_goal', 'update_goal_status']);
 const BLACKBOARD_TOOL_NAMES = new Set(['check_blackboard']);
 const TELEGRAM_TOOL_NAMES = new Set(['send_telegram_message']);
 const WEB_SEARCH_TOOL_NAMES = new Set(['search_web']);
@@ -62,6 +63,7 @@ const PERSONAL_FINANCE_KEYWORD_PATTERN = /\b(expense|expenses|spent|spending|bud
 const MEMORY_WRITE_KEYWORD_PATTERN = /\b(remember(?:\s+that|\s+this)?|save (?:this|that)|memorize)\b/i;
 const EMAIL_READ_KEYWORD_PATTERN = /\b(email|e-?mail|inbox|mail)\b/i;
 const CALENDAR_READ_KEYWORD_PATTERN = /\b(calendar|schedule|meeting|meetings|appointment|agenda|am i free|what'?s on)\b/i;
+const DAILY_PLATE_PATTERN = /\b(?:what(?:['’]s| is)|whats)\s+on\s+my\s+plate(?:\s+today)?\b/i;
 
 // Embedding + in-process scan of up to 1000 memory rows is multi-second.
 // Only pay that when the turn actually asks for long-term recall.
@@ -224,6 +226,7 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
   }
   const needsEmailTools = OUTBOUND_EMAIL_KEYWORD_PATTERN.test(combined);
   const needsCalendarWriteTools = CALENDAR_WRITE_KEYWORD_PATTERN.test(combined);
+  const needsDailyPlateTools = DAILY_PLATE_PATTERN.test(combined);
   if (!needsEmailTools) {
     selected = dropToolsByName(selected, OUTBOUND_EMAIL_TOOL_NAMES);
   }
@@ -233,9 +236,12 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
   // Keyword-gate the always-on noise tools. Shipping 14+ schemas on every
   // turn costs TTFT and tempts silent tool rounds before speech.
   if (!GOAL_KEYWORD_PATTERN.test(combined)) {
-    selected = dropToolsByName(selected, GOAL_TOOL_NAMES);
+    selected = dropToolsByName(
+      selected,
+      needsDailyPlateTools ? GOAL_WRITE_TOOL_NAMES : GOAL_TOOL_NAMES
+    );
   }
-  if (!BLACKBOARD_KEYWORD_PATTERN.test(combined)) {
+  if (!BLACKBOARD_KEYWORD_PATTERN.test(combined) && !needsDailyPlateTools) {
     selected = dropToolsByName(selected, BLACKBOARD_TOOL_NAMES);
   }
   if (!TELEGRAM_KEYWORD_PATTERN.test(combined)) {
@@ -256,7 +262,8 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
   if (!EMAIL_READ_KEYWORD_PATTERN.test(combined)) {
     selected = dropToolsByName(selected, EMAIL_READ_TOOL_NAMES);
   }
-  if (!CALENDAR_READ_KEYWORD_PATTERN.test(combined) && !needsCalendarWriteTools) {
+  if (!CALENDAR_READ_KEYWORD_PATTERN.test(combined) &&
+      !needsCalendarWriteTools && !needsDailyPlateTools) {
     selected = dropToolsByName(selected, CALENDAR_READ_TOOL_NAMES);
   }
   return selected;

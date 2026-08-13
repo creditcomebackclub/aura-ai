@@ -90,7 +90,14 @@ Specialists are read-only. They never execute actions or create tasks. Core writ
 chat-created goals and Executive Loop commitments with
 `assigned_agent = 'aura_core'`, and stamps the resolved Core id on audited actions.
 Assistant-message `brain.agent` metadata records which lens answered each model
-turn.
+turn. New turns also record the requested/selected lens, registry outcome and
+resolution time, response-ready timing, model, reasoning effort, and tool
+success evidence. `GET /api/agents/telemetry` aggregates those fields without
+returning owner text or tool payloads. It reports per-agent volume/latency,
+fallbacks, failures, and any specialist evidence outside the built-in read-only
+allowlist. Fewer than 20 organic specialist turns is explicitly
+`insufficient_specialist_data`; telemetry never authorizes write expansion on
+its own.
 
 ---
 
@@ -214,6 +221,7 @@ Mac companion tools.
 |---|---|---|
 | Persona registry (`aura_core`, `client_operations`, `finance`) | `supabase_aura_brain.sql`, `supabase_deletion_log.sql`, `supabase_state_store.js` | Live for specialist configuration |
 | Turn router + specialist enforcement | `agent_router.js`, `server.js` | Live; deterministic, one model loop, Core fallback |
+| Specialist routing telemetry | `agent_telemetry.js`, `server.js`, assistant `brain` metadata | Read-only; authenticated at `GET /api/agents/telemetry` |
 | Global tool authorization | `agent_policy.js` | Live; composed with specialist allowlist/risk checks |
 | Task-to-agent assignment | `aura_tasks.assigned_agent`, `supabase_state_store.js` | Core tasks are attributed; specialists are read-only |
 | Action-to-agent attribution | `aura_actions.agent_id`, `supabase_state_store.js` | Resolved active Core id is stamped by the tool handler |
@@ -224,7 +232,9 @@ Mac companion tools.
 ## Open questions / needs verification
 
 - Whether future specialists should be allowed reversible writes. The current
-  router deliberately hard-falls action-oriented turns back to Core.
+  router deliberately hard-falls action-oriented turns back to Core. Review at
+  least 20 organic specialist turns in `/api/agents/telemetry` first; a healthy
+  read-only baseline still requires manual safety review before any expansion.
 - Whether a second Mac (a second `target_device` value) is planned — nothing in
   the current configuration or code suggests one is running today; this needs
   verification with the owner if it becomes relevant.

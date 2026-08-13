@@ -172,6 +172,20 @@ test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
   assert.equal(names.has('send_owner_email'), false);
 });
 
+test('selectToolsForTurn treats whats on my plate as todays agenda', () => {
+  const selected = selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'What is on my plate today?'
+  );
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('get_goals'), true);
+  assert.equal(names.has('add_goal'), false);
+  assert.equal(names.has('update_goal_status'), false);
+  assert.equal(names.has('check_calendar'), true);
+  assert.equal(names.has('check_blackboard'), true);
+  assert.equal(names.has('check_email'), false);
+});
+
 test('selectToolsForTurn drops calendar write tools on plain chit-chat', () => {
   const selected = selectToolsForTurn(fakeTools(ALL_NAMES), "Hey, what's up?");
   const names = new Set(selected.map(tool => tool.function.name));

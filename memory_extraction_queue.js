@@ -132,6 +132,16 @@ class DurableMemoryExtractionQueue {
           error.code = 'MEMORY_MESSAGE_MISSING';
           throw error;
         }
+        if (message.metadata?.turn_status === 'cancelled') {
+          const completed = await this.stateStore.completeMemoryExtraction(job, {
+            learnedCount: 0,
+            confirmationCount: 0,
+            skipped: 'cancelled_turn'
+          });
+          if (completed) stats.succeeded += 1;
+          else stats.lease_lost += 1;
+          continue;
+        }
         const result = await this.memory.learnFromUserMessage(message.content, {
           source: 'conversation',
           throwOnExtractionError: true
