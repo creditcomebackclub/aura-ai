@@ -2,13 +2,15 @@
 
 const { resolveDeepgramModel, DEEPGRAM_KEYTERMS } = require('./stt_provider');
 
-const DEFAULT_ENDPOINTING_MS = 400;
+const DEFAULT_ENDPOINTING_MS = 700;
 const DEFAULT_UTTERANCE_END_MS = 1800;
 const DEFAULT_SAMPLE_RATE = 16000;
 
 function resolveDeepgramEndpointingMs(env = process.env) {
   const n = Number(env.AURA_DEEPGRAM_ENDPOINTING_MS);
-  return Number.isFinite(n) && n >= 10 ? Math.trunc(n) : DEFAULT_ENDPOINTING_MS;
+  // Values below 600ms reintroduce the brief-pause cutoff this setting exists
+  // to prevent. Keep an operator override, but fail safe to the 700ms default.
+  return Number.isFinite(n) && n >= 600 ? Math.trunc(n) : DEFAULT_ENDPOINTING_MS;
 }
 
 function resolveDeepgramUtteranceEndMs(env = process.env) {
@@ -42,6 +44,11 @@ function extractLiveTranscript(message) {
   return text;
 }
 
+function extractLiveConfidence(message) {
+  const confidence = Number(message?.channel?.alternatives?.[0]?.confidence);
+  return Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0;
+}
+
 function classifyDeepgramLiveMessage(raw) {
   let message;
   try {
@@ -55,6 +62,7 @@ function classifyDeepgramLiveMessage(raw) {
     return {
       kind: 'results',
       transcript,
+      confidence: extractLiveConfidence(message),
       isFinal: message.is_final === true,
       speechFinal: message.speech_final === true,
       message
@@ -92,6 +100,7 @@ module.exports = {
   resolveDeepgramEndpointingMs,
   resolveDeepgramUtteranceEndMs,
   buildDeepgramLiveUrl,
+  extractLiveConfidence,
   extractLiveTranscript,
   classifyDeepgramLiveMessage,
   deepgramStreamingAvailable

@@ -210,6 +210,40 @@ const authenticatedFetch = async (url, options = {}) => {
   return response;
 };
 
+// Audio diagnostics contain signal measurements only: never PCM, transcripts,
+// device labels, or other microphone content. Keep the client budget low so a
+// noisy room cannot turn diagnostics into request spam.
+function recordVadDiagnostic(kind, phase, metrics = {}) {
+  const now = Date.now();
+  const key = `${kind}:${phase}`;
+  const previous = vadDiagnosticLastAt.get(key) || 0;
+  if (vadDiagnosticCount >= 16 || now - previous < 1000) return;
+  vadDiagnosticCount += 1;
+  vadDiagnosticLastAt.set(key, now);
+  const payload = {
+    kind,
+    phase,
+    level: Number(metrics.rms) || 0,
+    confidence: Number(metrics.confidence) || 0,
+    noise_floor: Number(metrics.noiseFloor) || 0,
+    duration_ms: Math.max(0, Math.round(Number(metrics.durationMs) || 0)),
+    occurred_at: new Date(now).toISOString(),
+    reason: String(metrics.reason || '').slice(0, 40)
+  };
+  console.info('[audio-vad]', payload);
+  authenticatedFetch('/api/audio/vad-events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    keepalive: true
+  }).catch(() => {});
+}
+
+function rememberVoiceFinal(reason) {
+  lastVoiceFinalizedAt = Date.now();
+  lastVoiceFinalReason = String(reason || 'unknown').slice(0, 40);
+}
+
 completeLinkCallback();
 pollPendingLogin();
 
@@ -279,22 +313,25 @@ const PLAYBACK_VOLUME_LEVELS = {
   medium: 1.7,
   high: 2.25
 };
-// Give natural pauses more room before the batch fallback submits a long
-// thought. Deepgram's streaming endpointing remains independently fixed at
-// 400ms; this only affects the local RMS fallback path.
-const SILENCE_HANGOVER_MS = 750;
-const MIN_UTTERANCE_MS = 350;
+// Give natural pauses room before either local fallback path submits a turn.
+// Deepgram streaming uses the matching 700ms endpointing value server-side.
+const SILENCE_HANGOVER_MS = 700;
 const MAX_UTTERANCE_MS = 60000;
 const STREAM_MAX_UTTERANCE_MS = 60000;
 const DEEPGRAM_STREAM_SAMPLE_RATE = 16000;
 // If the mic arms after her reply and nobody speaks, drop back to idle
 // instead of holding the mic open until MAX_UTTERANCE_MS.
 const NO_SPEECH_IDLE_MS = 8000;
-// Ignore the first beat after arming so speaker bleed / room echo from her
-// last sentence doesn't look like the start of Chris's reply.
-const LISTEN_ARM_GRACE_MS = 500;
-const SPEECH_RMS_START = 0.028;
-const SPEECH_RMS_CONTINUE = 0.014;
+// Calibrate the local room floor before accepting speech. The adaptive VAD
+// then applies a 220ms confidence window and separate start/continue gates.
+const LISTEN_ARM_GRACE_MS = 650;
+const SPEECH_CONFIDENCE_WINDOW_MS = 220;
+const { buildProcessedAudioConstraints, createAdaptiveVad } = window.AuraAudioVad;
+
+function processedMicrophoneConstraints() {
+  const supported = navigator.mediaDevices?.getSupportedConstraints?.() || null;
+  return buildProcessedAudioConstraints(supported);
+}
 
 let isListening = false;
 let isSpeaking = false;
@@ -352,8 +389,8 @@ let streamEndpointAt = null;
 // keeps a short pre-roll, and hands that same microphone route to Deepgram
 // when Chris speaks over her.
 const BARGE_IN_GRACE_MS = 650;
-const BARGE_IN_SUSTAIN_MS = 320;
-const BARGE_IN_GAP_TOLERANCE_MS = 140;
+const BARGE_IN_SUSTAIN_MS = 220;
+const BARGE_IN_GAP_TOLERANCE_MS = 120;
 const BARGE_IN_PRE_ROLL_SAMPLES = 3200; // 200ms at 16kHz
 const BARGE_IN_CAPTURE_MAX_SAMPLES = 64000; // preserve up to 4s through handoff
 const BARGE_IN_MIN_RMS = 0.03;
@@ -364,10 +401,8 @@ let bargeInAudioCtx = null;
 let bargeInSource = null;
 let bargeInProcessor = null;
 let bargeInMute = null;
-let bargeInStartedAt = 0;
-let bargeInVoiceStartedAt = 0;
-let bargeInVoiceLastAboveAt = 0;
 let bargeInNoiseFloor = 0.008;
+let bargeInVad = null;
 let bargeInPreRoll = [];
 let bargeInPreRollSamples = 0;
 let bargeInUtterancePcm = [];
@@ -397,6 +432,10 @@ let activeChatTurnId = null;
 let currentStreamedReplyParts = [];
 let pendingInterruptedReply = '';
 let preserveBargeInOnNextCancel = false;
+let lastVoiceFinalizedAt = 0;
+let lastVoiceFinalReason = '';
+let vadDiagnosticCount = 0;
+const vadDiagnosticLastAt = new Map();
 // Idle "hey Aura" wake listener (Web Speech). Created after startListening exists.
 let wakeListener = null;
 
@@ -1203,10 +1242,15 @@ function armSilenceAutoStop(stream, { autoStop = true } = {}) {
   analyser.fftSize = 2048;
   source.connect(analyser);
   const samples = new Uint8Array(analyser.fftSize);
+  const normalizedSamples = new Float32Array(analyser.fftSize);
   const startedAt = Date.now();
   let heardSpeech = false;
-  let silenceStartedAt = null;
   let lastAnalysisAt = 0;
+  const adaptiveVad = createAdaptiveVad({
+    calibrationMs: LISTEN_ARM_GRACE_MS,
+    startWindowMs: SPEECH_CONFIDENCE_WINDOW_MS,
+    hangoverMs: SILENCE_HANGOVER_MS
+  });
 
   const tick = (timestamp = performance.now()) => {
     if (!isListening || !mediaRecorder || mediaRecorder.state === 'inactive') {
@@ -1222,11 +1266,21 @@ function armSilenceAutoStop(stream, { autoStop = true } = {}) {
     let sum = 0;
     for (let i = 0; i < samples.length; i++) {
       const v = (samples[i] - 128) / 128;
+      normalizedSamples[i] = v;
       sum += v * v;
     }
     const rms = Math.sqrt(sum / samples.length);
     updateMicrophoneEnergy(rms);
     const elapsed = Date.now() - startedAt;
+    const decision = adaptiveVad.process(normalizedSamples, timestamp, {
+      sampleRate: ctx.sampleRate
+    });
+    if (decision.event === 'false_start') {
+      recordVadDiagnostic('false_start', 'batch', decision);
+    }
+    if (decision.event === 'speech_start' || decision.state === 'speech') {
+      heardSpeech = true;
+    }
     if (autoStop && !heardSpeech && elapsed >= NO_SPEECH_IDLE_MS) {
       cancelListeningToIdle();
       return;
@@ -1235,20 +1289,10 @@ function armSilenceAutoStop(stream, { autoStop = true } = {}) {
       stopListening();
       return;
     }
-    // Skip RMS speech detection during the arming grace window so residual
-    // speaker bleed from her last sentence doesn't trip heardSpeech.
-    if (autoStop && elapsed >= LISTEN_ARM_GRACE_MS) {
-      const threshold = heardSpeech ? SPEECH_RMS_CONTINUE : SPEECH_RMS_START;
-      if (rms >= threshold) {
-        heardSpeech = true;
-        silenceStartedAt = null;
-      } else if (heardSpeech && elapsed >= MIN_UTTERANCE_MS) {
-        if (!silenceStartedAt) silenceStartedAt = Date.now();
-        else if (Date.now() - silenceStartedAt >= SILENCE_HANGOVER_MS) {
-          stopListening();
-          return;
-        }
-      }
+    if (autoStop && decision.event === 'speech_end') {
+      rememberVoiceFinal('local_hangover');
+      stopListening();
+      return;
     }
     silenceWatchFrame = requestAnimationFrame(tick);
   };
@@ -1810,16 +1854,6 @@ async function attachPcmCapture(audioCtx, mediaStream, onSamples = null) {
   return { source, processor, mute };
 }
 
-function pcmRms(samples) {
-  if (!samples?.length) return 0;
-  let sum = 0;
-  for (let index = 0; index < samples.length; index += 4) {
-    const sample = samples[index];
-    sum += sample * sample;
-  }
-  return Math.sqrt(sum / Math.max(1, Math.ceil(samples.length / 4)));
-}
-
 function rememberBargeInPcm(float32, sampleRate) {
   const downsampled = downsampleFloat32(float32, sampleRate, DEEPGRAM_STREAM_SAMPLE_RATE);
   const pcm = floatTo16BitPCM(downsampled);
@@ -1861,6 +1895,7 @@ async function stopBargeInMonitor({ preserveMedia = false } = {}) {
   }
   bargeInMedia = null;
   bargeInActive = false;
+  bargeInVad = null;
   if (!preserveMedia) {
     bargeInTriggered = false;
     bargeInPreRoll = [];
@@ -1871,7 +1906,7 @@ async function stopBargeInMonitor({ preserveMedia = false } = {}) {
   return media;
 }
 
-async function triggerVoiceBargeIn() {
+async function triggerVoiceBargeIn(vadMetrics = {}) {
   if (!bargeInActive || bargeInTriggered || !bargeInMedia) return;
   bargeInTriggered = true;
   const preservedMedia = bargeInMedia;
@@ -1880,6 +1915,14 @@ async function triggerVoiceBargeIn() {
     return captured.map(chunk => new Int16Array(chunk));
   };
   console.log(`[barge-in] triggered with ${Math.round(bargeInUtteranceSamples / 16)}ms captured`);
+  const sinceFinalMs = lastVoiceFinalizedAt ? Date.now() - lastVoiceFinalizedAt : Infinity;
+  if (sinceFinalMs <= 5000) {
+    recordVadDiagnostic('suspected_false_cutoff', 'barge_in', {
+      ...vadMetrics,
+      durationMs: sinceFinalMs,
+      reason: lastVoiceFinalReason
+    });
+  }
   preserveBargeInOnNextCancel = true;
   cancelActiveTurn();
   setOrbState('listening', 'Listening...');
@@ -1901,12 +1944,7 @@ async function startBargeInMonitor() {
   if (!isConversationMode() || !sttStreamingEnabled || !isSpeaking || isListening || bargeInActive) return;
   try {
     bargeInMedia = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: false,
-        channelCount: 1
-      }
+      audio: processedMicrophoneConstraints()
     });
     if (!isConversationMode() || !isSpeaking || playbackCancelled) {
       await stopBargeInMonitor();
@@ -1914,10 +1952,14 @@ async function startBargeInMonitor() {
     }
     bargeInAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (bargeInAudioCtx.state === 'suspended') await bargeInAudioCtx.resume().catch(() => {});
-    bargeInStartedAt = performance.now();
-    bargeInVoiceStartedAt = 0;
-    bargeInVoiceLastAboveAt = 0;
     bargeInNoiseFloor = 0.008;
+    bargeInVad = createAdaptiveVad({
+      calibrationMs: BARGE_IN_GRACE_MS,
+      startWindowMs: BARGE_IN_SUSTAIN_MS,
+      gapToleranceMs: BARGE_IN_GAP_TOLERANCE_MS,
+      minStartRms: BARGE_IN_MIN_RMS,
+      initialNoiseFloor: bargeInNoiseFloor
+    });
     bargeInPreRoll = [];
     bargeInPreRollSamples = 0;
     bargeInUtterancePcm = [];
@@ -1932,38 +1974,28 @@ async function startBargeInMonitor() {
         return;
       }
       const now = performance.now();
-      const rms = pcmRms(samples);
-      const elapsed = now - bargeInStartedAt;
-      if (elapsed < BARGE_IN_GRACE_MS) {
-        bargeInNoiseFloor = bargeInNoiseFloor * 0.9 + rms * 0.1;
-        return;
-      }
-      const threshold = Math.max(
-        BARGE_IN_MIN_RMS,
-        bargeInNoiseFloor * 2.8,
-        waveformEnergy * 0.06
-      );
-      if (rms >= threshold) {
-        if (!bargeInVoiceStartedAt) {
-          bargeInVoiceStartedAt = now;
-          beginBargeInUtterance();
-        } else {
-          appendBargeInUtterancePcm(pcm);
-        }
-        bargeInVoiceLastAboveAt = now;
-        if (now - bargeInVoiceStartedAt >= BARGE_IN_SUSTAIN_MS) triggerVoiceBargeIn();
-      } else if (
-        bargeInVoiceStartedAt &&
-        now - bargeInVoiceLastAboveAt <= BARGE_IN_GAP_TOLERANCE_MS
-      ) {
-        appendBargeInUtterancePcm(pcm);
-        if (now - bargeInVoiceStartedAt >= BARGE_IN_SUSTAIN_MS) triggerVoiceBargeIn();
-      } else {
-        bargeInVoiceStartedAt = 0;
-        bargeInVoiceLastAboveAt = 0;
+      const decision = bargeInVad.process(samples, now, {
+        sampleRate: bargeInAudioCtx.sampleRate,
+        // Playback energy is an extra echo guard on top of WebRTC AEC.
+        minimumStartRms: Math.max(BARGE_IN_MIN_RMS, waveformEnergy * 0.06)
+      });
+      bargeInNoiseFloor = decision.noiseFloor;
+      if (decision.event === 'candidate') {
+        if (!bargeInUtterancePcm.length) beginBargeInUtterance();
+        else appendBargeInUtterancePcm(pcm);
+      } else if (decision.event === 'speech_start') {
+        if (!bargeInUtterancePcm.length) beginBargeInUtterance();
+        else appendBargeInUtterancePcm(pcm);
+        triggerVoiceBargeIn(decision);
+      } else if (decision.event === 'false_start') {
+        recordVadDiagnostic('false_start', 'barge_in', decision);
         bargeInUtterancePcm = [];
         bargeInUtteranceSamples = 0;
-        bargeInNoiseFloor = bargeInNoiseFloor * 0.985 + rms * 0.015;
+      } else if (decision.state === 'candidate') {
+        appendBargeInUtterancePcm(pcm);
+      } else if (decision.event === 'idle') {
+        bargeInUtterancePcm = [];
+        bargeInUtteranceSamples = 0;
       }
     });
     bargeInSource = capture.source;
@@ -2010,12 +2042,7 @@ async function startStreamingListen({
 
   try {
     streamMedia = existingMedia || await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: false,
-        channelCount: 1
-      }
+      audio: processedMicrophoneConstraints()
     });
     await ready;
 
@@ -2080,6 +2107,7 @@ async function startStreamingListen({
         maybeStartWakeListening();
         return;
       }
+      rememberVoiceFinal(payload?.reason || 'stream_final');
       setOrbState('thinking', 'Thinking...');
       await processTranscript(transcript, { sttMs, streamed: true });
     };
@@ -2140,7 +2168,9 @@ async function startListeningBatch({ fromConversation = false } = {}) {
   showSearchEvidence([], []);
   hideTranscript();
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: processedMicrophoneConstraints()
+    });
 
     // Safari prefers audio/mp4, Chrome prefers audio/webm
     let mimeType = 'audio/webm';

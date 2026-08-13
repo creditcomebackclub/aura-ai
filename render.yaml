@@ -26,7 +26,7 @@ services:
       - key: AURA_DEEPGRAM_MODEL
         value: nova-3
       - key: AURA_DEEPGRAM_ENDPOINTING_MS
-        value: "400"
+        value: "700"
       - key: AURA_DEEPGRAM_UTTERANCE_END_MS
         value: "1800"
       - key: DEEPGRAM_API_KEY
