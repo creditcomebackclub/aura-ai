@@ -46,9 +46,9 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Ship Phase 7A goal planning.** Deploy the atomic plan ledger, deterministic portfolio-wide
-  next action, Core-only planning tools, authenticated `/api/goals/plans`, and morning-brief next
-  moves; then create the owner's first real strategic plans through AURA.
+- **Ship Phase 8A routine-brief latency fix.** Keep cross-domain status aggregation at low
+  reasoning while preserving medium reasoning for explicit analysis/strategy/decisions. Local
+  production-model reproduction improved from 13.4s to 7.8–9.1s with correct tools.
 
 ## Blocked
 
@@ -66,6 +66,8 @@ Name exactly what's needed and from whom.*
 
 - Goal connections were production-baselined: the authenticated index and ledger endpoints are
   healthy, and both are correctly empty while the owner has no open tasks.
+- Phase 7A goal planning merged in #36: atomic multi-step plans, deterministic portfolio-wide next
+  action, Core-only planning tools, `/api/goals/plans`, and morning-brief next moves.
 - Response-baseline follow-up deployed in #35: cancelled turns no longer enter context/learning,
   daily-plate reads calendar/goals/Blackboard, and privacy-bounded agent telemetry is live.
 - Relationship Memory MVP is deployed and verified without a migration. Three `people.*` entries
