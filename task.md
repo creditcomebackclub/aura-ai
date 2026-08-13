@@ -46,9 +46,9 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Ship Phase 8A routine-brief latency fix.** Keep cross-domain status aggregation at low
-  reasoning while preserving medium reasoning for explicit analysis/strategy/decisions. Local
-  production-model reproduction improved from 13.4s to 7.8–9.1s with correct tools.
+- **Ship Phase 8B phase-timing telemetry.** Persist privacy-bounded per-tool and per-model-round
+  durations in existing assistant metadata, then aggregate them at `/api/agents/telemetry` so
+  production latency can be attributed without storing prompts or tool payloads.
 
 ## Blocked
 
@@ -66,6 +66,9 @@ Name exactly what's needed and from whom.*
 
 - Goal connections were production-baselined: the authenticated index and ledger endpoints are
   healthy, and both are correctly empty while the owner has no open tasks.
+- Phase 8A merged in #37: routine cross-domain briefings stay at low reasoning while explicit
+  analysis/strategy/decision turns still raise effort; local production-model reproduction
+  improved from 13.4s to 7.8–9.1s with the correct tools.
 - Phase 7A goal planning merged in #36: atomic multi-step plans, deterministic portfolio-wide next
   action, Core-only planning tools, `/api/goals/plans`, and morning-brief next moves.
 - Response-baseline follow-up deployed in #35: cancelled turns no longer enter context/learning,

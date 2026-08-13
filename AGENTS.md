@@ -97,10 +97,13 @@ external action it describes.
 Assistant-message `brain.agent` metadata records which lens answered each model
 turn. New turns also record the requested/selected lens, registry outcome and
 resolution time, response-ready timing, model, reasoning effort, and tool
-success evidence. `GET /api/agents/telemetry` aggregates those fields without
-returning owner text or tool payloads. It reports per-agent volume/latency,
-fallbacks, failures, and any specialist evidence outside the built-in read-only
-allowlist. Fewer than 20 organic specialist turns is explicitly
+success evidence. Tool evidence includes execution duration and round number;
+`brain.timing.model_rounds` records duration, first-delta timing, fixed phase,
+round, and model id. `GET /api/agents/telemetry` aggregates those fields without
+returning owner text, model input, tool arguments, or tool results. It reports
+per-agent volume/latency, per-tool and per-model-phase latency, fallbacks,
+failures, and any specialist evidence outside the built-in read-only allowlist.
+Fewer than 20 organic specialist turns is explicitly
 `insufficient_specialist_data`; telemetry never authorizes write expansion on
 its own.
 
