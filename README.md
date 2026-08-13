@@ -481,6 +481,7 @@ deletions retain their separate approval gate.
 
 - `server.js` — HTTP/WebSocket server, agent loop, tools, cron jobs
 - `agent_router.js` — Core/Client Operations/Finance routing and least-privilege enforcement
+- `agent_telemetry.js` — privacy-bounded specialist volume, latency, failure, and allowlist summaries
 - `executive_loop.js` — proactive inbox/calendar/meeting/commitment monitoring
 - `entity_extraction.js` — canonical organization/domain/person extraction
 - `entity_graph.js` — links a signal to profile people and CCC client records

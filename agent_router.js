@@ -147,11 +147,17 @@ function createAgentRegistryResolver({
   let registry = initialRegistry;
   let expiresAt = 0;
   let refresh = null;
+  let resolverStatus = {
+    last_refresh_status: 'not_loaded',
+    last_refresh_ms: null,
+    refreshed_at: null
+  };
 
-  return async function getAgentRegistry() {
+  async function getAgentRegistry() {
     if (now() < expiresAt) return registry;
     if (refresh) return refresh;
 
+    const refreshStartedAtMs = Date.now();
     const source = Promise.resolve()
       .then(load)
       .then(
@@ -168,6 +174,11 @@ function createAgentRegistryResolver({
     const currentRefresh = Promise.race([source, timeout])
       .then(outcome => {
         clearTimeout(timeoutId);
+        resolverStatus = {
+          last_refresh_status: outcome.status,
+          last_refresh_ms: Date.now() - refreshStartedAtMs,
+          refreshed_at: new Date(now()).toISOString()
+        };
         if (outcome.status === 'succeeded') {
           registry = mergeAgentRegistry(outcome.rows, { fallbackMissing: false });
           expiresAt = now() + boundedSuccessTtlMs;
@@ -185,7 +196,9 @@ function createAgentRegistryResolver({
       });
     refresh = currentRefresh;
     return currentRefresh;
-  };
+  }
+  getAgentRegistry.status = () => ({ ...resolverStatus });
+  return getAgentRegistry;
 }
 
 module.exports = {

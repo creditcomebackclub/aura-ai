@@ -227,6 +227,8 @@ test('chat routes adaptive reasoning and reports the selected effort', () => {
   assert.match(server, /_reasoningEffort:\s*turnReasoningEffort/);
   assert.match(server, /reasoning_effort:\s*turnReasoningEffort/);
   assert.match(app, /reasoning \$\{event\.brain\.reasoning_effort\}/);
+  assert.match(server, /app\.get\('\/api\/agents\/telemetry'/);
+  assert.match(server, /response_ready_ms/);
 });
 
 test('uncertain durable preferences require a scoped natural confirmation', () => {
@@ -298,6 +300,8 @@ test('conversation mode supports voice barge-in with preroll and server cancella
   assert.match(server, /app\.post\('\/api\/chat\/cancel'/);
   assert.match(server, /activeChatTurns/);
   assert.match(server, /interruptedContext/);
+  assert.match(server, /markConversationMessageCancelled/);
+  assert.match(server, /onUserMessagePersisted/);
 });
 
 test('server blocks text tool protocol from speech and promotes only safe reads', () => {

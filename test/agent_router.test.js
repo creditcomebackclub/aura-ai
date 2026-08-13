@@ -77,6 +77,8 @@ test('registry lookup times out to safe defaults and backs off', async () => {
   assert.ok(Date.now() - startedAt < 500);
   assert.equal(loads, 1);
   assert.match(warnings[0], /timed out after 50ms/);
+  assert.equal(getRegistry.status().last_refresh_status, 'timed_out');
+  assert.equal(typeof getRegistry.status().last_refresh_ms, 'number');
 
   now = 500;
   await getRegistry();
@@ -94,4 +96,5 @@ test('registry lookup coalesces concurrent refreshes', async () => {
   });
   await Promise.all([getRegistry(), getRegistry(), getRegistry()]);
   assert.equal(loads, 1);
+  assert.equal(getRegistry.status().last_refresh_status, 'succeeded');
 });

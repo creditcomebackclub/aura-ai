@@ -2,6 +2,18 @@ const { createClient } = require('@supabase/supabase-js');
 
 const MEMORY_EXTRACTION_JOB_PREFIX = 'memory_extraction_job_v1:';
 const ACTIVE_MEMORY_JOB_STATUSES = ['queued', 'retry_wait', 'processing'];
+const CANCELLED_TURN_STATUS = 'cancelled';
+
+function isCancelledConversationMessage(message) {
+  return message?.metadata?.turn_status === CANCELLED_TURN_STATUS;
+}
+
+function visibleConversationMessages(messages, limit = 15) {
+  const bounded = Math.max(1, Math.min(200, Number(limit) || 15));
+  return (Array.isArray(messages) ? messages : [])
+    .filter(message => !isCancelledConversationMessage(message))
+    .slice(-bounded);
+}
 
 function memoryExtractionJobFromRow(row) {
   if (!row?.key?.startsWith(MEMORY_EXTRACTION_JOB_PREFIX) ||
@@ -86,17 +98,48 @@ class SupabaseStateStore {
     return data;
   }
 
-  async recentMessages(limit = 15) {
-    const conversationId = await this.ensureConversation();
+  async markMessageCancelled(id, { turnId = null, reason = 'owner_interrupted' } = {}) {
+    const { data: current, error: currentError } = await this.client
+      .from('aura_messages')
+      .select('id, metadata')
+      .eq('owner_id', this.ownerId)
+      .eq('id', id)
+      .eq('role', 'user')
+      .maybeSingle();
+    if (currentError) throw currentError;
+    if (!current) return null;
+    const metadata = {
+      ...(current.metadata || {}),
+      turn_status: CANCELLED_TURN_STATUS,
+      cancellation_reason: reason,
+      cancelled_at: new Date().toISOString(),
+      ...(turnId ? { turn_id: turnId } : {})
+    };
     const { data, error } = await this.client
       .from('aura_messages')
-      .select('role, content, created_at')
+      .update({ metadata })
+      .eq('owner_id', this.ownerId)
+      .eq('id', id)
+      .eq('role', 'user')
+      .select('id, metadata')
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async recentMessages(limit = 15) {
+    const conversationId = await this.ensureConversation();
+    const bounded = Math.max(1, Math.min(200, Number(limit) || 15));
+    const { data, error } = await this.client
+      .from('aura_messages')
+      .select('role, content, metadata, created_at')
       .eq('conversation_id', conversationId)
       .in('role', ['user', 'assistant'])
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .limit(Math.min(200, bounded * 4));
     if (error) throw error;
-    return (data || []).reverse().map(({ role, content }) => ({ role, content }));
+    return visibleConversationMessages((data || []).reverse(), bounded)
+      .map(({ role, content }) => ({ role, content }));
   }
 
   async getConversationContext(limit = 30) {
@@ -131,7 +174,7 @@ class SupabaseStateStore {
 
     let query = this.client
       .from('aura_messages')
-      .select('id, role, content, created_at')
+      .select('id, role, content, metadata, created_at')
       .eq('conversation_id', conversationId)
       .in('role', ['user', 'assistant'])
       .order('id', { ascending: true })
@@ -143,7 +186,8 @@ class SupabaseStateStore {
     return {
       existingSummary: conversation?.summary || '',
       summarizedThrough,
-      messages: data || []
+      messages: visibleConversationMessages(data || [], limit)
+        .map(({ metadata, ...message }) => message)
     };
   }
 
@@ -476,6 +520,20 @@ class SupabaseStateStore {
     return data || [];
   }
 
+  async listAgentTelemetryMessages(limit = 500) {
+    const conversationId = await this.ensureConversation();
+    const bounded = Math.max(1, Math.min(1000, Number(limit) || 500));
+    const { data, error } = await this.client.from('aura_messages')
+      .select('id, metadata, created_at')
+      .eq('owner_id', this.ownerId)
+      .eq('conversation_id', conversationId)
+      .eq('role', 'assistant')
+      .order('created_at', { ascending: false })
+      .limit(bounded);
+    if (error) throw error;
+    return data || [];
+  }
+
   async acknowledgeNotification(id) {
     const { error, count } = await this.client.from('aura_notifications')
       .update({ acknowledged_at: new Date().toISOString() }, { count: 'exact' })
@@ -630,7 +688,7 @@ class SupabaseStateStore {
 
   async getMessageForMemoryExtraction(messageId) {
     const { data, error } = await this.client.from('aura_messages')
-      .select('id, role, content, created_at')
+      .select('id, role, content, metadata, created_at')
       .eq('owner_id', this.ownerId)
       .eq('id', messageId)
       .maybeSingle();
@@ -873,9 +931,12 @@ class SupabaseStateStore {
 }
 
 module.exports = {
+  CANCELLED_TURN_STATUS,
   MEMORY_EXTRACTION_JOB_PREFIX,
   SupabaseStateStore,
+  isCancelledConversationMessage,
   isMemoryExtractionJobDue,
   memoryExtractionJobFromRow,
-  nextRowTimestamp
+  nextRowTimestamp,
+  visibleConversationMessages
 };

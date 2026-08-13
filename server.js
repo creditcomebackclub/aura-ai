@@ -71,6 +71,7 @@ const { BeliefStore, renderBeliefContext } = require('./belief_store');
 const { RetrievalTraceStore } = require('./retrieval_trace_store');
 const { GoalIndex } = require('./goal_index');
 const { GoalMatchStore } = require('./goal_match_store');
+const { normalizeAgentTelemetryMessage, summarizeAgentTelemetry } = require('./agent_telemetry');
 const { resolveSignalMatches } = require('./goal_signal_matcher');
 const { linkSignal } = require('./entity_graph');
 const { buildSchedulingReply } = require('./reply_draft');
@@ -371,11 +372,47 @@ const getAgentRegistry = cloudState
       timeoutMs: process.env.AURA_AGENT_REGISTRY_TIMEOUT_MS || 500,
       warn: message => console.warn(message)
     })
-  : async () => localAgentRegistry;
+  : Object.assign(async () => localAgentRegistry, {
+      status: () => ({
+        last_refresh_status: 'local',
+        last_refresh_ms: 0,
+        refreshed_at: null
+      })
+    });
 
 async function resolveAgentForTurn(text) {
-  if (routeAgentId(text) === 'aura_core') return localAgentRegistry.aura_core;
-  return routeAgentForTurn(text, await getAgentRegistry());
+  const startedAtMs = Date.now();
+  const requestedAgentId = routeAgentId(text);
+  if (requestedAgentId === 'aura_core') {
+    return {
+      ...localAgentRegistry.aura_core,
+      _routing: {
+        requested_agent: requestedAgentId,
+        selected_agent: 'aura_core',
+        maximum_risk: localAgentRegistry.aura_core.maximum_risk,
+        allowed_tools: null,
+        registry_status: 'bypassed_core',
+        registry_refresh_ms: 0,
+        resolution_ms: Date.now() - startedAtMs
+      }
+    };
+  }
+  const activeAgent = routeAgentForTurn(text, await getAgentRegistry());
+  const registryStatus = getAgentRegistry.status?.() || {};
+  return {
+    ...activeAgent,
+    _routing: {
+      requested_agent: requestedAgentId,
+      selected_agent: activeAgent.id,
+      maximum_risk: activeAgent.maximum_risk,
+      allowed_tools: Array.isArray(activeAgent.allowed_tools)
+        ? activeAgent.allowed_tools.slice(0, 20)
+        : null,
+      registry_status: registryStatus.last_refresh_status || 'unrecorded',
+      registry_refresh_ms: registryStatus.last_refresh_ms ?? null,
+      resolution_ms: Date.now() - startedAtMs
+    }
+  };
 }
 const retrievalTraceStore = cloudState
   ? new RetrievalTraceStore({ stateStore: cloudState })
@@ -394,6 +431,16 @@ async function recentConversationMessages(limit = 15) {
     WHERE id IN (SELECT id FROM memory WHERE role != 'system' ORDER BY id DESC LIMIT ?)
     ORDER BY id ASC
   `).all(limit);
+}
+
+async function markConversationMessageCancelled(messageId, turnId) {
+  if (!messageId) return null;
+  if (cloudState) {
+    return cloudState.markMessageCancelled(messageId, { turnId });
+  }
+  const result = db.prepare("DELETE FROM memory WHERE id = ? AND role = 'user'")
+    .run(messageId);
+  return { id: Number(messageId), deleted: result.changes > 0 };
 }
 
 const activeMemory = {
@@ -2794,9 +2841,11 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
 async function processOwnerText(text, {
   onSentence,
   onPhase = () => {},
+  onUserMessagePersisted = () => {},
   isolated = false,
   signal = null,
-  interruptedContext = ''
+  interruptedContext = '',
+  turnId = null
 } = {}) {
   {
     onPhase('input-validation');
@@ -3053,7 +3102,15 @@ async function processOwnerText(text, {
     // written, which is the only ordering guarantee that actually matters.
     const userMessagePromise = addConversationMessage('user', text, {
       memory_mode: memoryCommand ? 'explicit_sync' : 'automatic',
-      memory_command: memoryCommand?.type || null
+      memory_command: memoryCommand?.type || null,
+      ...(turnId ? { turn_id: turnId } : {})
+    }).then(message => {
+      try {
+        onUserMessagePersisted(message);
+      } catch (error) {
+        console.warn('[chat] User-message persistence callback failed:', error.message);
+      }
+      return message;
     });
 
     // Explicit memory commands are deterministic. They should not depend on a
@@ -3159,25 +3216,15 @@ async function processOwnerText(text, {
       }
     }
 
-    const memoryJobPromise = memoryExtractionQueue
-      ? userMessagePromise.then(userMessage => memoryExtractionQueue.enqueueMessage(userMessage.id))
-      : Promise.resolve(null);
-    if (!memoryExtractionQueue) {
-      setImmediate(() => {
-        memoryV2.learnFromUserMessage(text, { source: 'conversation' }).catch(error => {
-          console.warn('[Memory v2] Automatic learning failed:', error.message);
-        });
-      });
-    }
-
     // Read history and memory without waiting on the user-message write. If
     // the write hasn't landed yet, inject this turn locally so the model never
     // answers the previous message. Persistence still waits on
     // userMessagePromise before the assistant reply is stored.
     //
-    // Don't block the model on memory-extraction enqueue — that only needs to
-    // land before the assistant row is written. Semantic embedding search is
-    // skipped unless the turn asks for long-term recall (multi-second tax).
+    // Automatic memory extraction is scheduled only after a complete reply is
+    // ready, so an interrupted owner turn cannot teach long-term memory.
+    // Semantic embedding search is skipped unless the turn asks for long-term
+    // recall (multi-second tax).
     const lightweight = isLightweightChitchat(text);
     const directMetricsAsk = isDirectFinancialMetricsAsk(text);
     const skipSemantic = shouldSkipSemanticMemory(text);
@@ -3579,10 +3626,13 @@ async function processOwnerText(text, {
       sentenceGate.resetAfterToolRecovery?.();
       streamSentence?.(reply);
     }
-    // Extraction enqueue was kicked off earlier; only need the job id before
-    // we stamp it on the assistant row (not before the model starts).
+    const responseReadyMs = Date.now() - requestStartedAtMs;
     onPhase('persist-assistant');
-    const memoryJob = await memoryJobPromise.catch(() => null);
+    const memoryJob = memoryExtractionQueue
+      ? await userMessagePromise
+        .then(userMessage => memoryExtractionQueue.enqueueMessage(userMessage.id))
+        .catch(() => null)
+      : null;
     throwIfAborted(signal);
     const assistantMessage = await addConversationMessage('assistant', reply, {
       evidence,
@@ -3590,7 +3640,14 @@ async function processOwnerText(text, {
         agent: activeAgent.id,
         model: response._model || chatModel,
         reasoning_effort: turnReasoningEffort,
-        provider_reasoning_effort: response._reasoning_effort || null
+        provider_reasoning_effort: response._reasoning_effort || null,
+        routing: activeAgent._routing || null,
+        timing: {
+          response_ready_ms: responseReadyMs,
+          context_build_ms: contextBuildMs,
+          pre_model_ms: preModelMs,
+          first_delta_ms: firstDeltaMs
+        }
       },
       memory_extraction: memoryJob
         ? { status: memoryJob.status, job_id: memoryJob.id }
@@ -3613,7 +3670,15 @@ async function processOwnerText(text, {
       console.log(`[timing] total request: ${Date.now() - requestStartedAtMs}ms`);
     }
 
-    memoryExtractionQueue?.kick();
+    if (memoryExtractionQueue) {
+      memoryExtractionQueue.kick();
+    } else {
+      setImmediate(() => {
+        memoryV2.learnFromUserMessage(text, { source: 'conversation' }).catch(error => {
+          console.warn('[Memory v2] Automatic learning failed:', error.message);
+        });
+      });
+    }
     try {
       const digestParts = [
         `Owner: ${text.slice(0, 1500)}`,
@@ -3692,6 +3757,23 @@ app.post('/api/chat', async (req, res) => {
   }
   const turnController = new AbortController();
   activeChatTurns.set(turnId, turnController);
+  let persistedUserMessageId = null;
+  let turnWasCancelled = false;
+  let cancellationRecorded = false;
+  let cancellationPromise = null;
+  const recordCancelledMessage = async () => {
+    if (!persistedUserMessageId || cancellationRecorded) return;
+    if (cancellationPromise) return cancellationPromise;
+    cancellationPromise = markConversationMessageCancelled(persistedUserMessageId, turnId)
+      .then(result => {
+        cancellationRecorded = true;
+        return result;
+      })
+      .finally(() => {
+        cancellationPromise = null;
+      });
+    return cancellationPromise;
+  };
   const abortTurn = () => turnController.abort();
   req.once('aborted', abortTurn);
   res.once('close', () => {
@@ -3719,6 +3801,15 @@ app.post('/api/chat', async (req, res) => {
     const result = await processOwnerText(req.body.text, {
       isolated: req.body.eval === true,
       signal: turnController.signal,
+      turnId,
+      onUserMessagePersisted: message => {
+        persistedUserMessageId = message?.id || null;
+        if (turnWasCancelled) {
+          recordCancelledMessage().catch(error => {
+            console.warn('[chat] Failed to mark interrupted message:', error.message);
+          });
+        }
+      },
       interruptedContext: typeof req.body?.interrupted_reply === 'string'
         ? req.body.interrupted_reply.trim().slice(0, 2000)
         : '',
@@ -3740,6 +3831,12 @@ app.post('/api/chat', async (req, res) => {
     res.end();
   } catch (error) {
     if (turnController.signal.aborted || error?.name === 'AbortError') {
+      turnWasCancelled = true;
+      try {
+        await recordCancelledMessage();
+      } catch (cancellationError) {
+        console.warn('[chat] Failed to mark interrupted message:', cancellationError.message);
+      }
       if (!res.writableEnded && !res.destroyed) res.end();
       return;
     }
@@ -3948,6 +4045,25 @@ app.get('/api/learning/summary', async (req, res) => {
     return res.status(503).json({ error: 'The durable skill outcome ledger is not enabled.' });
   }
   res.json({ summary: await skillOutcomeStore.summary() });
+});
+
+// Read-only routing evidence. No owner text or tool payloads leave this
+// endpoint; it reports only selected lenses, timings, tool names/outcomes, and
+// specialist allowlist anomalies already present in assistant metadata.
+app.get('/api/agents/telemetry', async (req, res) => {
+  if (!cloudState) {
+    return res.status(503).json({ error: 'Durable agent telemetry is not enabled.' });
+  }
+  const limit = Math.max(1, Math.min(1000, Number(req.query.limit) || 500));
+  const rows = await cloudState.listAgentTelemetryMessages(limit);
+  const recentLimit = Math.max(1, Math.min(100, Number(req.query.recent) || 25));
+  res.json({
+    summary: summarizeAgentTelemetry(rows),
+    recent: rows
+      .map(normalizeAgentTelemetryMessage)
+      .filter(Boolean)
+      .slice(0, recentLimit)
+  });
 });
 
 // Goal connections: what fired, why it fired, and how the thresholds have moved.

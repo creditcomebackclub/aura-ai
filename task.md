@@ -46,9 +46,8 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Ship Relationship Memory MVP.** Extend existing `people.*` profile entries with aliases,
-  contact details, organization/role, preferences, commitments, and recent context while
-  preserving prior details across later mentions. Test, deploy, and verify without a migration.
+- **Deploy the response-baseline follow-up.** Ship cancelled-turn hygiene, daily-plate read
+  routing, and `/api/agents/telemetry`; then verify the new routing/timing metadata on live turns.
 
 ## Blocked
 
@@ -64,6 +63,13 @@ Name exactly what's needed and from whom.*
 
 *Last handful of shipped items. Prune older entries — this is not a permanent changelog; git log is.*
 
+- Goal connections were production-baselined: the authenticated index and ledger endpoints are
+  healthy, and both are correctly empty while the owner has no open tasks.
+- Relationship Memory MVP is deployed and verified without a migration. Three `people.*` entries
+  are live; richer aliases/contact/context fields remain empty until the owner states that data.
+- GitHub Actions `test` is required on `main`, must come from the GitHub Actions app, and must run
+  against an up-to-date branch. The rule applies to administrators; force-pushes and branch
+  deletion are disabled, while human review is not required for this one-owner repository.
 - Gmail monitoring switched from `aura.ai.brain@gmail.com` to
   `creditcomebackclub@gmail.com`; production and local OAuth identity were verified and the CCC
   inbox was baselined without replaying old unread messages. Calendar OAuth remained untouched.
@@ -94,10 +100,9 @@ Name exactly what's needed and from whom.*
 *Not started, but known and roughly prioritized. Not a backlog dump — only things someone has
 actually decided are coming next.*
 
-- Add enforced GitHub CI checks; current PRs have no status checks and rely on locally reported
-  `npm test` / `npm run check` results.
-- Evaluate specialist-routing telemetry before adding any reversible-write specialist.
-  (see `AGENTS.md`).
+- Collect at least 20 organic specialist-routed turns, then review failure rate, latency,
+  fallbacks, and allowlist anomalies in `/api/agents/telemetry`. Telemetry never authorizes a
+  reversible-write specialist by itself; expansion still requires manual safety review.
 
 ---
 

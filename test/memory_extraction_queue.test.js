@@ -91,6 +91,40 @@ test('failed Luna work is safely retried without leaking credentials', async () 
   assert.equal(store.retried[0].options.delayMs, 2000);
 });
 
+test('cancelled turns complete without teaching long-term memory', async () => {
+  const store = createQueueStore({
+    id: '43',
+    message_id: '43',
+    attempts: 1,
+    max_attempts: 5
+  }, {
+    role: 'user',
+    content: 'Ignore this interrupted thought.',
+    metadata: { turn_status: 'cancelled' }
+  });
+  let learned = false;
+  const memory = {
+    async learnFromUserMessage() {
+      learned = true;
+      return { learned: [], candidates: [] };
+    }
+  };
+  const queue = new DurableMemoryExtractionQueue({ stateStore: store, memory });
+  assert.deepEqual(await queue.drain(), {
+    processed: 1,
+    succeeded: 1,
+    retried: 0,
+    failed: 0,
+    lease_lost: 0
+  });
+  assert.equal(learned, false);
+  assert.deepEqual(store.completed[0].result, {
+    learnedCount: 0,
+    confirmationCount: 0,
+    skipped: 'cancelled_turn'
+  });
+});
+
 test('memory retry backoff is bounded and worker errors are sanitized', () => {
   assert.equal(memoryRetryDelayMs(1, { baseMs: 1000, maxMs: 10000 }), 1000);
   assert.equal(memoryRetryDelayMs(8, { baseMs: 1000, maxMs: 10000 }), 10000);
