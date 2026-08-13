@@ -138,6 +138,7 @@ class DurableMemoryExtractionQueue {
         });
         const completed = await this.stateStore.completeMemoryExtraction(job, {
           learnedCount: result.learned?.length || 0,
+          confirmationCount: result.candidates?.length || 0,
           skipped: result.skipped || null
         });
         if (completed) stats.succeeded += 1;

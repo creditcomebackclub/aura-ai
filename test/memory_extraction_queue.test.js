@@ -47,7 +47,10 @@ test('durable memory queue completes a persisted user-message job', async () => 
         source: 'conversation',
         throwOnExtractionError: true
       });
-      return { learned: [{ key: 'communication.concise' }] };
+      return {
+        learned: [{ key: 'communication.concise' }],
+        candidates: [{ id: 'preference-candidate' }]
+      };
     }
   };
   const queue = new DurableMemoryExtractionQueue({ stateStore: store, memory });
@@ -60,6 +63,7 @@ test('durable memory queue completes a persisted user-message job', async () => 
     lease_lost: 0
   });
   assert.equal(store.completed[0].result.learnedCount, 1);
+  assert.equal(store.completed[0].result.confirmationCount, 1);
 });
 
 test('failed Luna work is safely retried without leaking credentials', async () => {

@@ -6,6 +6,7 @@ const {
   ConversationSummaryService,
   MemoryV2,
   buildProfileContext,
+  classifyMemoryConfirmationReply,
   deterministicEntries,
   findFalseCapabilityDenial,
   findProfileMatches,
@@ -282,7 +283,7 @@ test('memory degrades gracefully when embeddings fail', async () => {
 });
 
 function createProfileStore(initialEntries = {}) {
-  let profile = { version: 1, entries: { ...initialEntries }, updated_at: null };
+  let profile = { version: 1, entries: { ...initialEntries }, memory_candidates: [], updated_at: null };
   return {
     async getOwnerProfile() {
       return structuredClone(profile);
@@ -293,6 +294,10 @@ function createProfileStore(initialEntries = {}) {
     },
     async removeOwnerProfileEntries(keys) {
       for (const key of keys) delete profile.entries[key];
+      return structuredClone(profile);
+    },
+    async setOwnerMemoryCandidates(candidates) {
+      profile.memory_candidates = structuredClone(candidates);
       return structuredClone(profile);
     }
   };
@@ -450,6 +455,85 @@ test('automatic learning saves structured profile entries and semantic memory', 
   assert.equal(result.learned.length, 1);
   assert.equal((await profileStore.getOwnerProfile()).entries['preference.meeting_time'].value, '10 AM');
   assert.equal(semanticMemory.rows.size, 1);
+});
+
+test('uncertain preferences wait for explicit confirmation before persistence', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  const client = extractionClient([{
+    key: 'preference.meeting_time',
+    kind: 'preference',
+    value: 'morning meetings',
+    subject: '',
+    relationship: '',
+    instruction: 'Prefer morning meetings.',
+    replaces_key: '',
+    pinned: true,
+    confidence: 0.72
+  }]);
+  const memory = new MemoryV2({ profileStore, semanticMemory, client });
+
+  const staged = await memory.learnFromUserMessage('I might prefer morning meetings.');
+  assert.equal(staged.learned.length, 0);
+  assert.equal(staged.candidates.length, 1);
+  assert.equal(semanticMemory.rows.size, 0);
+  assert.deepEqual((await profileStore.getOwnerProfile()).entries, {});
+
+  const pending = await memory.getPendingConfirmation();
+  assert.equal(pending.question, 'Should I remember that you prefer morning meetings?');
+  const contextBeforeConfirmation = await memory.buildContext('What do I prefer?', {
+    includeSemantic: false,
+    includeAlwaysOn: false
+  });
+  assert.equal(contextBeforeConfirmation.pendingConfirmation.id, pending.id);
+  assert.doesNotMatch(contextBeforeConfirmation.profileContext, /morning meetings/i);
+  assert.match(
+    renderMemoryDocument({ profile: await profileStore.getOwnerProfile() }).markdown,
+    /Pending Preference Confirmation[\s\S]*not saved yet/
+  );
+  const confirmed = await memory.resolvePendingConfirmation(pending.id, true);
+  assert.equal(confirmed.resolved, true);
+  assert.equal(confirmed.learned[0].source, 'confirmed_preference');
+  assert.equal(semanticMemory.rows.size, 1);
+  assert.equal(
+    (await profileStore.getOwnerProfile()).entries['preference.meeting_time'].value,
+    'morning meetings'
+  );
+  assert.equal(await memory.getPendingConfirmation(), null);
+});
+
+test('rejected and background-inferred preferences never enter durable memory', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  const client = extractionClient([{
+    key: 'preference.summary_day',
+    kind: 'preference',
+    value: 'Friday summaries',
+    subject: '',
+    relationship: '',
+    instruction: 'Prefer summaries on Friday.',
+    replaces_key: '',
+    pinned: true,
+    confidence: 0.98
+  }]);
+  const memory = new MemoryV2({ profileStore, semanticMemory, client });
+  const staged = await memory.learnFromUserMessage('Friday summaries seem useful.', {
+    source: 'learning_review',
+    explicit: true
+  });
+  assert.equal(staged.learned.length, 0);
+  assert.equal(staged.candidates.length, 1);
+  const rejected = await memory.resolvePendingConfirmation(staged.candidates[0].id, false);
+  assert.equal(rejected.resolved, true);
+  assert.equal(semanticMemory.rows.size, 0);
+  assert.deepEqual((await profileStore.getOwnerProfile()).entries, {});
+});
+
+test('memory confirmation replies are strict and reject mixed requests', () => {
+  assert.equal(classifyMemoryConfirmationReply('Yes, remember that.'), 'approved');
+  assert.equal(classifyMemoryConfirmationReply('No thanks.'), 'rejected');
+  assert.equal(classifyMemoryConfirmationReply('Yes, and check my calendar.'), null);
+  assert.equal(classifyMemoryConfirmationReply('Do it'), null);
 });
 
 test('episodic memory records notable outcomes without polluting the owner profile', async () => {

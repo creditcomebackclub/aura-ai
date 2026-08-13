@@ -419,7 +419,13 @@ class LearningReviewController {
       schema: REVIEW_SCHEMA
     });
     const parsed = typeof completion === 'string' ? JSON.parse(completion) : completion;
-    const applied = { memories: [], skill: null, episode: null, belief: null };
+    const applied = {
+      memories: [],
+      memory_candidates: [],
+      skill: null,
+      episode: null,
+      belief: null
+    };
 
     for (const fact of parsed.save_memory_facts || []) {
       const text = String(fact || '').trim();
@@ -429,6 +435,7 @@ class LearningReviewController {
         explicit: true
       });
       if (result.learned?.length) applied.memories.push(...result.learned);
+      if (result.candidates?.length) applied.memory_candidates.push(...result.candidates);
     }
 
     if (this.memoryV2?.rememberEpisode) {

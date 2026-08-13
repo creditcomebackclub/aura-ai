@@ -229,6 +229,14 @@ test('chat routes adaptive reasoning and reports the selected effort', () => {
   assert.match(app, /reasoning \$\{event\.brain\.reasoning_effort\}/);
 });
 
+test('uncertain durable preferences require a scoped natural confirmation', () => {
+  assert.match(server, /classifyMemoryConfirmationReply\(text\)/);
+  assert.match(server, /previousAssistant\?\.content[\s\S]*pendingMemoryConfirmation\.question/);
+  assert.match(server, /PENDING OWNER MEMORY CONFIRMATION/);
+  assert.match(server, /Answer the owner’s current request first/);
+  assert.match(server, /memoryContext\.pendingConfirmation/);
+});
+
 test('streamed voice uses connected TTS groups instead of resetting every sentence', () => {
   assert.match(app, /function enqueueSpeechAudio/);
   assert.match(server, /createSpeechChunkAccumulator\(onSentence\)/);

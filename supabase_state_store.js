@@ -680,7 +680,10 @@ class SupabaseStateStore {
     return null;
   }
 
-  async completeMemoryExtraction(job, { learnedCount = 0, skipped = null } = {}) {
+  async completeMemoryExtraction(
+    job,
+    { learnedCount = 0, confirmationCount = 0, skipped = null } = {}
+  ) {
     const completedAt = new Date().toISOString();
     return this.transitionMemoryExtractionJob(job, {
       version: job.version || 1,
@@ -696,6 +699,7 @@ class SupabaseStateStore {
       created_at: job.created_at,
       completed_at: completedAt,
       learned_count: Math.max(0, Number(learnedCount) || 0),
+      confirmation_count: Math.max(0, Number(confirmationCount) || 0),
       skipped,
       last_error: null
     });
@@ -754,6 +758,7 @@ class SupabaseStateStore {
         };
       }
       const next = {
+        ...profile,
         version: 1,
         entries: nextEntries,
         updated_at: new Date().toISOString()
@@ -770,8 +775,25 @@ class SupabaseStateStore {
       const nextEntries = { ...(profile.entries || {}) };
       for (const key of keys) delete nextEntries[key];
       const next = {
+        ...profile,
         version: 1,
         entries: nextEntries,
+        updated_at: new Date().toISOString()
+      };
+      await this.setState('owner_profile_v1', next);
+      return next;
+    });
+    return this.profileWrite;
+  }
+
+  async setOwnerMemoryCandidates(candidates) {
+    this.profileWrite = this.profileWrite.catch(() => {}).then(async () => {
+      const profile = await this.getOwnerProfile();
+      const next = {
+        ...profile,
+        version: 1,
+        entries: { ...(profile.entries || {}) },
+        memory_candidates: Array.isArray(candidates) ? candidates.slice(0, 5) : [],
         updated_at: new Date().toISOString()
       };
       await this.setState('owner_profile_v1', next);
