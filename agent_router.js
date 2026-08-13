@@ -131,11 +131,69 @@ function buildAgentPrompt(agent) {
   ].join('\n');
 }
 
+function createAgentRegistryResolver({
+  load,
+  initialRegistry = mergeAgentRegistry(),
+  timeoutMs = 500,
+  successTtlMs = 5 * 60 * 1000,
+  retryTtlMs = 60 * 1000,
+  now = Date.now,
+  warn = () => {}
+} = {}) {
+  if (typeof load !== 'function') throw new Error('Agent registry load function is required.');
+  const boundedTimeoutMs = Math.max(50, Math.min(10000, Number(timeoutMs) || 500));
+  const boundedSuccessTtlMs = Math.max(1000, Number(successTtlMs) || 5 * 60 * 1000);
+  const boundedRetryTtlMs = Math.max(1000, Number(retryTtlMs) || 60 * 1000);
+  let registry = initialRegistry;
+  let expiresAt = 0;
+  let refresh = null;
+
+  return async function getAgentRegistry() {
+    if (now() < expiresAt) return registry;
+    if (refresh) return refresh;
+
+    const source = Promise.resolve()
+      .then(load)
+      .then(
+        rows => ({ status: 'succeeded', rows }),
+        error => ({ status: 'failed', error })
+      );
+    let timeoutId;
+    const timeout = new Promise(resolve => {
+      timeoutId = setTimeout(
+        () => resolve({ status: 'timed_out' }),
+        boundedTimeoutMs
+      );
+    });
+    const currentRefresh = Promise.race([source, timeout])
+      .then(outcome => {
+        clearTimeout(timeoutId);
+        if (outcome.status === 'succeeded') {
+          registry = mergeAgentRegistry(outcome.rows, { fallbackMissing: false });
+          expiresAt = now() + boundedSuccessTtlMs;
+        } else {
+          const reason = outcome.status === 'timed_out'
+            ? `timed out after ${boundedTimeoutMs}ms`
+            : (outcome.error?.message || outcome.error || 'failed');
+          warn(`[Agent router] Registry lookup ${reason}; using cached safe defaults.`);
+          expiresAt = now() + boundedRetryTtlMs;
+        }
+        return registry;
+      })
+      .finally(() => {
+        if (refresh === currentRefresh) refresh = null;
+      });
+    refresh = currentRefresh;
+    return currentRefresh;
+  };
+}
+
 module.exports = {
   DEFAULT_AGENTS,
   RISK_RANK,
   assertAgentCanUseTool,
   buildAgentPrompt,
+  createAgentRegistryResolver,
   filterToolsForAgent,
   mergeAgentRegistry,
   routeAgentForTurn,

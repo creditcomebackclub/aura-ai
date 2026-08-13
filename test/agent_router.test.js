@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   assertAgentCanUseTool,
   buildAgentPrompt,
+  createAgentRegistryResolver,
   filterToolsForAgent,
   mergeAgentRegistry,
   routeAgentForTurn,
@@ -53,4 +54,44 @@ test('specialist prompt preserves AURA identity and states the risk ceiling', ()
   assert.match(prompt, /Client Operations Agent/);
   assert.match(prompt, /AURA's normal voice/);
   assert.match(prompt, /limited to read operations/);
+});
+
+test('registry lookup times out to safe defaults and backs off', async () => {
+  let loads = 0;
+  let now = 0;
+  const warnings = [];
+  const getRegistry = createAgentRegistryResolver({
+    load: () => {
+      loads += 1;
+      return new Promise(() => {});
+    },
+    timeoutMs: 50,
+    retryTtlMs: 1000,
+    now: () => now,
+    warn: message => warnings.push(message)
+  });
+
+  const startedAt = Date.now();
+  const registry = await getRegistry();
+  assert.equal(registry.aura_core.id, 'aura_core');
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(loads, 1);
+  assert.match(warnings[0], /timed out after 50ms/);
+
+  now = 500;
+  await getRegistry();
+  assert.equal(loads, 1);
+});
+
+test('registry lookup coalesces concurrent refreshes', async () => {
+  let loads = 0;
+  const getRegistry = createAgentRegistryResolver({
+    load: async () => {
+      loads += 1;
+      return [];
+    },
+    timeoutMs: 100
+  });
+  await Promise.all([getRegistry(), getRegistry(), getRegistry()]);
+  assert.equal(loads, 1);
 });

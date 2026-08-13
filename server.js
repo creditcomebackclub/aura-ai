@@ -113,14 +113,17 @@ const {
   DEFAULT_AGENTS,
   assertAgentCanUseTool,
   buildAgentPrompt,
+  createAgentRegistryResolver,
   filterToolsForAgent,
   mergeAgentRegistry,
-  routeAgentForTurn
+  routeAgentForTurn,
+  routeAgentId
 } = require('./agent_router');
 const {
   brainRequestOptions,
   resolveModelConfig,
   resolveTranscribeModel,
+  shouldUsePrimaryForRoundZero,
   isOpenAiChatModel
 } = require('./model_router');
 const {
@@ -360,29 +363,19 @@ const cloudState = useSupabaseState
       embeddingProvider: process.env.OPENAI_API_KEY ? getEmbedding : null
     })
   : null;
-let agentRegistryCache = mergeAgentRegistry();
-let agentRegistryExpiresAt = 0;
-let agentRegistryRefresh = null;
+const localAgentRegistry = mergeAgentRegistry();
+const getAgentRegistry = cloudState
+  ? createAgentRegistryResolver({
+      load: () => cloudState.listAgents(['client_operations', 'finance']),
+      initialRegistry: localAgentRegistry,
+      timeoutMs: process.env.AURA_AGENT_REGISTRY_TIMEOUT_MS || 500,
+      warn: message => console.warn(message)
+    })
+  : async () => localAgentRegistry;
 
-async function getAgentRegistry() {
-  if (!cloudState) return agentRegistryCache;
-  if (Date.now() < agentRegistryExpiresAt) return agentRegistryCache;
-  if (agentRegistryRefresh) return agentRegistryRefresh;
-  agentRegistryRefresh = cloudState.listAgents(['client_operations', 'finance'])
-    .then(rows => {
-      agentRegistryCache = mergeAgentRegistry(rows, { fallbackMissing: false });
-      agentRegistryExpiresAt = Date.now() + 5 * 60 * 1000;
-      return agentRegistryCache;
-    })
-    .catch(error => {
-      console.warn('[Agent router] Registry lookup failed; using safe defaults:', error.message || error);
-      agentRegistryExpiresAt = Date.now() + 60 * 1000;
-      return agentRegistryCache;
-    })
-    .finally(() => {
-      agentRegistryRefresh = null;
-    });
-  return agentRegistryRefresh;
+async function resolveAgentForTurn(text) {
+  if (routeAgentId(text) === 'aura_core') return localAgentRegistry.aura_core;
+  return routeAgentForTurn(text, await getAgentRegistry());
 }
 const retrievalTraceStore = cloudState
   ? new RetrievalTraceStore({ stateStore: cloudState })
@@ -2800,11 +2793,13 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
 // the same complete result either way.
 async function processOwnerText(text, {
   onSentence,
+  onPhase = () => {},
   isolated = false,
   signal = null,
   interruptedContext = ''
 } = {}) {
   {
+    onPhase('input-validation');
     throwIfAborted(signal);
     if (typeof text !== 'string' || !text.trim() || text.length > 10000) {
       throw new Error('Text must be between 1 and 10,000 characters.');
@@ -2826,6 +2821,7 @@ async function processOwnerText(text, {
     // directory hits to the canonical spelling before memory/tools see them,
     // so she doesn't echo "pissavage" / "Carl" back as not-found. Directory
     // is TTL-cached inside ccc_database so this is cheap after the first hit.
+    onPhase('name-correction');
     const nameCorrectionStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
     try {
       text = correctCommonSpeechTerms(text);
@@ -2849,7 +2845,7 @@ async function processOwnerText(text, {
       // Same turn-start timestamp as the live path so propose+confirm inside
       // one isolated exchange still fails the later-turn gate.
       const requestStartedAtMs = Date.now();
-      const activeAgent = routeAgentForTurn(text, await getAgentRegistry());
+      const activeAgent = await resolveAgentForTurn(text);
       const chatHistory = [{
         role: 'system',
         content: AURA_SOUL + buildTemporalContext({
@@ -2863,9 +2859,13 @@ async function processOwnerText(text, {
         baseEffort: reasoningEffort,
         toolNames: availableToolNames
       });
-      const usePrimaryModel = ['medium', 'high'].includes(turnReasoningEffort);
+      const usePrimaryModel = shouldUsePrimaryForRoundZero(
+        turnReasoningEffort,
+        availableToolNames
+      );
       const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
       const streamSentence = sentenceGate.onSentence;
+      onPhase('model-round-0');
       let response = await createBrainCompletionStreamed({
         messages: chatHistory,
         tools: turnTools,
@@ -3207,7 +3207,8 @@ async function processOwnerText(text, {
     const beliefsPromise = beliefStore && !lightweight && !directMetricsAsk
       ? beliefStore.relevant(text, 6)
       : Promise.resolve([]);
-    const [memoryContext, conversationContext, metricsRaw, relevantBeliefs, agentRegistry] = await Promise.all([
+    onPhase('context-build');
+    const [memoryContext, conversationContext, metricsRaw, relevantBeliefs, activeAgent] = await Promise.all([
       memoryV2.buildContext(text, {
         includeSemantic: !skipSemantic,
         includeAlwaysOn: !lightweight && !directMetricsAsk
@@ -3215,9 +3216,8 @@ async function processOwnerText(text, {
       conversationContextPromise,
       metricsPromise,
       beliefsPromise,
-      getAgentRegistry()
+      resolveAgentForTurn(text)
     ]);
-    const activeAgent = routeAgentForTurn(text, agentRegistry);
     pendingMemoryConfirmation ||= memoryContext.pendingConfirmation;
     throwIfAborted(signal);
     const contextBuildMs = Date.now() - contextBuildStartedAtMs;
@@ -3305,11 +3305,15 @@ async function processOwnerText(text, {
       baseEffort: reasoningEffort,
       toolNames: availableToolNames
     });
-    const usePrimaryModel = ['medium', 'high'].includes(turnReasoningEffort);
+    const usePrimaryModel = shouldUsePrimaryForRoundZero(
+      turnReasoningEffort,
+      availableToolNames
+    );
     const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
     const streamSentence = sentenceGate.onSentence;
 
     const preModelMs = Date.now() - requestStartedAtMs;
+    onPhase('model-round-0');
     let response = await createBrainCompletionStreamed({
       messages: chatHistory,
       ...(turnTools.length ? { tools: turnTools, tool_choice: 'auto' } : {}),
@@ -3362,6 +3366,7 @@ async function processOwnerText(text, {
         let forceToolFree = false;
         try {
           const toolName = toolCall?.function?.name;
+          onPhase(`tool:${toolName || 'unknown'}`);
           if (toolName === 'search_web') {
             if (webSearchSucceeded) {
               forceToolFree = true;
@@ -3507,6 +3512,7 @@ async function processOwnerText(text, {
       }
 
       if (webSearchAttempts >= 2 || webSearchBilledSearches > 0) forceToolFreeAnswer = true;
+      onPhase(`model-round-${round + 1}`);
       response = forceToolFreeAnswer
         ? await createBrainCompletionStreamed({
             messages: chatHistory,
@@ -3575,6 +3581,7 @@ async function processOwnerText(text, {
     }
     // Extraction enqueue was kicked off earlier; only need the job id before
     // we stamp it on the assistant row (not before the model starts).
+    onPhase('persist-assistant');
     const memoryJob = await memoryJobPromise.catch(() => null);
     throwIfAborted(signal);
     const assistantMessage = await addConversationMessage('assistant', reply, {
@@ -3691,6 +3698,16 @@ app.post('/api/chat', async (req, res) => {
     if (!res.writableEnded) abortTurn();
   });
   const routeStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
+  const requestStartedAtMs = Date.now();
+  let currentPhase = 'request-start';
+  const slowTurnMs = Math.max(5000, Number(process.env.AURA_SLOW_TURN_MS) || 15000);
+  const slowTurnTimer = setTimeout(() => {
+    console.warn('[chat slow]', {
+      turn_id: turnId,
+      elapsed_ms: Date.now() - requestStartedAtMs,
+      phase: currentPhase
+    });
+  }, slowTurnMs);
   let firstSentenceLogged = false;
   const startStream = () => {
     if (streamStarted) return;
@@ -3705,6 +3722,9 @@ app.post('/api/chat', async (req, res) => {
       interruptedContext: typeof req.body?.interrupted_reply === 'string'
         ? req.body.interrupted_reply.trim().slice(0, 2000)
         : '',
+      onPhase: phase => {
+        currentPhase = phase;
+      },
       onSentence: sentence => {
         throwIfAborted(turnController.signal);
         startStream();
@@ -3731,6 +3751,7 @@ app.post('/api/chat', async (req, res) => {
       res.status(500).json({ error: error.message });
     }
   } finally {
+    clearTimeout(slowTurnTimer);
     if (activeChatTurns.get(turnId) === turnController) activeChatTurns.delete(turnId);
     req.off('aborted', abortTurn);
   }

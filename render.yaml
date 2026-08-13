@@ -33,6 +33,12 @@ services:
         sync: false
       - key: AURA_REASONING_EFFORT
         value: low
+      - key: AURA_AGENT_REGISTRY_TIMEOUT_MS
+        value: "500"
+      - key: AURA_SLOW_TURN_MS
+        value: "15000"
+      - key: AURA_TIMING_TRACE
+        value: "true"
       - key: AURA_SUMMARY_MESSAGE_THRESHOLD
         value: "40"
       - key: AURA_LEARNING_REVIEW

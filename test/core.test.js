@@ -18,7 +18,8 @@ const {
   brainRequestOptions,
   resolveModelConfig,
   resolveTranscribeModel,
-  resolveXaiReasoningEffort
+  resolveXaiReasoningEffort,
+  shouldUsePrimaryForRoundZero
 } = require('../model_router');
 const {
   OWNER_SEARCH_INPUT_MAX_LENGTH,
@@ -1120,6 +1121,13 @@ test('xAI reasoning_effort coerces none to low and honors medium/high', () => {
     ),
     false
   );
+});
+
+test('medium reasoning keeps tool-routing on Luna and reserves primary for synthesis', () => {
+  assert.equal(shouldUsePrimaryForRoundZero('medium', ['check_calendar']), false);
+  assert.equal(shouldUsePrimaryForRoundZero('high', ['check_email', 'get_goals']), false);
+  assert.equal(shouldUsePrimaryForRoundZero('medium', []), true);
+  assert.equal(shouldUsePrimaryForRoundZero('low', []), false);
 });
 
 test('bureau-specific letter labels become concise client phases', () => {

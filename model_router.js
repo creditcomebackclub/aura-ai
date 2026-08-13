@@ -52,6 +52,12 @@ function resolveXaiReasoningEffort(effort) {
   return 'low';
 }
 
+function shouldUsePrimaryForRoundZero(reasoningEffort, toolNames = []) {
+  const deeperReasoning = ['medium', 'high'].includes(reasoningEffort);
+  const hasTools = Array.isArray(toolNames) && toolNames.length > 0;
+  return deeperReasoning && !hasTools;
+}
+
 function resolveModelConfig(env = process.env) {
   const provider = env.AI_PROVIDER || 'openai';
   const primaryModel = env.AURA_CHAT_MODEL || defaultPrimaryModel(provider);
@@ -118,5 +124,6 @@ module.exports = {
   resolveTranscribeModel,
   resolveRouterModel,
   resolveXaiReasoningEffort,
+  shouldUsePrimaryForRoundZero,
   isOpenAiChatModel
 };
