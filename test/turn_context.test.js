@@ -92,9 +92,23 @@ test('adaptive reasoning keeps direct answers fast and deepens analysis', () => 
   );
 });
 
-test('adaptive reasoning deepens cross-domain work and honors operator floors', () => {
+test('adaptive reasoning keeps routine cross-domain reads fast and honors operator floors', () => {
   assert.equal(
     reasoningEffortForTurn('Check both for me', {
+      baseEffort: 'low',
+      toolNames: ['check_email', 'check_calendar']
+    }),
+    'low'
+  );
+  assert.equal(
+    reasoningEffortForTurn("What's on my plate today?", {
+      baseEffort: 'low',
+      toolNames: ['get_goal_plans', 'check_calendar', 'check_blackboard']
+    }),
+    'low'
+  );
+  assert.equal(
+    reasoningEffortForTurn('Compare my email and calendar and recommend what to prioritize', {
       baseEffort: 'low',
       toolNames: ['check_email', 'check_calendar']
     }),

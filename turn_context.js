@@ -115,19 +115,6 @@ const WHY_REASONING_PATTERN = /\bwhy\s+(?:did|does|do|is|are|was|were|would|coul
 const DECISION_REASONING_PATTERN = /\b(?:what should (?:i|we)|what would you do|help me (?:decide|choose|plan)|make (?:me )?a plan|plan (?:this|it|that|out|for))\b/i;
 const INTERPRETATION_REASONING_PATTERN = /\bwhat does\b.{0,100}\bmean\b/i;
 
-const REASONING_TOOL_GROUPS = [
-  BUSINESS_INTEL_TOOL_NAMES,
-  new Set([...OUTBOUND_EMAIL_TOOL_NAMES, ...EMAIL_READ_TOOL_NAMES]),
-  new Set([...CALENDAR_WRITE_TOOL_NAMES, ...CALENDAR_READ_TOOL_NAMES]),
-  GOAL_TOOL_NAMES,
-  BLACKBOARD_TOOL_NAMES,
-  TELEGRAM_TOOL_NAMES,
-  WEB_SEARCH_TOOL_NAMES,
-  SKILL_TOOL_NAMES,
-  PERSONAL_FINANCE_TOOL_NAMES,
-  MEMORY_WRITE_TOOL_NAMES
-];
-
 const REASONING_EFFORT_RANK = Object.freeze({ none: 0, low: 1, medium: 2, high: 3 });
 
 function isLightweightChitchat(text) {
@@ -162,7 +149,7 @@ function isDirectFinancialMetricsAsk(text) {
 
 function reasoningEffortForTurn(
   text,
-  { baseEffort = 'low', toolNames = [] } = {}
+  { baseEffort = 'low' } = {}
 ) {
   const normalizedBase = Object.hasOwn(REASONING_EFFORT_RANK, baseEffort)
     ? baseEffort
@@ -186,17 +173,12 @@ function reasoningEffortForTurn(
     return 'medium';
   }
   if (isDirectFinancialMetricsAsk(value)) return normalizedBase;
-
-  const selectedNames = new Set(
-    (Array.isArray(toolNames) ? toolNames : [])
-      .map(name => String(name || '').trim())
-      .filter(Boolean)
-  );
-  const activeGroups = REASONING_TOOL_GROUPS.reduce(
-    (count, group) => count + ([...group].some(name => selectedNames.has(name)) ? 1 : 0),
-    0
-  );
-  return activeGroups >= 2 ? 'medium' : normalizedBase;
+  // Tool breadth is not reasoning depth. A daily brief may read goals,
+  // calendar, and Blackboard but only needs concise synthesis; escalating it
+  // to medium made the post-tool answer several seconds slower. Explicit
+  // analysis, comparison, strategy, planning, and decision language above
+  // still selects medium regardless of how many tool groups are involved.
+  return normalizedBase;
 }
 
 function shouldSkipSemanticMemory(text) {

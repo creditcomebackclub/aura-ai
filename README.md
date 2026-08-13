@@ -196,6 +196,10 @@ durable-fact extraction, rolling summaries, and **vector embeddings** stay on
 OpenAI (`AURA_MEMORY_MODEL=gpt-5.6-luna` + `text-embedding-3-small`) so recall
 quality does not depend on the chat provider.
 
+Adaptive reasoning raises effort for explicit analysis, comparison, strategy,
+planning, and decisions. Routine multi-source status reads stay at the configured
+base effort; the number of tool groups alone is not treated as reasoning depth.
+
 ## Voice interface
 
 The phone and home-screen interface is text-free. A canvas waveform reacts to
