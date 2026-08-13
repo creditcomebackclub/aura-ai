@@ -464,6 +464,18 @@ class SupabaseStateStore {
     return data || [];
   }
 
+  async listAgents(ids = ['client_operations', 'finance']) {
+    const requested = (Array.isArray(ids) ? ids : [])
+      .filter(id => typeof id === 'string' && id)
+      .slice(0, 20);
+    if (!requested.length) return [];
+    const { data, error } = await this.client.from('aura_agents')
+      .select('id, name, description, instructions, allowed_tools, maximum_risk, enabled')
+      .in('id', requested);
+    if (error) throw error;
+    return data || [];
+  }
+
   async acknowledgeNotification(id) {
     const { error, count } = await this.client.from('aura_notifications')
       .update({ acknowledged_at: new Date().toISOString() }, { count: 'exact' })

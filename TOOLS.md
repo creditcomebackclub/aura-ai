@@ -21,6 +21,13 @@ every tool lives in `handleToolCall()` in `server.js`. A tool not present in
 `'blocked'` for any unrecognized name, and `parseAndAuthorizeToolCall()`
 throws before the tool ever runs).
 
+`agent_router.js` adds a second least-privilege layer per turn. Finance-only
+reads receive the `finance` row's tool allowlist; client-progress-only reads
+receive `client_operations`; mixed, ambiguous, and action-oriented turns stay
+on `aura_core`. `handleToolCall()` re-checks both the active allowlist and its
+`maximum_risk`, so filtering the schemas sent to the model is not the only
+enforcement point.
+
 ---
 
 ## 1. Risk tiers

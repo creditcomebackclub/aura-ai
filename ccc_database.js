@@ -827,7 +827,7 @@ async function listDeletableTestLetters() {
 // than in process memory so a staged deletion survives a restart - Render's free
 // tier sleeps after inactivity, which silently discarded in-memory proposals
 // between the owner being asked and the owner answering.
-async function stageTestLetterDeletion(letterId, proposedAtMs) {
+async function stageTestLetterDeletion(letterId, proposedAtMs, { agentId = 'aura_core' } = {}) {
   const db = initSupabase();
   if (!db) return { ok: false, reason: 'Database connection not configured.' };
 
@@ -836,7 +836,7 @@ async function stageTestLetterDeletion(letterId, proposedAtMs) {
 
   const { error } = await db.from('aura_actions').insert({
     owner_id: process.env.AURA_OWNER_ID || null,
-    agent_id: 'aura_core',
+    agent_id: agentId,
     tool_name: 'confirm_test_letter_deletion',
     arguments: { table: 'letters', letter_id: inspection.letter.id, proposed_at_ms: proposedAtMs },
     risk_level: 'destructive_write',
@@ -883,7 +883,13 @@ async function discardStagedDeletion(actionId) {
 
 // Deletes a single test letter, recording a full snapshot first so the row can
 // be reconstructed. Re-checks eligibility here rather than trusting the caller.
-async function deleteTestLetter(letterId, { actor, actorModel, userInstruction, actionId } = {}) {
+async function deleteTestLetter(letterId, {
+  actor,
+  actorModel,
+  userInstruction,
+  actionId,
+  agentId = 'aura_core'
+} = {}) {
   const db = initSupabase();
   if (!db) return { ok: false, reason: 'Database connection not configured.' };
 
@@ -909,7 +915,7 @@ async function deleteTestLetter(letterId, { actor, actorModel, userInstruction, 
   } else {
     const { data, error } = await db.from('aura_actions').insert({
       owner_id: ownerId,
-      agent_id: 'aura_core',
+      agent_id: agentId,
       tool_name: 'confirm_test_letter_deletion',
       arguments: { table: 'letters', letter_id: letter.id, instruction: userInstruction || null },
       risk_level: 'destructive_write',

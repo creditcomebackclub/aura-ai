@@ -8,6 +8,12 @@ needs to understand before touching authorization, tool execution, or the
 approval queue. Where the two disagree, the code described here is the ground
 truth; if you change one, change the other.
 
+The global tool tiers below are necessary but not sufficient authorization.
+`agent_router.js` may additionally scope a turn to the read-only `finance` or
+`client_operations` allowlist; `handleToolCall()` enforces that active
+allowlist and its risk ceiling after the global policy check. Mixed-domain and
+all action-oriented turns use `aura_core`.
+
 Scope: this covers `agent_policy.js`, the propose→approve→execute machinery in
 `server.js` and `ccc_database.js`/`supabase_state_store.js`, the untrusted-data
 handling in tool result envelopes, the fixed-recipient email/Telegram design,
@@ -259,10 +265,10 @@ Relevant columns and their lifecycle:
   letter deletion specifically, `result` holds
   `{ deleted_by, actor_model, record_snapshot }`, i.e. a full snapshot of the
   deleted row, so a mistaken deletion is at least reconstructible from the log.
-- `agent_id`: currently always `'aura_core'`, registered in `aura_agents` with
-  `allowed_tools` and `maximum_risk` columns that exist for future
-  multi-agent expansion (see `AGENTS.md` if present) but are not yet enforced
-  per-agent in code beyond the single `aura_core` identity.
+- `agent_id`: stamped from the active routed agent. Every action-oriented turn
+  routes to `aura_core`; the two specialists are read-only and therefore never
+  create action rows. `allowed_tools` and `maximum_risk` are enforced in
+  `handleToolCall()` in addition to the global policy.
 
 Both `GET /api/actions/pending` (list) and `POST /api/actions/:id/approve` /
 `POST /api/actions/:id/reject` (decide) read and write this same table. Those
@@ -506,7 +512,7 @@ account of what she can do.
 `agent_policy.js`'s pure-function shape (no Supabase/OpenAI/Express
 dependency) makes the tier map and authorization gate directly unit-testable;
 coverage lives in `test/core.test.js`, part of the `npm test` gate (currently
-54 tests passing across the suite) alongside `npm run check`
+the full test suite) alongside `npm run check`
 (`node --check` across all main `.js` files). Before changing anything in this
 document's scope:
 
@@ -526,10 +532,7 @@ document's scope:
   `agent_policy.js` and the propose/approve/execute code with the same level
   of review, even though they are hot-deployable in principle.
 
-**Needs verification, not asserted here:** whether `aura_agents.allowed_tools`
-/ `maximum_risk` are consulted anywhere in the current authorization path
-beyond the single `aura_core` agent row, versus being schema present for
-future multi-agent work only. `agent_policy.js` and the call sites read in
-preparing this document show a single hardcoded `agent_id: 'aura_core'`
-throughout, with no per-agent tool-filtering code found — but a full audit of
-every call site was out of scope here.
+Specialist routing is intentionally deterministic and conservative. When a
+turn spans finance and client operations, requests an action, or does not
+clearly match either specialist, it stays on Core. Do not loosen that fallback
+without adding routing and enforcement regression tests.

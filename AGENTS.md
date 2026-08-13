@@ -1,26 +1,23 @@
 # AGENTS.md
 
-Documents every "multi-agent"-shaped piece of this codebase: what's a real, running
-process, and what's a registry table with a name and a stated intent but no code
-wired to it yet. If you came here looking for a router that dispatches requests to
-different AI personas, **it does not exist**. Read this whole document before you
-try to add one — the pieces you'd expect to already be there (a tool-list-per-agent,
-a persona selector, a task-to-agent assignment) are present as *data shapes* in
-Supabase and absent as *behavior* in the JS.
+Documents every "multi-agent"-shaped piece of this codebase: the scoped specialist
+router inside the one AURA model loop, and the separate deterministic Mac companion
+process. The specialist labels are not separate bots or processes; they are
+least-privilege lenses selected for one owner turn.
 
-There are exactly two things in this system that resemble "agents":
+There are two things in this system that resemble "agents":
 
 1. **The `aura_agents` table** — three registered persona rows (`aura_core`,
-   `client_operations`, `finance`) with names, instructions, and tool allowlists.
-   Nothing in the codebase queries this table at runtime. See [Part 1](#part-1-the-aura_agents-table-a-persona-registry-with-no-router).
+   `client_operations`, `finance`) with names, instructions, tool allowlists, and
+   risk ceilings. `agent_router.js` activates the two read-only specialists inside
+   the existing model loop. See [Part 1](#part-1-scoped-specialist-routing).
 2. **`companion_worker.js`** — a real, separate, always-on process on the Mac that
    AURA's cloud instance hands Mac-only work to over a database job queue. This one
-   actually runs, actually executes work, and is the closest thing this system has
-   to a functioning multi-process agent handoff. See [Part 2](#part-2-the-mac-companion-a-real-second-process).
+   actually runs and executes work. See [Part 2](#part-2-the-mac-companion-a-real-second-process).
 
 ---
 
-## Part 1: The `aura_agents` table — a persona registry with no router
+## Part 1: Scoped specialist routing
 
 ### What exists
 
@@ -60,97 +57,40 @@ comments) as read-only auditors: the client-ops persona "audits client progress,
 phases, missing records, and stalled workflows" and "never modif[ies] client
 records"; the finance persona "reconciles collections, recurring revenue, balances,
 and commissions" and must "state the accounting definition behind every metric."
-These are real, well-considered personas — on paper.
+These descriptions now drive the scoped read-only lenses at runtime.
 
-### What actually happens at runtime
+### What happens at runtime
 
-Nothing reads this table. A repo-wide search for any JS reference to
-`allowed_tools`, `maximum_risk`, or a Supabase query against `aura_agents` comes back
-empty:
+There is still exactly one model loop and one `handleToolCall` dispatcher in
+`server.js`. Before each model turn, `agent_router.js` deterministically selects:
 
-```
-$ grep -rn "allowed_tools\|maximum_risk\|from('aura_agents')" --include="*.js" .
-(no matches outside node_modules)
-```
+- `finance` for finance-only reads such as MRR, collections, payments, invoices,
+  outstanding balances, and commissions;
+- `client_operations` for client-progress-only reads such as phase, disputes,
+  letters, bureau responses, and active-client counts;
+- `aura_core` for general conversation, mixed domains, ambiguous follow-ups, and
+  every write, external, or destructive request.
 
-There is exactly one live model loop, defined by the single flat `tools` array in
-`server.js` (~line 664 onward) and the single `handleToolCall` dispatcher. Every
-request — whether it's about a client's phase, a finance metric, or sending an
-email — goes to the same GPT-5.6 Sol call with the *same, full* tool list attached,
-governed by the *same* system prompt (`AURA_SOUL` + dynamic context). There is no
-code path that:
+Cloud runtime reads the two specialist rows with
+`SupabaseStateStore.listAgents()` and caches them for five minutes. Local
+runtime uses matching safe defaults. A missing or disabled specialist falls back
+to Core. The selected specialist's instructions are appended as a trusted scoped
+lens; AURA's base identity and voice never change.
 
-- looks at the user's message and decides "this is a `client_operations` request,"
-- swaps in `client_operations`'s `instructions` or `allowed_tools` for that turn, or
-- restricts which tools GPT-5.6 Sol can see based on any persona at all.
+Authorization is layered:
 
-The only thing that gates which tools can actually run is `agent_policy.js`'s
-`TOOL_POLICIES` map — a **flat, persona-agnostic** table of `tool_name -> risk_level`
-(`read` / `reversible_write` / `destructive_write` / implicitly `blocked` for
-anything not listed). It has no concept of `client_operations` or `finance` at all;
-every enabled tool is available to whichever conversation is running, all the time,
-subject only to its own risk level and tool-specific authorization described
-in `POLICY.md` (direct current-turn commands for calendar/email/Telegram;
-propose → approve → execute for deletion). In other words: **the tool-level authorization system that actually runs today
-is one flat policy shared by "everyone," not three scoped policies selected per
-persona.**
+1. `turn_context.js` drops irrelevant schemas for latency.
+2. `filterToolsForAgent()` restricts the schemas sent to the model to the active
+   specialist's `allowed_tools`.
+3. `agent_policy.js` validates the global tool policy and arguments.
+4. `assertAgentCanUseTool()` re-checks the active allowlist and `maximum_risk` in
+   `handleToolCall`, so a fabricated or recovered tool call cannot bypass routing.
 
-### The `agent_id` stamped on `aura_actions` is a label, not a selection
-
-Every write into `aura_actions` — test-letter deletion staging, direct email and
-Telegram audit records, memory/profile deletion staging — passes the **literal
-string `'aura_core'`** as `agent_id`, hardcoded at each call site
-(`ccc_database.js:589`, `ccc_database.js:662`, `server.js:1197`, `server.js:1233`,
-`supabase_state_store.js`'s `proposeAction(taskId, agentId, ...)` signature accepts
-an `agentId` parameter, but every caller in the codebase passes `'aura_core'`).
-Nothing ever passes `'client_operations'` or `'finance'` as an `agent_id`, because
-nothing ever decides that one of those personas is "active" for a given request —
-there's no such concept.
-
-Worth flagging as an internal inconsistency, not just an absence: `aura_core`'s own
-seeded `allowed_tools` (`list_deletable_test_letters`, `propose_test_letter_deletion`,
-`confirm_test_letter_deletion`) doesn't even cover the tools actually stamped with
-its id in practice — `send_owner_email`, `send_telegram_message`, `delete_memory`,
-`delete_profile_entry` are all recorded with `agent_id: 'aura_core'` but none of
-them appear in that row's `allowed_tools` array. This is more evidence the column is
-descriptive metadata that was never wired to an enforcement point, not a constraint
-anything checks.
-
-### `aura_tasks.assigned_agent` — same story
-
-`aura_tasks` has an `assigned_agent` column (FK to `aura_agents.id`), and
-`supabase_state_store.js`'s `addTask(title, options)` accepts an
-`options.assignedAgent` and writes it through. But the only call site in the
-codebase, `server.js`'s handler for the `add_goal` tool
-(`cloudState.addTask(args.description)`), never passes `assignedAgent`. Every task
-ever created by the running system has `assigned_agent = null`.
-
-### Why this is documented as intent, not fiction
-
-This isn't dead code that should be deleted — it reads as a deliberately-seeded
-scaffold for a real routing layer that was designed (three sensible personas, a
-risk ceiling per persona, a tool allowlist per persona, a task-assignment column to
-hang it off of) before the dispatch logic that would make it live was written. If
-you're picking this up to build that dispatch logic, the shape is already right;
-you'd be adding the *behavior*, not inventing the *schema*. Concretely, building
-real routing would mean at minimum:
-
-1. Deciding, per request or per task, which `aura_agents.id` applies (intent
-   classification, an explicit user selection, or an orchestrating "core" agent
-   that delegates sub-tasks).
-2. Filtering the `tools` array passed to the OpenAI call down to that row's
-   `allowed_tools` before the request goes out (today the full list always goes
-   out).
-3. Making `agent_policy.js`'s authorization check persona-aware — cross-referencing
-   `getToolPolicy(name)` against the *active* agent's `allowed_tools`/`maximum_risk`,
-   not just the tool's own global risk level.
-4. Actually passing the resolved agent id into `proposeAction(taskId, agentId, ...)`
-   and `addTask(title, { assignedAgent })` instead of the current hardcoded
-   `'aura_core'` / omitted value.
-
-None of that exists yet. Don't describe it as existing in any user-facing or
-future-agent-facing documentation — say plainly that `aura_agents` is a registry
-with no router, the way this document does.
+Specialists are read-only. They never execute actions or create tasks. Core writes
+chat-created goals and Executive Loop commitments with
+`assigned_agent = 'aura_core'`, and stamps the resolved Core id on audited actions.
+Assistant-message `brain.agent` metadata records which lens answered each model
+turn.
 
 ---
 
@@ -262,10 +202,9 @@ anything else throws `Unsupported Mac companion capability: ...`):
 has no `instructions`, no LLM call, no persona. It's plumbing: a capability-scoped
 RPC mechanism over a database queue, standing in for the request/response a
 same-process function call would normally give you, because the two halves of AURA
-run on different machines. If a future real agent-routing layer is built on top of
-`aura_agents`, the Mac companion would most naturally show up as a **tool
-implementation detail** available to whichever persona needs `check_email` /
-`check_calendar` / `send_email` — not as a fourth persona row itself.
+run on different machines. It remains a **tool implementation detail** used by
+Core, not a fourth persona row. The current read-only specialists do not expose
+Mac companion tools.
 
 ---
 
@@ -273,20 +212,19 @@ implementation detail** available to whichever persona needs `check_email` /
 
 | Concept | File(s) | Status |
 |---|---|---|
-| Persona registry (`aura_core`, `client_operations`, `finance`) | `supabase_aura_brain.sql`, `supabase_deletion_log.sql` (table + seed rows only) | Data only — no JS reads it |
-| Tool-level authorization (the thing that actually gates tool calls) | `agent_policy.js` (`TOOL_POLICIES`, `getToolPolicy`, `validateToolArguments`) | Live, flat, persona-agnostic |
-| Task-to-agent assignment column | `aura_tasks.assigned_agent`, `supabase_state_store.js`'s `addTask` | Column exists; always written `null` in practice |
-| Action-to-agent attribution column | `aura_actions.agent_id`, `supabase_state_store.js`'s `proposeAction` | Column exists; every call site hardcodes `'aura_core'` |
+| Persona registry (`aura_core`, `client_operations`, `finance`) | `supabase_aura_brain.sql`, `supabase_deletion_log.sql`, `supabase_state_store.js` | Live for specialist configuration |
+| Turn router + specialist enforcement | `agent_router.js`, `server.js` | Live; deterministic, one model loop, Core fallback |
+| Global tool authorization | `agent_policy.js` | Live; composed with specialist allowlist/risk checks |
+| Task-to-agent assignment | `aura_tasks.assigned_agent`, `supabase_state_store.js` | Core tasks are attributed; specialists are read-only |
+| Action-to-agent attribution | `aura_actions.agent_id`, `supabase_state_store.js` | Resolved active Core id is stamped by the tool handler |
 | Mac capability delegation (cloud → Mac) | `companion_client.js` (`CompanionClient.execute`) | Live |
 | Mac capability execution (on the Mac) | `companion_worker.js`, `mac_integration.js` | Live, runs as launchd service `com.aura.companion` |
 | Job queue table | `aura_companion_jobs` (see `supabase_aura_brain.sql`) | Live |
 
 ## Open questions / needs verification
 
-- Whether `client_operations` and `finance` were ever invoked through any earlier,
-  now-removed code path, or whether the rows have been dispatch-less since they
-  were first seeded — not verifiable from the current tree; treat them as
-  aspirational from day one unless you find evidence otherwise.
+- Whether future specialists should be allowed reversible writes. The current
+  router deliberately hard-falls action-oriented turns back to Core.
 - Whether a second Mac (a second `target_device` value) is planned — nothing in
   the current configuration or code suggests one is running today; this needs
   verification with the owner if it becomes relevant.

@@ -104,6 +104,14 @@ const { createExecutiveLoop } = require('./executive_loop');
 const { resolveExecutivePreferences } = require('./proactive_preferences');
 const { findBusinessSummaryPreference, formatBusinessSummary } = require('./business_summary');
 const {
+  DEFAULT_AGENTS,
+  assertAgentCanUseTool,
+  buildAgentPrompt,
+  filterToolsForAgent,
+  mergeAgentRegistry,
+  routeAgentForTurn
+} = require('./agent_router');
+const {
   brainRequestOptions,
   resolveModelConfig,
   resolveTranscribeModel,
@@ -330,6 +338,30 @@ const cloudState = useSupabaseState
       embeddingProvider: process.env.OPENAI_API_KEY ? getEmbedding : null
     })
   : null;
+let agentRegistryCache = mergeAgentRegistry();
+let agentRegistryExpiresAt = 0;
+let agentRegistryRefresh = null;
+
+async function getAgentRegistry() {
+  if (!cloudState) return agentRegistryCache;
+  if (Date.now() < agentRegistryExpiresAt) return agentRegistryCache;
+  if (agentRegistryRefresh) return agentRegistryRefresh;
+  agentRegistryRefresh = cloudState.listAgents(['client_operations', 'finance'])
+    .then(rows => {
+      agentRegistryCache = mergeAgentRegistry(rows, { fallbackMissing: false });
+      agentRegistryExpiresAt = Date.now() + 5 * 60 * 1000;
+      return agentRegistryCache;
+    })
+    .catch(error => {
+      console.warn('[Agent router] Registry lookup failed; using safe defaults:', error.message || error);
+      agentRegistryExpiresAt = Date.now() + 60 * 1000;
+      return agentRegistryCache;
+    })
+    .finally(() => {
+      agentRegistryRefresh = null;
+    });
+  return agentRegistryRefresh;
+}
 const retrievalTraceStore = cloudState
   ? new RetrievalTraceStore({ stateStore: cloudState })
   : null;
@@ -1325,6 +1357,7 @@ const runExecutiveLoop = createExecutiveLoop({
     if (!cloudState) return null;
     return cloudState.addTask(commitment.title, {
       id: commitment.id,
+      assignedAgent: 'aura_core',
       dueAt: commitment.due_at,
       priority: 'normal',
       input: {
@@ -1985,6 +2018,7 @@ async function correctFalseCapabilityDenial({
   evidence,
   sentenceGate = null,
   signal = null,
+  agent = DEFAULT_AGENTS.aura_core,
   reasoningEffort: turnReasoningEffort = null
 }) {
   throwIfAborted(signal);
@@ -2056,6 +2090,7 @@ async function correctFalseCapabilityDenial({
           turn: conversationTurn,
           requestStartedAtMs: Date.now(),
           userInstruction: '',
+          agent,
           signal
         });
         throwIfAborted(signal);
@@ -2162,6 +2197,9 @@ async function redeemStagedDeletion(letterId, requestStartedAtMs, ownerMessage) 
 async function handleToolCall(toolCall, options = {}) {
   throwIfAborted(options.signal);
   const { name, policy, args } = parseAndAuthorizeToolCall(toolCall);
+  const activeAgent = options.agent || DEFAULT_AGENTS.aura_core;
+  assertAgentCanUseTool(activeAgent, name, policy);
+  const agentId = activeAgent.id || 'aura_core';
   if (process.env.AURA_TOOL_TRACE) console.log('[tool]', name, JSON.stringify(args).slice(0,200));
   const turn = options.turn ?? conversationTurn;
   let result;
@@ -2171,7 +2209,7 @@ async function handleToolCall(toolCall, options = {}) {
         timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
       });
       if (cloudState) {
-        result = await cloudState.addTask(args.description, { dueAt });
+        result = await cloudState.addTask(args.description, { dueAt, assignedAgent: agentId });
       } else {
         db.prepare(
           'INSERT INTO goals (description, due_at, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)'
@@ -2246,7 +2284,7 @@ async function handleToolCall(toolCall, options = {}) {
         break;
       }
       const emailAction = await cloudState.proposeAction(
-        null, 'aura_core', 'send_owner_email',
+        null, agentId, 'send_owner_email',
         { subject: args.subject, body: args.body, pdf_content: args.pdf_content || null },
         'destructive_write'
       );
@@ -2270,7 +2308,7 @@ async function handleToolCall(toolCall, options = {}) {
         break;
       }
       const thirdPartyEmailAction = await cloudState.proposeAction(
-        null, 'aura_core', 'send_email',
+        null, agentId, 'send_email',
         { to: args.to, subject: args.subject, body: args.body, pdf_content: args.pdf_content || null },
         'external_action'
       );
@@ -2326,7 +2364,7 @@ async function handleToolCall(toolCall, options = {}) {
         // normal aura_actions audit trail, but execute in the same turn just as
         // owner-only Telegram delivery does. No redundant queue approval.
         const calendarAction = await cloudState.proposeAction(
-          null, 'aura_core', 'create_calendar_event', actionArgs, 'reversible_write'
+          null, agentId, 'create_calendar_event', actionArgs, 'reversible_write'
         );
         const executed = await executeApprovedAction(calendarAction);
         if (executed.status !== 'succeeded') {
@@ -2382,7 +2420,7 @@ async function handleToolCall(toolCall, options = {}) {
       // honestly reflects that no approval step occurred.
       if (cloudState) {
         const telegramAction = await cloudState.proposeAction(
-          null, 'aura_core', 'send_telegram_message', { message: args.message }, 'destructive_write'
+          null, agentId, 'send_telegram_message', { message: args.message }, 'destructive_write'
         );
         const telegramExecuted = await executeApprovedAction(telegramAction);
         result = telegramExecuted.status === 'succeeded'
@@ -2419,7 +2457,11 @@ async function handleToolCall(toolCall, options = {}) {
         result = `This letter cannot be deleted. ${inspection.reason}`;
         break;
       }
-      const staged = await ccc.stageTestLetterDeletion(inspection.letter.id, options.requestStartedAtMs ?? Date.now());
+      const staged = await ccc.stageTestLetterDeletion(
+        inspection.letter.id,
+        options.requestStartedAtMs ?? Date.now(),
+        { agentId }
+      );
       if (!staged.ok) {
         result = `Could not stage this letter for deletion. ${staged.reason}`;
         break;
@@ -2455,7 +2497,8 @@ async function handleToolCall(toolCall, options = {}) {
         actor: 'AURA',
         actorModel: chatModel,
         userInstruction: options.userInstruction || null,
-        actionId: redemption.actionId
+        actionId: redemption.actionId,
+        agentId
       });
       result = outcome.ok
         ? `Deleted at ${outcome.deletedAt}, logged to the audit trail as performed by AURA (audit id ${outcome.auditId}): ${JSON.stringify(outcome.deleted)}`
@@ -2674,14 +2717,15 @@ async function processOwnerText(text, {
       // Same turn-start timestamp as the live path so propose+confirm inside
       // one isolated exchange still fails the later-turn gate.
       const requestStartedAtMs = Date.now();
+      const activeAgent = routeAgentForTurn(text, await getAgentRegistry());
       const chatHistory = [{
         role: 'system',
         content: AURA_SOUL + buildTemporalContext({
           now: new Date(requestStartedAtMs),
           timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
-        })
+        }) + buildAgentPrompt(activeAgent)
       }, { role: 'user', content: text }];
-      const turnTools = selectToolsForTurn(text);
+      const turnTools = filterToolsForAgent(selectToolsForTurn(text), activeAgent);
       const availableToolNames = turnTools.map(tool => tool.function.name);
       const turnReasoningEffort = reasoningEffortForTurn(text, {
         baseEffort: reasoningEffort,
@@ -2732,6 +2776,7 @@ async function processOwnerText(text, {
               turn: -1,
               requestStartedAtMs,
               userInstruction: text,
+              agent: activeAgent,
               signal
             });
             throwIfAborted(signal);
@@ -2821,6 +2866,7 @@ async function processOwnerText(text, {
         evidence,
         sentenceGate,
         signal,
+        agent: activeAgent,
         reasoningEffort: turnReasoningEffort
       });
       const isolatedProtocolLeak = sentenceGate.getProtocolLeak?.() ||
@@ -2838,6 +2884,7 @@ async function processOwnerText(text, {
         web_results: webResults.slice(0, 2),
         brain: {
           tier: 'isolated_eval',
+          agent: activeAgent.id,
           model: response._model || chatModel,
           reasoning_effort: turnReasoningEffort,
           provider_reasoning_effort: response._reasoning_effort || null
@@ -3028,15 +3075,17 @@ async function processOwnerText(text, {
     const beliefsPromise = beliefStore && !lightweight && !directMetricsAsk
       ? beliefStore.relevant(text, 6)
       : Promise.resolve([]);
-    const [memoryContext, conversationContext, metricsRaw, relevantBeliefs] = await Promise.all([
+    const [memoryContext, conversationContext, metricsRaw, relevantBeliefs, agentRegistry] = await Promise.all([
       memoryV2.buildContext(text, {
         includeSemantic: !skipSemantic,
         includeAlwaysOn: !lightweight && !directMetricsAsk
       }),
       conversationContextPromise,
       metricsPromise,
-      beliefsPromise
+      beliefsPromise,
+      getAgentRegistry()
     ]);
+    const activeAgent = routeAgentForTurn(text, agentRegistry);
     pendingMemoryConfirmation ||= memoryContext.pendingConfirmation;
     throwIfAborted(signal);
     const contextBuildMs = Date.now() - contextBuildStartedAtMs;
@@ -3108,7 +3157,8 @@ async function processOwnerText(text, {
         summaryContext +
         skillsIndexContext +
         pendingMemoryConfirmationContext +
-        metricsPromptBlock
+        metricsPromptBlock +
+        buildAgentPrompt(activeAgent)
     };
 
     const chatHistory = [systemPrompt, ...messages];
@@ -3117,6 +3167,7 @@ async function processOwnerText(text, {
       // Numbers are already in the prompt — skip the silent tool round.
       turnTools = turnTools.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
     }
+    turnTools = filterToolsForAgent(turnTools, activeAgent);
     const availableToolNames = turnTools.map(tool => tool.function.name);
     const turnReasoningEffort = reasoningEffortForTurn(text, {
       baseEffort: reasoningEffort,
@@ -3227,14 +3278,26 @@ async function processOwnerText(text, {
             await dailyWebSearchLimiter.consume();
             webSearchUnitReserved = true;
             const toolStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
-            functionResult = await handleToolCall(toolCall, { publicSearchInput, turn: requestTurn, requestStartedAtMs, signal });
+            functionResult = await handleToolCall(toolCall, {
+              publicSearchInput,
+              turn: requestTurn,
+              requestStartedAtMs,
+              agent: activeAgent,
+              signal
+            });
             throwIfAborted(signal);
             if (process.env.AURA_TIMING_TRACE) {
               console.log(`[timing] tool ${toolName}: ${Date.now() - toolStartedAtMs}ms`);
             }
           } else {
             const toolStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
-            functionResult = await handleToolCall(toolCall, { turn: requestTurn, requestStartedAtMs, userInstruction: text, signal });
+            functionResult = await handleToolCall(toolCall, {
+              turn: requestTurn,
+              requestStartedAtMs,
+              userInstruction: text,
+              agent: activeAgent,
+              signal
+            });
             throwIfAborted(signal);
             if (process.env.AURA_TIMING_TRACE) {
               console.log(`[timing] tool ${toolName}: ${Date.now() - toolStartedAtMs}ms`);
@@ -3367,6 +3430,7 @@ async function processOwnerText(text, {
       evidence,
       sentenceGate,
       signal,
+      agent: activeAgent,
       reasoningEffort: turnReasoningEffort
     });
     throwIfAborted(signal);
@@ -3384,6 +3448,7 @@ async function processOwnerText(text, {
     const assistantMessage = await addConversationMessage('assistant', reply, {
       evidence,
       brain: {
+        agent: activeAgent.id,
         model: response._model || chatModel,
         reasoning_effort: turnReasoningEffort,
         provider_reasoning_effort: response._reasoning_effort || null
@@ -3438,6 +3503,7 @@ async function processOwnerText(text, {
       web_results: webResults.slice(0, 2),
       brain: {
         tier: chatModel === 'gpt-5.6-sol' ? 'sol' : 'configured',
+        agent: activeAgent.id,
         model: response._model || chatModel,
         reasoning_effort: turnReasoningEffort,
         provider_reasoning_effort: response._reasoning_effort || null

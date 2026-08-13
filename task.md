@@ -96,7 +96,7 @@ actually decided are coming next.*
 
 - Add enforced GitHub CI checks; current PRs have no status checks and rely on locally reported
   `npm test` / `npm run check` results.
-- `aura_agents` persona routing — only if scoped personas are wanted; schema exists, no router
+- Evaluate specialist-routing telemetry before adding any reversible-write specialist.
   (see `AGENTS.md`).
 
 ---

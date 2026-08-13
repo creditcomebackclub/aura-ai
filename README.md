@@ -342,6 +342,7 @@ deletions retain their separate approval gate.
 ## Architecture
 
 - `server.js` — HTTP/WebSocket server, agent loop, tools, cron jobs
+- `agent_router.js` — Core/Client Operations/Finance routing and least-privilege enforcement
 - `executive_loop.js` — proactive inbox/calendar/meeting/commitment monitoring
 - `agent_policy.js` — tool authorization and argument validation
 - `memory_store.js` — structured long-term memory
