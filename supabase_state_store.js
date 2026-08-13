@@ -634,6 +634,13 @@ class SupabaseStateStore {
     return data || [];
   }
 
+  async getAction(id) {
+    const { data, error } = await this.client.from('aura_actions').select('*')
+      .eq('owner_id', this.ownerId).eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
   async decideAction(id, approved, approvedBy = this.ownerId) {
     const patch = approved
       ? { status: 'approved', approved_by: approvedBy, approved_at: new Date().toISOString() }
@@ -657,6 +664,314 @@ class SupabaseStateStore {
       .select('*').maybeSingle();
     if (error) throw error;
     return data;
+  }
+
+  async saveLinkedInRelationship(input) {
+    const now = new Date().toISOString();
+    const { data: existing, error: existingError } = await this.client.from('aura_linkedin_relationships')
+      .select('*').eq('owner_id', this.ownerId).eq('profile_url', input.profile_url).maybeSingle();
+    if (existingError) throw existingError;
+    const row = {
+      owner_id: this.ownerId,
+      profile_url: input.profile_url,
+      linkedin_member_urn: input.linkedin_member_urn || existing?.linkedin_member_urn || null,
+      conversation_urn: input.conversation_urn || existing?.conversation_urn || null,
+      display_name: input.display_name,
+      headline: input.headline || existing?.headline || null,
+      location: input.location || existing?.location || null,
+      profile_summary: input.profile_summary || existing?.profile_summary || null,
+      conversation_context: input.conversation_context || existing?.conversation_context || null,
+      last_interaction_at: input.last_interaction_at || existing?.last_interaction_at || null,
+      topic: input.topic || existing?.topic || null,
+      intended_next_step: input.intended_next_step || existing?.intended_next_step || null,
+      updated_at: now
+    };
+    const { data, error } = await this.client.from('aura_linkedin_relationships')
+      .upsert(row, { onConflict: 'owner_id,profile_url' })
+      .select('*').single();
+    if (error) throw error;
+    await this.recordLinkedInAudit({
+      relationshipId: data.id,
+      eventType: 'context_saved',
+      actor: 'aura',
+      metadata: {
+        source: 'owner_selected_context',
+        has_profile_summary: Boolean(data.profile_summary),
+        has_conversation_context: Boolean(data.conversation_context)
+      }
+    });
+    return data;
+  }
+
+  async listLinkedInRelationships(limit = 20) {
+    const bounded = Math.max(1, Math.min(100, Number(limit) || 20));
+    const { data, error } = await this.client.from('aura_linkedin_relationships')
+      .select('id, profile_url, display_name, headline, location, last_interaction_at, topic, intended_next_step, updated_at')
+      .eq('owner_id', this.ownerId)
+      .order('updated_at', { ascending: false })
+      .limit(bounded);
+    if (error) throw error;
+    return data || [];
+  }
+
+  async getLinkedInRelationship(id) {
+    const { data, error } = await this.client.from('aura_linkedin_relationships')
+      .select('*').eq('owner_id', this.ownerId).eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async reviewLinkedInRelationship(id) {
+    const relationship = await this.getLinkedInRelationship(id);
+    if (!relationship) return null;
+    await this.recordLinkedInAudit({
+      relationshipId: id,
+      eventType: 'context_reviewed',
+      actor: 'aura',
+      metadata: { source: 'live_tool_result' }
+    });
+    return relationship;
+  }
+
+  async recordLinkedInAudit({
+    relationshipId,
+    draftId = null,
+    actionId = null,
+    eventType,
+    actor,
+    metadata = {}
+  }) {
+    const { data, error } = await this.client.from('aura_linkedin_audit').insert({
+      owner_id: this.ownerId,
+      relationship_id: relationshipId,
+      draft_id: draftId,
+      action_id: actionId,
+      event_type: eventType,
+      actor,
+      metadata
+    }).select('*').single();
+    if (error) throw error;
+    return data;
+  }
+
+  async stageLinkedInDraft({
+    relationshipId,
+    messageType,
+    purpose,
+    subject = null,
+    body,
+    approvalCode,
+    agentId = 'aura_core',
+    supersedesDraftId = null
+  }) {
+    const relationship = await this.getLinkedInRelationship(relationshipId);
+    if (!relationship) throw new Error('LinkedIn relationship not found.');
+
+    let version = 1;
+    const { data: latest, error: latestError } = await this.client.from('aura_linkedin_drafts')
+      .select('version').eq('owner_id', this.ownerId).eq('relationship_id', relationshipId)
+      .order('version', { ascending: false }).limit(1).maybeSingle();
+    if (latestError) throw latestError;
+    if (latest) version = Number(latest.version) + 1;
+
+    if (supersedesDraftId) {
+      const previous = await this.getLinkedInDraft(supersedesDraftId);
+      if (!previous || previous.relationship_id !== relationshipId) {
+        throw new Error('The draft being revised does not belong to this relationship.');
+      }
+      if (!['draft', 'failed'].includes(previous.status)) {
+        throw new Error(`A ${previous.status} LinkedIn draft cannot be revised.`);
+      }
+    }
+
+    const { data: draft, error: draftError } = await this.client.from('aura_linkedin_drafts').insert({
+      owner_id: this.ownerId,
+      relationship_id: relationshipId,
+      supersedes_draft_id: supersedesDraftId,
+      recipient_member_urn: relationship.linkedin_member_urn || null,
+      conversation_urn: relationship.conversation_urn || null,
+      version,
+      approval_code: approvalCode,
+      message_type: messageType,
+      purpose,
+      subject,
+      body,
+      status: 'draft'
+    }).select('*').single();
+    if (draftError) throw draftError;
+
+    let action;
+    try {
+      action = await this.proposeAction(null, agentId, 'send_linkedin_message', {
+        linkedin_draft_id: draft.id,
+        approval_code: approvalCode,
+        relationship_id: relationshipId,
+        recipient_name: relationship.display_name,
+        profile_url: relationship.profile_url,
+        recipient_member_urn: relationship.linkedin_member_urn || null,
+        conversation_urn: relationship.conversation_urn || null,
+        message_type: messageType,
+        subject,
+        body
+      }, 'external_action');
+      const { data: bound, error: bindError } = await this.client.from('aura_linkedin_drafts')
+        .update({ action_id: action.id, updated_at: new Date().toISOString() })
+        .eq('owner_id', this.ownerId).eq('id', draft.id).is('action_id', null)
+        .select('*').single();
+      if (bindError) throw bindError;
+      if (supersedesDraftId) await this.supersedeLinkedInDraft(supersedesDraftId);
+      await this.recordLinkedInAudit({
+        relationshipId,
+        draftId: bound.id,
+        actionId: action.id,
+        eventType: supersedesDraftId ? 'draft_edited' : 'draft_created',
+        actor: 'aura',
+        metadata: {
+          version,
+          message_type: messageType,
+          approval_code: approvalCode,
+          supersedes_draft_id: supersedesDraftId
+        }
+      });
+      return { ...bound, relationship, action };
+    } catch (error) {
+      if (action?.id) {
+        await this.client.from('aura_actions').update({ status: 'cancelled', error: 'Draft staging did not complete.' })
+          .eq('owner_id', this.ownerId).eq('id', action.id).eq('status', 'proposed');
+        await this.client.from('aura_linkedin_drafts')
+          .update({ status: 'failed', error: error.message, updated_at: new Date().toISOString() })
+          .eq('owner_id', this.ownerId).eq('id', draft.id);
+      }
+      await this.client.from('aura_linkedin_drafts').delete()
+        .eq('owner_id', this.ownerId).eq('id', draft.id).is('action_id', null);
+      throw error;
+    }
+  }
+
+  async supersedeLinkedInDraft(id) {
+    const draft = await this.getLinkedInDraft(id);
+    if (!draft) return null;
+    if (draft.action_id) {
+      const { error: actionError } = await this.client.from('aura_actions')
+        .update({ status: 'cancelled', error: 'Superseded by a revised LinkedIn draft.' })
+        .eq('owner_id', this.ownerId).eq('id', draft.action_id).eq('status', 'proposed');
+      if (actionError) throw actionError;
+    }
+    const { data, error } = await this.client.from('aura_linkedin_drafts')
+      .update({ status: 'superseded', updated_at: new Date().toISOString() })
+      .eq('owner_id', this.ownerId).eq('id', id).in('status', ['draft', 'failed'])
+      .select('*').maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async getLinkedInDraft(id) {
+    const { data, error } = await this.client.from('aura_linkedin_drafts')
+      .select('*').eq('owner_id', this.ownerId).eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async getLinkedInDraftByApprovalCode(code) {
+    const { data, error } = await this.client.from('aura_linkedin_drafts')
+      .select('*').eq('owner_id', this.ownerId).eq('approval_code', code).maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async listLinkedInDrafts({ relationshipId = null, limit = 30 } = {}) {
+    let query = this.client.from('aura_linkedin_drafts').select('*')
+      .eq('owner_id', this.ownerId).order('created_at', { ascending: false })
+      .limit(Math.max(1, Math.min(100, Number(limit) || 30)));
+    if (relationshipId) query = query.eq('relationship_id', relationshipId);
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+  }
+
+  async listLinkedInAudit({ relationshipId = null, draftId = null, limit = 100 } = {}) {
+    let query = this.client.from('aura_linkedin_audit').select('*')
+      .eq('owner_id', this.ownerId).order('created_at', { ascending: false })
+      .limit(Math.max(1, Math.min(200, Number(limit) || 100)));
+    if (relationshipId) query = query.eq('relationship_id', relationshipId);
+    if (draftId) query = query.eq('draft_id', draftId);
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+  }
+
+  async markLinkedInDraftApproved(draft, action) {
+    const now = new Date().toISOString();
+    const { data, error } = await this.client.from('aura_linkedin_drafts')
+      .update({ status: 'approved', approved_at: now, updated_at: now, error: null })
+      .eq('owner_id', this.ownerId).eq('id', draft.id).eq('action_id', action.id)
+      .eq('status', 'draft').select('*').maybeSingle();
+    if (error) throw error;
+    if (data) await this.recordLinkedInAudit({
+      relationshipId: draft.relationship_id,
+      draftId: draft.id,
+      actionId: action.id,
+      eventType: 'draft_approved',
+      actor: 'owner',
+      metadata: { version: draft.version, approval_code: draft.approval_code }
+    });
+    return data || null;
+  }
+
+  async rejectLinkedInDraft(draft, action, approvedBy = this.ownerId) {
+    const rejectedAction = await this.decideAction(action.id, false, approvedBy);
+    if (!rejectedAction) return null;
+    const { data, error } = await this.client.from('aura_linkedin_drafts')
+      .update({ status: 'rejected', updated_at: new Date().toISOString() })
+      .eq('owner_id', this.ownerId).eq('id', draft.id).eq('status', 'draft')
+      .select('*').maybeSingle();
+    if (error) throw error;
+    if (data) await this.recordLinkedInAudit({
+      relationshipId: draft.relationship_id,
+      draftId: draft.id,
+      actionId: action.id,
+      eventType: 'draft_rejected',
+      actor: 'owner',
+      metadata: { version: draft.version, approval_code: draft.approval_code }
+    });
+    return data || null;
+  }
+
+  async recordLinkedInDelivery(draft, action, { result = null, error: errorMessage = null } = {}) {
+    const succeeded = Boolean(result?.sent);
+    const failureText = errorMessage instanceof Error
+      ? errorMessage.message
+      : String(errorMessage || 'Unknown LinkedIn delivery failure.');
+    const failureCode = errorMessage instanceof Error ? (errorMessage.code || null) : null;
+    const now = new Date().toISOString();
+    const status = succeeded ? 'sent' : 'failed';
+    const { data, error } = await this.client.from('aura_linkedin_drafts').update({
+      status,
+      sent_at: succeeded ? now : null,
+      delivery_receipt: succeeded ? result : null,
+      error: succeeded ? null : failureText,
+      updated_at: now
+    }).eq('owner_id', this.ownerId).eq('id', draft.id).eq('action_id', action.id)
+      .in('status', ['draft', 'approved', 'failed']).select('*').maybeSingle();
+    if (error) throw error;
+    if (!data) throw new Error('LinkedIn draft delivery status could not be recorded.');
+    if (succeeded) {
+      const { error: relationshipError } = await this.client.from('aura_linkedin_relationships')
+        .update({ last_interaction_at: now, updated_at: now })
+        .eq('owner_id', this.ownerId).eq('id', draft.relationship_id);
+      if (relationshipError) throw relationshipError;
+    }
+    await this.recordLinkedInAudit({
+      relationshipId: draft.relationship_id,
+      draftId: draft.id,
+      actionId: action.id,
+      eventType: succeeded ? 'send_succeeded' : 'send_failed',
+      actor: 'connector',
+      metadata: succeeded
+        ? { provider: result.provider || 'linkedin', provider_id: result.provider_id || null }
+        : { error_code: failureCode, error: failureText.slice(0, 500) }
+    });
+    return data || null;
   }
 
   async enqueueMemoryExtraction(messageId, { maxAttempts = 5 } = {}) {

@@ -1,3 +1,9 @@
+const {
+  normalizeApprovalCode,
+  normalizeDraftInput,
+  normalizeRelationshipInput
+} = require('./linkedin_relationship');
+
 const TOOL_POLICIES = Object.freeze({
   list_database_tables: 'read',
   get_table_schema: 'read',
@@ -13,6 +19,12 @@ const TOOL_POLICIES = Object.freeze({
   query_finances: 'read',
   check_blackboard: 'read',
   search_web: 'read',
+  list_linkedin_relationships: 'read',
+  get_linkedin_relationship_context: 'read',
+  save_linkedin_relationship_context: 'reversible_write',
+  draft_linkedin_message: 'reversible_write',
+  approve_linkedin_message: 'external_action',
+  reject_linkedin_message: 'reversible_write',
   list_deletable_test_letters: 'read',
   add_goal: 'reversible_write',
   get_reminders: 'read',
@@ -151,6 +163,13 @@ function validateToolArguments(name, args) {
     }
   };
 
+  const requireUuid = (value, label) => {
+    if (typeof value !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+      throw new Error(`${label} must be a UUID.`);
+    }
+  };
+
   if (['get_table_schema', 'query_database_table', 'count_database_rows'].includes(name)) {
     requireString('table_name', 80);
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(args.table_name)) {
@@ -164,6 +183,31 @@ function validateToolArguments(name, args) {
   if (name === 'search_web') {
     requireString('query', 500);
     validatePublicSearchInput(args.query, 500);
+  }
+  if (name === 'save_linkedin_relationship_context') {
+    Object.assign(args, normalizeRelationshipInput(args));
+  }
+  if (name === 'get_linkedin_relationship_context') {
+    requireUuid(args.relationship_id, 'LinkedIn relationship id');
+  }
+  if (name === 'draft_linkedin_message') {
+    for (const prohibited of ['recipients', 'audience', 'search_filter', 'schedule_at', 'auto_follow_up']) {
+      if (args[prohibited] !== undefined) {
+        throw new Error(`LinkedIn drafts cannot include ${prohibited}; only one selected relationship is allowed.`);
+      }
+    }
+    requireUuid(args.relationship_id, 'LinkedIn relationship id');
+    requireString('context_receipt', 64);
+    if (!/^[a-f0-9]{64}$/.test(args.context_receipt)) {
+      throw new Error('LinkedIn context receipt must be the exact value returned by the context tool.');
+    }
+    if (args.supersedes_draft_id !== undefined && args.supersedes_draft_id !== null) {
+      requireUuid(args.supersedes_draft_id, 'Superseded LinkedIn draft id');
+    }
+    Object.assign(args, normalizeDraftInput(args));
+  }
+  if (name === 'approve_linkedin_message' || name === 'reject_linkedin_message') {
+    args.approval_code = normalizeApprovalCode(args.approval_code);
   }
   if (name === 'propose_test_letter_deletion' || name === 'confirm_test_letter_deletion') {
     requireString('letter_id', 300);

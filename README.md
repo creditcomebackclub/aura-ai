@@ -441,6 +441,68 @@ node login-blackboard.js
 Complete login and 2FA, reach the portal dashboard, and close the opened browser.
 The browser profile stores session cookies, never the password itself.
 
+## LinkedIn relationship assistant
+
+AURA supports deliberate, one-person-at-a-time LinkedIn relationship work. It
+does not search for audiences, scrape profiles, automatically connect, schedule
+follow-ups, or send from a match/filter. The owner selects a profile and supplies
+the relevant public profile details and conversation excerpt; AURA stores that
+context, shows the facts it is using, and creates one exact draft.
+
+The supported sequence is:
+
+1. Save or load one owner-selected relationship. The relationship record keeps
+   the profile URL, public context, selected conversation context, last
+   interaction, topic, and intended next step.
+2. Review that exact context. A content receipt binds drafting to the latest
+   stored version so a stale context cannot silently produce a draft.
+3. Establish the purpose from the owner's request or clear context. If it is not
+   clear, AURA asks instead of forcing a credit-repair, funding, referral, or
+   sales angle.
+4. Create an immutable versioned draft. AURA shows the exact recipient, optional
+   subject, body, empty attachment list, `draft` status, and a unique
+   `LI-XXXXXXXX` approval code.
+5. Send only after the owner repeats that exact code with an explicit approve or
+   send command. An edit creates a new version and cancels the prior pending
+   action. The action and draft become `sent` only after LinkedIn returns a
+   successful delivery receipt.
+
+Run `supabase_linkedin_relationship.sql` once after the main cloud-state schema.
+It creates owner-scoped relationship, draft, and append-only audit tables. Draft
+content becomes database-immutable as soon as its approval action is attached.
+`aura_actions` remains the execution gate, while `aura_linkedin_audit` records
+context saves/reviews, drafts, edits, approvals, rejections, successes, and
+failures.
+
+LinkedIn's self-serve sign-in APIs identify the authenticated account; they do
+not provide general access to other profiles or a personal inbox. The official
+[Profile API](https://learn.microsoft.com/en-us/linkedin/shared/integrations/people/profile-api)
+and [Communications APIs](https://learn.microsoft.com/en-us/linkedin/shared/integrations/communications/overview)
+require approved access for these use cases. LinkedIn also requires each message
+to follow a specific member action, show an editable prepared draft, and receive
+an affirmative send action at that time; automated or scheduled sends do not
+qualify. AURA follows those [Messages API requirements](https://learn.microsoft.com/en-us/linkedin/shared/integrations/communications/messages).
+
+When LinkedIn has approved the application for the Invitations/Messages APIs,
+configure its member access token as `LINKEDIN_ACCESS_TOKEN` on the AURA server.
+An ordinary Sign in with LinkedIn token is not enough. Without partner access,
+relationship memory and drafts still work, but an approval attempt returns a
+clear partner-access error and the draft is marked `failed`, never `sent`. AURA
+does not fall back to browser automation or scraping.
+
+Authenticated operational endpoints are available at:
+
+- `GET /api/linkedin/status`
+- `GET /api/linkedin/relationships`
+- `GET /api/linkedin/relationships/:id`
+- `GET /api/linkedin/drafts`
+- `GET /api/linkedin/audit`
+
+The normal `GET /api/actions/pending`, `/approve`, and `/reject` endpoints also
+surface and decide LinkedIn actions. Pending action arguments include the exact
+recipient, profile, type, subject, body, and approval code that will be checked
+again against the immutable draft before delivery.
+
 ## Development
 
 ```bash
@@ -473,10 +535,11 @@ Service output is written to `aura-service.log` and
 ## Cloud brain migration
 
 1. Run `supabase_aura_brain.sql` in the Supabase SQL Editor.
-2. Set `AURA_OWNER_ID` to the owner's Supabase Auth user id.
-3. Run `npm run migrate:supabase` once.
-4. Set `AURA_STATE_BACKEND=supabase`.
-5. Restart and verify chat history, memories, notifications, and tasks.
+2. Run `supabase_linkedin_relationship.sql` for LinkedIn relationship assistance.
+3. Set `AURA_OWNER_ID` to the owner's Supabase Auth user id.
+4. Run `npm run migrate:supabase` once.
+5. Set `AURA_STATE_BACKEND=supabase`.
+6. Restart and verify chat history, memories, notifications, tasks, and LinkedIn drafts.
 
 `render.yaml` and `Dockerfile` define a Render Starter web service. Configure
 the secret environment variables in the Render blueprint, set
@@ -538,6 +601,8 @@ deletions retain their separate approval gate.
 - `goal_match_store.js` — goal-connection ledger and adaptive thresholds
 - `calendar_availability.js` — open business-hours windows from known events
 - `reply_draft.js` — templated scheduling reply staged for owner approval
+- `linkedin_relationship.js` — one-person context, draft, receipt, and approval-code validation
+- `linkedin_client.js` — official partner-only Invitations/Messages delivery; never scraping
 - `agent_policy.js` — tool authorization and argument validation
 - `memory_store.js` — structured long-term memory
 - `memory_v2.js` — pinned profile, extraction, corrections, retrieval, summaries

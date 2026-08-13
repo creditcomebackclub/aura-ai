@@ -12,6 +12,8 @@ test('completion claims require the matching successful receipt', () => {
   assert.equal(findUnsupportedActionClaim("I'll check in with you every Thursday.").kind, 'reminder');
   assert.equal(findUnsupportedActionClaim("I'll make sure to remind you every Thursday.").kind, 'reminder');
   assert.equal(findUnsupportedActionClaim('I cancelled your reminder.').kind, 'reminder cancellation');
+  assert.equal(findUnsupportedActionClaim('I sent the LinkedIn message.').kind, 'LinkedIn message');
+  assert.equal(findUnsupportedActionClaim('Your LinkedIn draft is ready.').kind, 'LinkedIn draft');
   assert.equal(
     findUnsupportedActionClaim("You're set. I'll remind you every Thursday.", ['set_reminder']),
     null
@@ -37,4 +39,8 @@ test('failed action results never become successful evidence', () => {
   assert.equal(toolResultSucceeded('send_email', 'Sent to person@example.com.'), true);
   assert.equal(toolResultSucceeded('create_calendar_event', 'Calendar event failed: outage'), false);
   assert.equal(toolResultSucceeded('create_calendar_event', 'Created on Google Calendar.'), true);
+  assert.equal(toolResultSucceeded('draft_linkedin_message', { drafted: true, sent: false }), true);
+  assert.equal(toolResultSucceeded('draft_linkedin_message', { drafted: false, sent: false }), false);
+  assert.equal(toolResultSucceeded('approve_linkedin_message', { sent: false, status: 'failed' }), false);
+  assert.equal(toolResultSucceeded('approve_linkedin_message', { sent: true, status: 'sent' }), true);
 });

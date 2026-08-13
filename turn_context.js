@@ -50,6 +50,14 @@ const PERSONAL_FINANCE_TOOL_NAMES = new Set(['log_finance', 'query_finances']);
 const MEMORY_WRITE_TOOL_NAMES = new Set(['save_semantic_memory']);
 const EMAIL_READ_TOOL_NAMES = new Set(['check_email']);
 const CALENDAR_READ_TOOL_NAMES = new Set(['check_calendar']);
+const LINKEDIN_TOOL_NAMES = new Set([
+  'list_linkedin_relationships',
+  'get_linkedin_relationship_context',
+  'save_linkedin_relationship_context',
+  'draft_linkedin_message',
+  'approve_linkedin_message',
+  'reject_linkedin_message'
+]);
 
 const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
   '\\b(' + [
@@ -66,7 +74,7 @@ const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
 
 const OUTBOUND_EMAIL_KEYWORD_PATTERN = /\b(email|e-?mail|send)\b/i;
 const CALENDAR_WRITE_KEYWORD_PATTERN = /\b(schedule|scheduling|scheduled|book|booking|invite|invitation|calendar event|add (?:this |it |an? )?to (?:my )?calendar|put .+ on (?:my )?calendar|block off|hold on my calendar)\b/i;
-const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|plan|planning|milestone|search|remember|remind|reminder|memory|profile|mail|consult|consultation|schedule|book|invite|skill|skills|procedure|workflow)\b/i;
+const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|plan|planning|milestone|search|remember|remind|reminder|memory|profile|mail|consult|consultation|schedule|book|invite|skill|skills|procedure|workflow|linkedin|networking)\b/i;
 const GOAL_KEYWORD_PATTERN = /\b(goal|goals|todo|to-?do|task|tasks|plan|planning|milestone|milestones|next action|prioriti[sz]e|what should (?:i|we) do next|what(?:'s| is) next|where should (?:i|we) start)\b/i;
 const BLACKBOARD_KEYWORD_PATTERN = /\b(blackboard|consult|consultation)\b/i;
 const TELEGRAM_KEYWORD_PATTERN = /\b(telegram|text (?:him|her|me|chris)|message (?:chris|me))\b/i;
@@ -82,6 +90,7 @@ const EMAIL_READ_KEYWORD_PATTERN = /\b(email(?:s|ed|ing)?|e-?mails?|inbox|mail|o
 const CALENDAR_READ_KEYWORD_PATTERN = /\b(calendar|schedule|meeting|meetings|appointment|agenda|am i free|what'?s on)\b/i;
 const REMINDER_KEYWORD_PATTERN = /\b(remind|reminder|check[- ]?in with me|nudge|prompt me)\b/i;
 const DAILY_PLATE_PATTERN = /\b(?:(?:what(?:['’]s| is)|whats)\s+on\s+my\s+plate(?:\s+today)?|what\s+does\s+my\s+plate\s+look\s+like(?:\s+today)?|(?:give|show|tell)\s+me\s+(?:today['’]?s|my)\s+(?:real\s+)?(?:agenda|plate|priorities)(?:\s+(?:for\s+today|and\s+deadlines))?)\b/i;
+const LINKEDIN_KEYWORD_PATTERN = /\b(?:linked\s?in|professional network|networking|connection request|approval code\s+LI-[A-F0-9]{8}|LI-[A-F0-9]{8})\b/i;
 
 // Embedding + in-process scan of up to 1000 memory rows is multi-second.
 // Only pay that when the turn actually asks for long-term recall.
@@ -287,6 +296,9 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
       !needsCalendarWriteTools && !needsDailyPlateTools) {
     selected = dropToolsByName(selected, CALENDAR_READ_TOOL_NAMES);
   }
+  if (!LINKEDIN_KEYWORD_PATTERN.test(combined)) {
+    selected = dropToolsByName(selected, LINKEDIN_TOOL_NAMES);
+  }
   return selected;
 }
 
@@ -308,6 +320,7 @@ module.exports = {
   BUSINESS_INTEL_TOOL_NAMES,
   OUTBOUND_EMAIL_TOOL_NAMES,
   CALENDAR_WRITE_TOOL_NAMES,
+  LINKEDIN_TOOL_NAMES,
   BUSINESS_INTEL_KEYWORD_PATTERN,
   OUTBOUND_EMAIL_KEYWORD_PATTERN,
   CALENDAR_WRITE_KEYWORD_PATTERN,

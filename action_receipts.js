@@ -17,6 +17,16 @@ const ACTION_RECEIPT_RULES = Object.freeze([
     pattern: /\b(?:i(?:'ve| have)?\s+emailed\b|i(?:'ve| have)?\s+sent\b.{0,80}\b(?:email|e-?mail|mail)\b|(?:the\s+)?email\s+(?:(?:is|has been|was)\s+)?sent\b|sent\s+(?:the\s+)?(?:email|e-?mail)\b)/i
   },
   {
+    kind: 'LinkedIn message',
+    tools: ['approve_linkedin_message'],
+    pattern: /\b(?:i(?:'ve| have)?\s+sent\b.{0,100}\b(?:linkedin|connection request|message)|(?:the|your)\s+(?:linkedin\s+)?(?:message|connection request)\s+(?:(?:is|has been|was)\s+)?sent|sent\s+(?:the\s+)?(?:linkedin\s+)?(?:message|connection request))\b/i
+  },
+  {
+    kind: 'LinkedIn draft',
+    tools: ['draft_linkedin_message'],
+    pattern: /\b(?:i(?:'ve| have)?\s+(?:drafted|prepared|created)\b.{0,100}\blinkedin\b|(?:the|your)\s+linkedin\s+draft\s+(?:(?:is|has been|was)\s+)?(?:ready|created|prepared))\b/i
+  },
+  {
     kind: 'telegram',
     tools: ['send_telegram_message'],
     pattern: /\b(?:i(?:'ve| have)?\s+(?:sent|posted)\b.{0,80}\btelegram\b|(?:it|that|the\s+(?:draft|message|file))\s+(?:is|'s|was)\s+(?:on|in)\s+telegram\b|sent\s+(?:it\s+)?(?:to|on)\s+telegram\b)/i
@@ -80,6 +90,9 @@ function findUnsupportedActionClaim(text, successfulToolNames = [], { candidateT
 function toolResultSucceeded(name, result) {
   if (name === 'set_reminder') return result?.scheduled === true;
   if (name === 'cancel_reminder') return result?.cancelled === true;
+  if (name === 'draft_linkedin_message') return result?.drafted === true && result?.sent === false;
+  if (name === 'approve_linkedin_message') return result?.sent === true && result?.status === 'sent';
+  if (name === 'reject_linkedin_message') return result?.rejected === true && result?.sent === false;
   if (name === 'send_owner_email' || name === 'send_email') {
     return typeof result === 'string' && /^Sent\b/i.test(result);
   }
