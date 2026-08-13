@@ -47,6 +47,31 @@ test('sentence gate ignores denials for tools that were not offered', () => {
   assert.equal(gate.wasSuppressed(), false);
 });
 
+test('sentence gate suppresses denials for safe capabilities omitted by the fast router', () => {
+  const spoken = [];
+  const gate = createSentenceGate(s => spoken.push(s), {
+    availableToolNames: [],
+    capabilityToolNames: ['check_email']
+  });
+
+  gate.onSentence("I don’t have mail access in the tools I can call right now.");
+  assert.deepEqual(spoken, []);
+  assert.deepEqual(gate.getDenial().tools, ['check_email']);
+});
+
+test('sentence gate permits an honest limitation after that tool was attempted', () => {
+  const spoken = [];
+  const gate = createSentenceGate(s => spoken.push(s), {
+    availableToolNames: ['check_calendar'],
+    capabilityToolNames: ['check_calendar']
+  });
+  gate.markToolAttempted('check_calendar');
+
+  gate.onSentence("I don’t have your live calendar loaded in this chat.");
+  assert.deepEqual(spoken, ["I don’t have your live calendar loaded in this chat."]);
+  assert.equal(gate.getDenial(), null);
+});
+
 test('text tool parser recovers only explicitly allowed JSON tool calls', () => {
   const text = [
     '```json',

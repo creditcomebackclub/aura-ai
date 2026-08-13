@@ -69,13 +69,17 @@ const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal
 const GOAL_KEYWORD_PATTERN = /\b(goal|goals|todo|to-?do|task|tasks|plan|planning|milestone|milestones|next action|prioriti[sz]e|what should (?:i|we) do next|what(?:'s| is) next|where should (?:i|we) start)\b/i;
 const BLACKBOARD_KEYWORD_PATTERN = /\b(blackboard|consult|consultation)\b/i;
 const TELEGRAM_KEYWORD_PATTERN = /\b(telegram|text (?:him|her|me|chris)|message (?:chris|me))\b/i;
-const WEB_SEARCH_KEYWORD_PATTERN = /\b(search(?:\s+the)?\s+web|google|look\s+(?:it\s+)?up online|web\s+search|latest news|weather|who is|what(?:'s| is) (?:the )?(?:news|score|price of))\b/i;
+const WEB_SEARCH_KEYWORD_PATTERN = /\b(search(?:\s+the)?\s+(?:web|internet)|google|browse(?:\s+the)?\s+(?:web|internet)|look\s+(?:it\s+)?up(?:\s+(?:online|on\s+the\s+web))?|web\s+search|latest news|weather|who is|what(?:'s| is) (?:the )?(?:news|score|price of))\b/i;
+const PUBLIC_CONTACT_LOOKUP_PATTERN = /\b(?:find|verify|locate|confirm)\b.{0,100}\b(?:official|correct|current|contact|partnership)\b.{0,100}\b(?:email|e-?mail|address|website|page|phone|contact)\b/i;
+const PUBLIC_LOOKUP_FOLLOWUP_PATTERN = /\b(?:double[- ]check|check again|try again|look again|verify again)\b/i;
+const PUBLIC_LOOKUP_CONTEXT_PATTERN = /\b(?:official|public|website|contact page|partnership contact|email address|web search|online)\b/i;
+const PRIVATE_WEB_SEARCH_INPUT_PATTERN = /\b(?:client|ccc|credit comeback|blackboard)\b|\b(?:my|our)\s+(?:email|inbox|mail|calendar|schedule|goals?|finances?|transactions?|account)\b/i;
 const SKILL_KEYWORD_PATTERN = /\b(skill|skills|workflow|procedure|playbook)\b/i;
 const PERSONAL_FINANCE_KEYWORD_PATTERN = /\b(expense|expenses|spent|spending|budget|log (?:a )?purchase)\b/i;
 const MEMORY_WRITE_KEYWORD_PATTERN = /\b(remember(?:\s+that|\s+this)?|save (?:this|that)|memorize)\b/i;
-const EMAIL_READ_KEYWORD_PATTERN = /\b(email|e-?mail|inbox|mail)\b/i;
+const EMAIL_READ_KEYWORD_PATTERN = /\b(email(?:s|ed|ing)?|e-?mails?|inbox|mail|outreach)\b/i;
 const CALENDAR_READ_KEYWORD_PATTERN = /\b(calendar|schedule|meeting|meetings|appointment|agenda|am i free|what'?s on)\b/i;
-const DAILY_PLATE_PATTERN = /\b(?:what(?:['’]s| is)|whats)\s+on\s+my\s+plate(?:\s+today)?\b/i;
+const DAILY_PLATE_PATTERN = /\b(?:(?:what(?:['’]s| is)|whats)\s+on\s+my\s+plate(?:\s+today)?|what\s+does\s+my\s+plate\s+look\s+like(?:\s+today)?|(?:give|show|tell)\s+me\s+(?:today['’]?s|my)\s+(?:real\s+)?(?:agenda|plate|priorities)(?:\s+(?:for\s+today|and\s+deadlines))?)\b/i;
 
 // Embedding + in-process scan of up to 1000 memory rows is multi-second.
 // Only pay that when the turn actually asks for long-term recall.
@@ -208,6 +212,21 @@ function dropToolsByName(tools, names) {
   return tools.filter(tool => !names.has(tool.function.name));
 }
 
+function shouldForceWebSearchForTurn(text, recentMessages = []) {
+  const current = String(text || '');
+  if (!current.trim() || PRIVATE_WEB_SEARCH_INPUT_PATTERN.test(current)) return false;
+  if (WEB_SEARCH_KEYWORD_PATTERN.test(current) || PUBLIC_CONTACT_LOOKUP_PATTERN.test(current)) {
+    return true;
+  }
+  if (!PUBLIC_LOOKUP_FOLLOWUP_PATTERN.test(current)) return false;
+  const recentText = recentMessages
+    .slice(-BUSINESS_INTEL_HISTORY_LOOKBACK)
+    .map(message => (typeof message.content === 'string' ? message.content : ''))
+    .join(' ');
+  return PUBLIC_LOOKUP_CONTEXT_PATTERN.test(recentText) ||
+    PUBLIC_CONTACT_LOOKUP_PATTERN.test(recentText);
+}
+
 function selectToolsForTurn(tools, text, recentMessages = []) {
   const recentText = recentMessages
     .slice(-BUSINESS_INTEL_HISTORY_LOOKBACK)
@@ -221,6 +240,9 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
   const needsEmailTools = OUTBOUND_EMAIL_KEYWORD_PATTERN.test(combined);
   const needsCalendarWriteTools = CALENDAR_WRITE_KEYWORD_PATTERN.test(combined);
   const needsDailyPlateTools = DAILY_PLATE_PATTERN.test(combined);
+  const needsWebSearch = WEB_SEARCH_KEYWORD_PATTERN.test(combined) ||
+    PUBLIC_CONTACT_LOOKUP_PATTERN.test(combined) ||
+    shouldForceWebSearchForTurn(text, recentMessages);
   if (!needsEmailTools) {
     selected = dropToolsByName(selected, OUTBOUND_EMAIL_TOOL_NAMES);
   }
@@ -241,7 +263,7 @@ function selectToolsForTurn(tools, text, recentMessages = []) {
   if (!TELEGRAM_KEYWORD_PATTERN.test(combined)) {
     selected = dropToolsByName(selected, TELEGRAM_TOOL_NAMES);
   }
-  if (!WEB_SEARCH_KEYWORD_PATTERN.test(combined)) {
+  if (!needsWebSearch) {
     selected = dropToolsByName(selected, WEB_SEARCH_TOOL_NAMES);
   }
   if (!SKILL_KEYWORD_PATTERN.test(combined)) {
@@ -302,6 +324,7 @@ module.exports = {
   shouldSkipSemanticMemory,
   shouldSkipHeavyMemory,
   formatFinancialMetricsPromptBlock,
+  shouldForceWebSearchForTurn,
   selectToolsForTurn,
   historyLimitForTurn,
   correctCommonSpeechTerms

@@ -973,6 +973,49 @@ test('findFalseCapabilityDenial only fires when the denied capability was actual
   assert.ok(calendarWriteDenial.tools.includes('create_calendar_event'));
 });
 
+test('findFalseCapabilityDenial catches generic tool-availability wording across capabilities', () => {
+  const plateDenial = findFalseCapabilityDenial(
+    "I don’t have your live calendar, Blackboard deadlines, or goals loaded in this chat.",
+    ['check_calendar', 'check_blackboard', 'get_goals', 'get_goal_plans']
+  );
+  assert.ok(plateDenial);
+  assert.deepEqual(new Set(plateDenial.tools), new Set([
+    'check_calendar', 'check_blackboard', 'get_goals', 'get_goal_plans'
+  ]));
+
+  const mailDenial = findFalseCapabilityDenial(
+    "I don’t have mail access in the tools I can call right now.",
+    ['check_email']
+  );
+  assert.ok(mailDenial);
+  assert.deepEqual(mailDenial.tools, ['check_email']);
+
+  const webDenial = findFalseCapabilityDenial(
+    "I don’t have a web-search tool available in this chat right now.",
+    ['search_web']
+  );
+  assert.ok(webDenial);
+  assert.deepEqual(webDenial.tools, ['search_web']);
+
+  const genericDenial = findFalseCapabilityDenial(
+    "I don't have the tools I need available in this chat.",
+    ['check_email', 'check_calendar']
+  );
+  assert.ok(genericDenial);
+  assert.equal(genericDenial.generic, true);
+});
+
+test('findFalseCapabilityDenial ignores capabilities already attempted this turn', () => {
+  assert.equal(
+    findFalseCapabilityDenial(
+      "I don’t have your live calendar loaded in this chat.",
+      ['check_calendar'],
+      { attemptedToolNames: ['check_calendar'] }
+    ),
+    null
+  );
+});
+
 test('search secret patterns catch common cloud and VCS tokens', () => {
   for (const secret of [
     `ghp_${'a'.repeat(36)}`,

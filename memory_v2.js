@@ -518,10 +518,10 @@ function findSelfCapabilityNegation(text) {
 }
 
 // Live-reply counterpart to findSelfCapabilityNegation: only fires when the
-// model denies a capability whose tool was actually offered this turn. The
-// offered-tool list is the source of truth — a denial about email is ignored
-// when check_email was filtered out of turnTools, and a database denial is
-// caught when get_client_snapshot (etc.) was present.
+// model denies a capability AURA can safely attempt. Callers may include
+// read-only recovery tools omitted by the fast router; write/action tools are
+// included only when the normal router already offered them. Attempted tools
+// are excluded so a real provider/integration failure can be reported honestly.
 const LIVE_CAPABILITY_DENIAL_CHECKS = [
   {
     tools: [
@@ -529,6 +529,7 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
       'count_database_rows', 'get_outstanding_balances', 'calculate_financial_metrics',
       'get_client_snapshot', 'get_client_current_phase', 'list_deletable_test_letters'
     ],
+    capability: /\b(?:database|client|ccc|phase|balance|letter|ledger|credit\s+comeback)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,80}\b(?:access|query|look\s*up|check|read|use|reach)\b[^.]{0,50}\b(?:database|client|ccc|phase|balance|letter|ledger|credit\s+comeback)\b/i,
       /\b(?:i\s+)?(?:don'?t|do\s+not)\s+have\b[^.]{0,50}\b(?:access|a\s+way|a\s+tool|the\s+tool|tools?)\b[^.]{0,50}\b(?:database|client|ccc|phase|balance|letter)\b/i,
@@ -538,6 +539,7 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
   },
   {
     tools: ['check_email'],
+    capability: /\b(?:email|e-mail|mail|inbox|outreach)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:read|check|access|see)\b[^.]{0,40}\b(?:email|mail|inbox)\b/i,
       /\bno\s+(?:access to|way to|tool (?:to|for))\b[^.]{0,40}\b(?:email|mail|inbox)\b/i
@@ -545,6 +547,7 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
   },
   {
     tools: ['send_owner_email', 'send_email'],
+    capability: /\b(?:send|email|e-mail|message|recipient)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:send|email|e-mail)\b[^.]{0,50}\b(?:email|message|you|them|recipient)\b/i,
       /\bno\s+(?:way|tool|ability)\s+to\b[^.]{0,40}\b(?:send|email)\b/i
@@ -552,6 +555,7 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
   },
   {
     tools: ['check_calendar'],
+    capability: /\b(?:calendar|schedule|agenda|meeting|appointment)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:read|check|access|see)\b[^.]{0,40}\bcalendar\b/i,
       /\bno\s+(?:access to|way to|tool (?:to|for))\b[^.]{0,40}\bcalendar\b/i
@@ -559,6 +563,7 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
   },
   {
     tools: ['create_calendar_event'],
+    capability: /\b(?:calendar|schedule|book|event|meeting|appointment|invite)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not)\s+have\b[^.]{0,60}\bcalendar\b[^.]{0,40}\b(?:create|write|scheduling?)\s+tools?\b/i,
       /\b(?:i\s+)?(?:can'?t|cannot|unable to)\b[^.]{0,60}\b(?:schedule|book|create|add|put)\b[^.]{0,60}\b(?:calendar|event)\b/i,
@@ -567,6 +572,7 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
   },
   {
     tools: ['check_blackboard'],
+    capability: /\b(?:blackboard|assignment|deadline|discussion\s+post|schoolwork)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:check|access|read|see)\b[^.]{0,40}\bblackboard\b/i,
       /\bno\s+(?:access to|way to|tool (?:to|for))\b[^.]{0,40}\bblackboard\b/i
@@ -574,51 +580,101 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
   },
   {
     tools: ['search_web'],
+    capability: /\b(?:web|internet|online|search|browse|google|public\s+page)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:search|browse|look\s*up)\b[^.]{0,40}\b(?:web|internet|online)\b/i,
       /\bno\s+(?:access to|way to|tool (?:to|for))\b[^.]{0,40}\b(?:web\s*search|live\s*search|the\s+internet)\b/i
     ]
   },
   {
-    tools: ['get_goals', 'add_goal', 'update_goal_status'],
+    tools: [
+      'get_goals', 'get_goal_plans', 'add_goal', 'set_goal_plan',
+      'update_goal_step', 'update_goal_status'
+    ],
+    capability: /\b(?:goal|goals|plan|plans|task|tasks|to-?do|next\s+action)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:access|check|see|track)\b[^.]{0,40}\bgoals?\b/i
     ]
   },
   {
     tools: ['query_finances', 'log_finance'],
+    capability: /\b(?:finance|finances|financial|transaction|expense|spending|budget)\b/i,
     patterns: [
       /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,60}\b(?:access|check|see|log)\b[^.]{0,40}\b(?:financ|transaction)/i
     ]
+  },
+  {
+    tools: ['send_telegram_message'],
+    capability: /\b(?:telegram|text|message)\b/i,
+    patterns: [
+      /\b(?:i\s+)?(?:don'?t|do\s+not|can'?t|cannot|unable to)\b[^.]{0,80}\b(?:send|message|text)\b[^.]{0,50}\btelegram\b/i
+    ]
+  },
+  {
+    tools: ['list_skills', 'view_skill', 'manage_skill'],
+    capability: /\b(?:skill|skills|workflow|procedure|playbook)\b/i,
+    patterns: []
+  },
+  {
+    tools: ['save_semantic_memory'],
+    capability: /\b(?:memory|remember|memorize|profile)\b/i,
+    patterns: []
   }
 ];
 
-function findFalseCapabilityDenial(text, availableToolNames = []) {
+const GENERIC_TOOL_UNAVAILABLE_PATTERN = /\b(?:i\s+)?(?:(?:don['’]?t|do\s+not)\s+have|can['’]?t|cannot|unable\s+to)\b[^.]{0,180}(?:\btools?\b|\bcapabilit(?:y|ies)\b|\b(?:available|loaded)\s+(?:to\s+me\s+)?(?:in|from)\s+(?:this\s+)?chat\b)/i;
+
+function findFalseCapabilityDenial(text, availableToolNames = [], {
+  attemptedToolNames = [],
+  genericToolNames = availableToolNames
+} = {}) {
+  const attempted = new Set(
+    (Array.isArray(attemptedToolNames) ? attemptedToolNames : [])
+      .filter(name => typeof name === 'string' && name)
+  );
   const available = new Set(
     (Array.isArray(availableToolNames) ? availableToolNames : [])
-      .filter(name => typeof name === 'string' && name)
+      .filter(name => typeof name === 'string' && name && !attempted.has(name))
+  );
+  const genericAvailable = new Set(
+    (Array.isArray(genericToolNames) ? genericToolNames : [])
+      .filter(name => typeof name === 'string' && available.has(name))
   );
   if (!available.size) return null;
 
   const value = String(text || '');
   if (!value.trim()) return null;
 
+  const genericMatch = value.match(GENERIC_TOOL_UNAVAILABLE_PATTERN);
+  const matchedTools = new Set();
+  let firstMatch = null;
   for (const check of LIVE_CAPABILITY_DENIAL_CHECKS) {
-    const matchedTools = check.tools.filter(name => available.has(name));
-    if (!matchedTools.length) continue;
+    const availableForCheck = check.tools.filter(name => available.has(name));
+    if (!availableForCheck.length) continue;
+    let checkMatch = genericMatch && check.capability?.test(value) ? genericMatch : null;
     for (const pattern of check.patterns) {
       const match = value.match(pattern);
       if (!match) continue;
-      const start = Math.max(0, match.index - 40);
-      const end = Math.min(value.length, match.index + match[0].length + 40);
-      return {
-        snippet: value.slice(start, end).trim(),
-        tools: matchedTools,
-        pattern: pattern.source
-      };
+      checkMatch = match;
+      break;
     }
+    if (!checkMatch) continue;
+    for (const name of availableForCheck) matchedTools.add(name);
+    if (!firstMatch) firstMatch = checkMatch;
   }
-  return null;
+  if (!matchedTools.size && genericMatch) {
+    for (const name of genericAvailable) matchedTools.add(name);
+    firstMatch = genericMatch;
+  }
+  if (!matchedTools.size || !firstMatch) return null;
+  const start = Math.max(0, firstMatch.index - 40);
+  const end = Math.min(value.length, firstMatch.index + firstMatch[0].length + 40);
+  return {
+    snippet: value.slice(start, end).trim(),
+    tools: [...matchedTools],
+    pattern: genericMatch ? GENERIC_TOOL_UNAVAILABLE_PATTERN.source : 'capability_specific',
+    generic: Boolean(genericMatch)
+  };
 }
 
 const PROFILE_KIND_LABELS = {

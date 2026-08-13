@@ -9,6 +9,7 @@ const {
   shouldSkipSemanticMemory,
   isDirectFinancialMetricsAsk,
   reasoningEffortForTurn,
+  shouldForceWebSearchForTurn,
   selectToolsForTurn,
   historyLimitForTurn,
   LIGHTWEIGHT_HISTORY_LIMIT,
@@ -180,6 +181,33 @@ test('selectToolsForTurn keeps outbound email tools when the turn asks to send',
   assert.equal(names.has('check_email'), true);
 });
 
+test('selectToolsForTurn recognizes natural sent-mail questions without offering send tools', () => {
+  const selected = selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'I know Stephanie was emailed. Has Jack been emailed too?'
+  );
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('check_email'), true);
+  assert.equal(names.has('send_owner_email'), false);
+  assert.equal(names.has('send_email'), false);
+});
+
+test('selectToolsForTurn carries a public contact lookup into a natural retry', () => {
+  const recent = [
+    { role: 'user', content: 'Find the correct contact email for Bloom Credit.' },
+    { role: 'assistant', content: 'I could not verify the official address yet.' }
+  ];
+  const selected = selectToolsForTurn(fakeTools(ALL_NAMES), 'Double-check again.', recent);
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('search_web'), true);
+  assert.equal(shouldForceWebSearchForTurn('Double-check again.', recent), true);
+  assert.equal(
+    shouldForceWebSearchForTurn('Search the web and check client Jack.', recent),
+    false,
+    'mixed private input must remain on the normal privacy-gated path'
+  );
+});
+
 test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
   const selected = selectToolsForTurn(
     fakeTools(ALL_NAMES),
@@ -192,20 +220,23 @@ test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
 });
 
 test('selectToolsForTurn treats whats on my plate as todays agenda', () => {
-  const selected = selectToolsForTurn(
-    fakeTools(ALL_NAMES),
-    'What is on my plate today?'
-  );
-  const names = new Set(selected.map(tool => tool.function.name));
-  assert.equal(names.has('get_goals'), true);
-  assert.equal(names.has('get_goal_plans'), true);
-  assert.equal(names.has('add_goal'), false);
-  assert.equal(names.has('set_goal_plan'), false);
-  assert.equal(names.has('update_goal_step'), false);
-  assert.equal(names.has('update_goal_status'), false);
-  assert.equal(names.has('check_calendar'), true);
-  assert.equal(names.has('check_blackboard'), true);
-  assert.equal(names.has('check_email'), false);
+  for (const text of [
+    'What is on my plate today?',
+    'What does my plate look like today?',
+    "Give me today's real agenda and deadlines."
+  ]) {
+    const selected = selectToolsForTurn(fakeTools(ALL_NAMES), text);
+    const names = new Set(selected.map(tool => tool.function.name));
+    assert.equal(names.has('get_goals'), true, text);
+    assert.equal(names.has('get_goal_plans'), true, text);
+    assert.equal(names.has('add_goal'), false, text);
+    assert.equal(names.has('set_goal_plan'), false, text);
+    assert.equal(names.has('update_goal_step'), false, text);
+    assert.equal(names.has('update_goal_status'), false, text);
+    assert.equal(names.has('check_calendar'), true, text);
+    assert.equal(names.has('check_blackboard'), true, text);
+    assert.equal(names.has('check_email'), false, text);
+  }
 });
 
 test('selectToolsForTurn offers the planning ledger only on planning turns', () => {

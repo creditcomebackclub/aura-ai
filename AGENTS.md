@@ -86,6 +86,14 @@ Authorization is layered:
 4. `assertAgentCanUseTool()` re-checks the active allowlist and `maximum_risk` in
    `handleToolCall`, so a fabricated or recovered tool call cannot bypass routing.
 
+The live reply gate also catches generic false denials such as "not available in
+this chat" and can reintroduce a read-only tool omitted by the latency router. A
+recovered read is mandatory; an actual tool failure may be reported afterward.
+Writes/actions are eligible for correction only when the normal router already
+offered them, and all execution-time authorization still applies. `search_web`
+stays in the main loop because its public-input screen, quota, and private-data
+boundary must run there; explicit public lookups force that tool on round zero.
+
 Specialists are read-only. They never execute actions or create tasks. Core writes
 chat-created goals and Executive Loop commitments with
 `assigned_agent = 'aura_core'`, and stamps the resolved Core id on audited actions.

@@ -58,6 +58,7 @@ const {
   isDirectFinancialMetricsAsk,
   reasoningEffortForTurn,
   formatFinancialMetricsPromptBlock,
+  shouldForceWebSearchForTurn,
   BUSINESS_INTEL_TOOL_NAMES
 } = require('./turn_context');
 const { createSentenceGate, extractTextToolCalls } = require('./reply_stream');
@@ -2328,6 +2329,23 @@ function isCapabilityCorrectionToolAllowed(name) {
     !CAPABILITY_CORRECTION_BLOCKED_TOOLS.has(name);
 }
 
+function capabilityCorrectionToolsForAgent(agent, offeredTools = []) {
+  const byName = new Map();
+  for (const tool of filterToolsForAgent(tools, agent)) {
+    if (isCapabilityCorrectionToolAllowed(tool?.function?.name)) {
+      byName.set(tool.function.name, tool);
+    }
+  }
+  // Writes/actions can be corrected only when the normal router already
+  // offered them. Their existing execution-time authorization remains the
+  // source of truth; recovery never widens action availability.
+  for (const tool of offeredTools || []) {
+    const name = tool?.function?.name;
+    if (name && name !== 'search_web') byName.set(name, tool);
+  }
+  return [...byName.values()];
+}
+
 function buildToolEvidence(toolCall, parsedToolResult, { durationMs, round } = {}) {
   const tool = toolCall?.function?.name || 'unknown';
   const evidence = { tool, ok: parsedToolResult?.ok === true };
@@ -2371,6 +2389,8 @@ async function correctFalseCapabilityDenial({
   reply,
   chatHistory,
   turnTools,
+  capabilityTools = turnTools,
+  userInstruction = '',
   onSentence,
   evidence,
   sentenceGate = null,
@@ -2380,8 +2400,16 @@ async function correctFalseCapabilityDenial({
   modelRounds = null
 }) {
   throwIfAborted(signal);
-  const availableToolNames = (turnTools || []).map(tool => tool?.function?.name).filter(Boolean);
-  const denial = findFalseCapabilityDenial(reply, availableToolNames) ||
+  const capabilityToolNames = (capabilityTools || [])
+    .map(tool => tool?.function?.name)
+    .filter(Boolean);
+  const attemptedToolNames = (Array.isArray(evidence) ? evidence : [])
+    .map(item => item?.tool)
+    .filter(Boolean);
+  const denial = findFalseCapabilityDenial(reply, capabilityToolNames, {
+    attemptedToolNames,
+    genericToolNames: (turnTools || []).map(tool => tool?.function?.name).filter(Boolean)
+  }) ||
     sentenceGate?.getDenial?.() ||
     null;
   if (!denial) {
@@ -2404,9 +2432,19 @@ async function correctFalseCapabilityDenial({
   }
   const streamSentence = sentenceGate?.onSentence || onSentence;
 
-  // Read-only, non-budgeted tools only: no mail, delete, or search_web.
-  const correctionTools = (turnTools || []).filter(tool =>
-    isCapabilityCorrectionToolAllowed(tool?.function?.name)
+  // The broader capability set repairs safe read omissions. Writes/actions
+  // appear only if the normal router already offered them, and search_web is
+  // excluded because its quota/privacy lifecycle belongs to the main loop.
+  const relevant = new Set(denial.tools);
+  const correctionTools = (capabilityTools || []).filter(tool =>
+    relevant.has(tool?.function?.name)
+  );
+  if (!correctionTools.length) {
+    sentenceGate?.release();
+    return reply;
+  }
+  const correctionToolNames = new Set(
+    correctionTools.map(tool => tool?.function?.name).filter(Boolean)
   );
 
   chatHistory.push({ role: 'assistant', content: reply });
@@ -2415,7 +2453,7 @@ async function correctFalseCapabilityDenial({
     content: [
       'INTERNAL CORRECTION: Your previous reply falsely claimed you lack a capability that is available this turn.',
       `Relevant tools offered right now: ${denial.tools.join(', ')}.`,
-      'Call the appropriate read tool if you still need data, or answer without denying access.',
+      'Call every relevant tool needed for the owner request. If an action lacks authorization or required details, state that exact requirement without denying the capability.',
       'Never claim these tools are unavailable.'
     ].join(' ')
   });
@@ -2423,7 +2461,9 @@ async function correctFalseCapabilityDenial({
   let response = await createBrainCompletionStreamed({
     messages: chatHistory,
     tools: correctionTools,
-    tool_choice: 'auto',
+    tool_choice: correctionTools.every(tool =>
+      getToolPolicy(tool?.function?.name) === 'read'
+    ) ? 'required' : 'auto',
     onSentence: streamSentence,
     _signal: signal,
     ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
@@ -2432,9 +2472,9 @@ async function correctFalseCapabilityDenial({
   appendModelRoundTiming(modelRounds, response, { phase: 'capability_correction', round: 0 });
   response = recoverTextToolCalls(response, correctionTools, sentenceGate);
 
-  // Allow one short tool round so the correction can actually look the fact up
-  // instead of only apologizing for the false denial.
-  for (let round = 0; round < 2 && response.choices[0].message.tool_calls; round++) {
+  // Let the correction finish a bounded multi-step lookup instead of merely
+  // apologizing or stopping after the first of several required reads.
+  for (let round = 0; round < 6 && response.choices[0].message.tool_calls; round++) {
     const responseMessage = response.choices[0].message;
     chatHistory.push(responseMessage);
     for (const toolCall of responseMessage.tool_calls) {
@@ -2443,13 +2483,13 @@ async function correctFalseCapabilityDenial({
       let functionResult;
       try {
         const toolName = toolCall?.function?.name;
-        if (!isCapabilityCorrectionToolAllowed(toolName)) {
+        if (!correctionToolNames.has(toolName)) {
           throw new Error(`Tool is not allowed during capability correction: ${toolName || 'unknown'}`);
         }
         functionResult = await handleToolCall(toolCall, {
           turn: conversationTurn,
           requestStartedAtMs: Date.now(),
-          userInstruction: '',
+          userInstruction,
           agent,
           signal
         });
@@ -2474,6 +2514,7 @@ async function correctFalseCapabilityDenial({
           round
         }));
       }
+      sentenceGate?.markToolAttempted?.(toolCall?.function?.name);
       chatHistory.push({
         role: 'tool',
         tool_call_id: toolCall.id,
@@ -2495,6 +2536,29 @@ async function correctFalseCapabilityDenial({
       round: round + 1
     });
     response = recoverTextToolCalls(response, correctionTools, sentenceGate);
+  }
+
+  if (response.choices[0].message.tool_calls) {
+    chatHistory.push(response.choices[0].message);
+    for (const toolCall of response.choices[0].message.tool_calls) {
+      chatHistory.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        name: toolCall.function.name,
+        content: 'Tool budget exhausted. Clearly say the lookup is incomplete; do not infer missing facts.'
+      });
+    }
+    response = await createBrainCompletionStreamed({
+      messages: chatHistory,
+      onSentence: streamSentence,
+      _signal: signal,
+      ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
+      _traceLabel: 'capability correction round cap exhausted'
+    });
+    appendModelRoundTiming(modelRounds, response, {
+      phase: 'capability_correction',
+      round: 7
+    });
   }
 
   const corrected = response.choices[0].message.content || reply;
@@ -3105,6 +3169,7 @@ async function processOwnerText(text, {
         }) + buildAgentPrompt(activeAgent)
       }, { role: 'user', content: text }];
       const turnTools = filterToolsForAgent(selectToolsForTurn(text), activeAgent);
+      const capabilityTools = capabilityCorrectionToolsForAgent(activeAgent, turnTools);
       const availableToolNames = turnTools.map(tool => tool.function.name);
       const turnReasoningEffort = reasoningEffortForTurn(text, {
         baseEffort: reasoningEffort,
@@ -3114,13 +3179,20 @@ async function processOwnerText(text, {
         turnReasoningEffort,
         availableToolNames
       );
-      const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
+      const sentenceGate = createSentenceGate(onSentence, {
+        availableToolNames,
+        capabilityToolNames: capabilityTools.map(tool => tool.function.name)
+      });
       const streamSentence = sentenceGate.onSentence;
+      const forceWebSearch = turnTools.some(tool => tool?.function?.name === 'search_web') &&
+        shouldForceWebSearchForTurn(text);
       onPhase('model-round-0');
       let response = await createBrainCompletionStreamed({
         messages: chatHistory,
         tools: turnTools,
-        tool_choice: 'auto',
+        tool_choice: forceWebSearch
+          ? { type: 'function', function: { name: 'search_web' } }
+          : 'auto',
         onSentence: streamSentence,
         _signal: signal,
         _reasoningEffort: turnReasoningEffort,
@@ -3145,6 +3217,7 @@ async function processOwnerText(text, {
           let webSearchUnitReserved = false;
           try {
             const toolName = toolCall?.function?.name;
+            sentenceGate.markToolAttempted?.(toolName);
             if (toolName === 'search_web') {
               // Screen-only here: this path deliberately does not thread the
               // owner's text into handleToolCall, so the model's own validated
@@ -3250,7 +3323,9 @@ async function processOwnerText(text, {
         sentenceGate,
         signal,
         agent: activeAgent,
-        reasoningEffort: turnReasoningEffort
+        reasoningEffort: turnReasoningEffort,
+        capabilityTools,
+        userInstruction: text
       });
       const isolatedProtocolLeak = sentenceGate.getProtocolLeak?.() ||
         extractTextToolCalls(reply, { allowedToolNames: availableToolNames })[0];
@@ -3549,6 +3624,7 @@ async function processOwnerText(text, {
       turnTools = turnTools.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
     }
     turnTools = filterToolsForAgent(turnTools, activeAgent);
+    const capabilityTools = capabilityCorrectionToolsForAgent(activeAgent, turnTools);
     const availableToolNames = turnTools.map(tool => tool.function.name);
     const turnReasoningEffort = reasoningEffortForTurn(text, {
       baseEffort: reasoningEffort,
@@ -3558,15 +3634,26 @@ async function processOwnerText(text, {
       turnReasoningEffort,
       availableToolNames
     );
-    const sentenceGate = createSentenceGate(onSentence, { availableToolNames });
+    const sentenceGate = createSentenceGate(onSentence, {
+      availableToolNames,
+      capabilityToolNames: capabilityTools.map(tool => tool.function.name)
+    });
     const streamSentence = sentenceGate.onSentence;
+    if (metricsPrefetched) sentenceGate.markToolAttempted?.('calculate_financial_metrics');
+    const forceWebSearch = turnTools.some(tool => tool?.function?.name === 'search_web') &&
+      shouldForceWebSearchForTurn(text, messages);
 
     const preModelMs = Date.now() - requestStartedAtMs;
     onPhase('model-round-0');
     const modelRounds = [];
     let response = await createBrainCompletionStreamed({
       messages: chatHistory,
-      ...(turnTools.length ? { tools: turnTools, tool_choice: 'auto' } : {}),
+      ...(turnTools.length ? {
+        tools: turnTools,
+        tool_choice: forceWebSearch
+          ? { type: 'function', function: { name: 'search_web' } }
+          : 'auto'
+      } : {}),
       onSentence: streamSentence,
       _signal: signal,
       _reasoningEffort: turnReasoningEffort,
@@ -3619,6 +3706,7 @@ async function processOwnerText(text, {
         try {
           const toolName = toolCall?.function?.name;
           onPhase(`tool:${toolName || 'unknown'}`);
+          sentenceGate.markToolAttempted?.(toolName);
           if (toolName === 'search_web') {
             if (webSearchSucceeded) {
               forceToolFree = true;
@@ -3824,6 +3912,8 @@ async function processOwnerText(text, {
       reply,
       chatHistory,
       turnTools,
+      capabilityTools,
+      userInstruction: text,
       onSentence: streamSentence,
       evidence,
       sentenceGate,
