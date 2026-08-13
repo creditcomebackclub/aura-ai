@@ -178,6 +178,7 @@ class GoalMatchStore {
     signalSource = 'email',
     suggestedWindows = [],
     links = {},
+    draftActionId = null,
     notificationId = null,
     now = new Date()
   } = {}) {
@@ -225,6 +226,7 @@ class GoalMatchStore {
         outstanding_total: Number(client?.outstanding_total) || 0
       })),
       notification_id: notificationId == null ? null : String(notificationId).slice(0, 100),
+      draft_action_id: draftActionId == null ? null : String(draftActionId).slice(0, 100),
       outcome: null,
       feedback: null,
       feedback_source: null,
@@ -249,6 +251,25 @@ class GoalMatchStore {
       const index = matches.findIndex(item => item.id === String(id));
       if (index === -1) return { changed: false, value: null };
       matches[index] = { ...matches[index], outcome, feedback_at: new Date().toISOString() };
+      return { changed: true, value: matches[index] };
+    });
+  }
+
+  // Approving the drafted reply is the owner acting on the connection — the
+  // strongest confirmation available that the match was right, and it needs no
+  // separate rating from them.
+  async markDraftApproved(actionId) {
+    const normalized = String(actionId || '');
+    if (!normalized) return null;
+    return this.#mutate(matches => {
+      const index = matches.findIndex(item => item.draft_action_id === normalized);
+      if (index === -1 || matches[index].outcome === 'acted') return { changed: false, value: null };
+      matches[index] = {
+        ...matches[index],
+        outcome: 'acted',
+        feedback_source: 'draft_approved',
+        feedback_at: new Date().toISOString()
+      };
       return { changed: true, value: matches[index] };
     });
   }

@@ -73,6 +73,7 @@ const { GoalIndex } = require('./goal_index');
 const { GoalMatchStore } = require('./goal_match_store');
 const { resolveSignalMatches } = require('./goal_signal_matcher');
 const { linkSignal } = require('./entity_graph');
+const { buildSchedulingReply } = require('./reply_draft');
 const { findOpenWindows } = require('./calendar_availability');
 const {
   evaluateSkillCandidate: runSkillCandidateEvaluation,
@@ -1467,14 +1468,37 @@ const runExecutiveLoop = createExecutiveLoop({
   },
   matchGoalSignals: goalSignalsEnabled && cloudState ? matchGoalSignals : null,
   recordGoalMatch: goalSignalsEnabled && goalMatchStore
-    ? ({ match, signal, source, windows, links, notificationId }) => goalMatchStore.record({
+    ? ({ match, signal, source, windows, links, draftActionId, notificationId }) => goalMatchStore.record({
         match,
         signal,
         signalSource: source,
         suggestedWindows: windows,
         links,
+        draftActionId,
         notificationId
       })
+    : null,
+  // Composes the scheduling reply and parks it in the approval queue. Nothing
+  // leaves the outbox until the owner approves it through the existing
+  // /api/actions/:id/approve path, which already knows how to send `send_email`.
+  stageReplyDraft: goalSignalsEnabled && cloudState
+    ? async ({ signal, windows }) => {
+        const draft = buildSchedulingReply({
+          signal,
+          windows,
+          ownerName: process.env.AURA_OWNER_NAME || 'Chris',
+          ownerEmail: AURA_OWNER_EMAIL || ''
+        });
+        if (!draft) return null;
+        const action = await cloudState.proposeAction(
+          null,
+          'aura_core',
+          'send_email',
+          { to: draft.to, subject: draft.subject, body: draft.body },
+          'external_write'
+        );
+        return action?.id ? { ...draft, action_id: action.id } : null;
+      }
     : null,
   getMeetingContext: async event => {
     const clientSnapshots = [];
@@ -4140,6 +4164,16 @@ async function executeApprovedAction(action) {
       });
     } else {
       return action;
+    }
+    // Approving a drafted scheduling reply is the owner acting on the goal
+    // connection that produced it — the strongest confirmation the match was
+    // right. Recorded best-effort: a ledger hiccup must not fail a sent email.
+    if (goalMatchStore) {
+      try {
+        await goalMatchStore.markDraftApproved(action.id);
+      } catch (error) {
+        console.warn('[Goal match] Draft approval feedback failed:', error.message || error);
+      }
     }
     return await cloudState.recordActionResult(action.id, 'succeeded', { result });
   } catch (error) {

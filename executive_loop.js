@@ -234,7 +234,8 @@ function formatGoalSignalAlert({
   signal = {},
   source = 'email',
   windows = [],
-  links = {}
+  links = {},
+  draft = null
 } = {}) {
   const who = senderLabel(signal.from || signal.address);
   const subject = compactText(signal.subject, 160);
@@ -260,6 +261,9 @@ function formatGoalSignalAlert({
 
   const availability = describeOpenWindows(windows);
   if (availability) lines.push(`You're open ${availability} if you want to set up a time.`);
+  if (draft?.action_id) {
+    lines.push('I drafted a reply offering those times — approve it and I\'ll send it.');
+  }
   return lines.join('\n');
 }
 
@@ -297,6 +301,7 @@ function createExecutiveLoop({
   getMeetingContext,
   matchGoalSignals,
   recordGoalMatch,
+  stageReplyDraft,
   getPreferences,
   getState,
   setState,
@@ -584,8 +589,19 @@ function createExecutiveLoop({
         if (outcome?.errors?.length) errors.push(...outcome.errors.map(item => `goal_signal:${item}`));
 
         for (const match of matches.slice(0, 1)) {
+          // Staged first so the alert can tell the owner a reply is waiting.
+          // Never sent here — it only enters the approval queue.
+          let draft = null;
+          if (typeof stageReplyDraft === 'function' && source === 'email' && windows.length) {
+            try {
+              draft = await stageReplyDraft({ match, signal, windows });
+            } catch (error) {
+              errors.push(`goal_reply_draft:${error?.message || error}`);
+            }
+          }
+
           const alert = await sendAlert(
-            formatGoalSignalAlert({ match, signal, source, windows, links }),
+            formatGoalSignalAlert({ match, signal, source, windows, links, draft }),
             'goal_signal',
             'normal',
             {
@@ -598,7 +614,8 @@ function createExecutiveLoop({
                 tier: match.tier,
                 matched_by: match.matched_by,
                 linked_people: (links.people || []).length,
-                linked_clients: (links.clients || []).length
+                linked_clients: (links.clients || []).length,
+                draft_action_id: draft?.action_id ?? null
               }
             }
           );
@@ -610,6 +627,7 @@ function createExecutiveLoop({
                 source,
                 windows,
                 links,
+                draftActionId: draft?.action_id ?? null,
                 notificationId: alert?.id ?? null
               });
             } catch (error) {

@@ -112,7 +112,8 @@ function createHarness({
   now = new Date('2026-08-03T16:00:00Z'),
   getPreferences,
   matchGoalSignals,
-  recordGoalMatch
+  recordGoalMatch,
+  stageReplyDraft
 } = {}) {
   let currentTime = now;
   let state = null;
@@ -130,6 +131,7 @@ function createHarness({
     getPreferences,
     matchGoalSignals,
     recordGoalMatch,
+    stageReplyDraft,
     listCalendarEvents: async () => events,
     listOpenTasks: async () => tasks,
     getState: async key => key === EXECUTIVE_LOOP_STATE_KEY ? state : null,
@@ -656,4 +658,80 @@ test('an alert with no links is unchanged', () => {
   });
   assert.doesNotMatch(text, /Known contact|Possibly related|CCC:/);
   assert.match(text, /You're open Thursday, Aug 6 3–5 PM/);
+});
+
+test('a drafted reply is staged and announced, never sent', async () => {
+  const staged = [];
+  const harness = createHarness({
+    matchGoalSignals: async () => ({ matches: [PARTNERSHIP_MATCH], windows: IDENTITY_IQ_WINDOWS, links: {} }),
+    recordGoalMatch: async entry => { staged.push({ recorded: entry }); },
+    stageReplyDraft: async ({ signal, windows }) => {
+      staged.push({ drafted: { to: signal.from, windows: windows.length } });
+      return { action_id: 'action-1', to: 'matt@identityiq.com', subject: 'Re: Partnership' };
+    }
+  });
+  await harness.run();
+
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEmails([{
+    id: 'email-draft-1',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Partnership',
+    snippet: 'Following up.'
+  }]);
+  await harness.run();
+
+  const alert = harness.alerts.find(item => item.category === 'goal_signal');
+  assert.match(alert.text, /I drafted a reply offering those times — approve it and I'll send it\./);
+  assert.equal(alert.options.metadata.draft_action_id, 'action-1');
+
+  // Staged before the alert, so the alert can mention it.
+  assert.ok(staged[0].drafted, 'the draft should be staged first');
+  assert.equal(staged[1].recorded.draftActionId, 'action-1');
+});
+
+test('no draft is staged for a calendar signal or when there is no free time', async () => {
+  const calls = [];
+  const makeHarness = windows => createHarness({
+    matchGoalSignals: async () => ({ matches: [PARTNERSHIP_MATCH], windows, links: {} }),
+    stageReplyDraft: async () => { calls.push(1); return { action_id: 'x' }; }
+  });
+
+  const noTime = makeHarness([]);
+  await noTime.run();
+  noTime.setNow('2026-08-03T16:05:00Z');
+  noTime.setEmails([{ id: 'e1', from: 'Matt <matt@identityiq.com>', subject: 'Hi', snippet: 'Following up.' }]);
+  await noTime.run();
+
+  const calendarOnly = makeHarness(IDENTITY_IQ_WINDOWS);
+  await calendarOnly.run();
+  calendarOnly.setNow('2026-08-03T16:05:00Z');
+  calendarOnly.setEvents([{
+    id: 'ev1',
+    status: 'confirmed',
+    summary: 'Intro call',
+    start: { dateTime: '2026-08-06T22:00:00Z' },
+    end: { dateTime: '2026-08-06T23:00:00Z' },
+    attendees: [{ email: 'matt@identityiq.com', displayName: 'Matt Rivera' }]
+  }]);
+  await calendarOnly.run();
+
+  assert.deepEqual(calls, [], 'drafts are only offered for inbound email with free time');
+});
+
+test('a draft staging failure still delivers the connection', async () => {
+  const harness = createHarness({
+    matchGoalSignals: async () => ({ matches: [PARTNERSHIP_MATCH], windows: IDENTITY_IQ_WINDOWS, links: {} }),
+    stageReplyDraft: async () => { throw new Error('approval queue down'); }
+  });
+  await harness.run();
+
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEmails([{ id: 'e2', from: 'Matt <matt@identityiq.com>', subject: 'Hi', snippet: 'Following up.' }]);
+  const result = await harness.run();
+
+  const alert = harness.alerts.find(item => item.category === 'goal_signal');
+  assert.ok(alert, 'the goal connection must still be delivered');
+  assert.doesNotMatch(alert.text, /I drafted a reply/);
+  assert.match(result.errors.find(item => item.startsWith('goal_reply_draft:')), /approval queue down/);
 });

@@ -184,3 +184,33 @@ test('feedback rejects bad ids and non-ratings', async () => {
   await assert.rejects(() => store.setFeedback('not-a-uuid', { rating: 'positive' }), /Invalid match id/);
   await assert.rejects(() => store.setFeedback(crypto.randomUUID(), { rating: 'maybe' }), /positive or negative/);
 });
+
+test('approving the drafted reply records the match as acted on', async () => {
+  const store = new GoalMatchStore({ stateStore: createStateStore() });
+  await store.record({
+    match: domainMatch(),
+    signal: { id: 'email-draft' },
+    draftActionId: 'action-42'
+  });
+
+  const updated = await store.markDraftApproved('action-42');
+  assert.equal(updated.outcome, 'acted');
+  assert.equal(updated.feedback_source, 'draft_approved');
+
+  const summary = await store.summary();
+  assert.equal(summary.acted, 1);
+  assert.equal(summary.thresholds.domain.positives, 1);
+});
+
+test('draft approval is idempotent and ignores unknown actions', async () => {
+  const store = new GoalMatchStore({ stateStore: createStateStore() });
+  await store.record({ match: domainMatch(), signal: { id: 'email-draft' }, draftActionId: 'action-42' });
+
+  assert.ok(await store.markDraftApproved('action-42'));
+  assert.equal(await store.markDraftApproved('action-42'), null, 'a repeat approval must not double-count');
+  assert.equal(await store.markDraftApproved('action-unknown'), null);
+  assert.equal(await store.markDraftApproved(''), null);
+
+  const summary = await store.summary();
+  assert.equal(summary.acted, 1);
+});
