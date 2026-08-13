@@ -4,6 +4,7 @@ const {
   BUSINESS_INTEL_TOOL_NAMES,
   OUTBOUND_EMAIL_TOOL_NAMES,
   CALENDAR_WRITE_TOOL_NAMES,
+  LINKEDIN_TOOL_NAMES,
   isLightweightChitchat,
   needsSemanticMemory,
   shouldSkipSemanticMemory,
@@ -27,6 +28,7 @@ const ALL_NAMES = [
   ...BUSINESS_INTEL_TOOL_NAMES,
   ...OUTBOUND_EMAIL_TOOL_NAMES,
   ...CALENDAR_WRITE_TOOL_NAMES,
+  ...LINKEDIN_TOOL_NAMES,
   'check_email',
   'check_calendar',
   'get_goals',
@@ -235,6 +237,26 @@ test('selectToolsForTurn offers durable reminders only for reminder turns', () =
   assert.equal(greet.some(tool => tool.function.name === 'set_reminder'), false);
   assert.equal(greet.some(tool => tool.function.name === 'get_reminders'), false);
   assert.equal(greet.some(tool => tool.function.name === 'cancel_reminder'), false);
+});
+
+test('selectToolsForTurn offers LinkedIn tools only for a LinkedIn relationship turn', () => {
+  const selected = selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'Draft a LinkedIn thank-you for the person I selected.'
+  );
+  const names = new Set(selected.map(tool => tool.function.name));
+  for (const name of LINKEDIN_TOOL_NAMES) assert.equal(names.has(name), true, name);
+
+  const plain = selectToolsForTurn(fakeTools(ALL_NAMES), 'Tell me a joke.');
+  const plainNames = new Set(plain.map(tool => tool.function.name));
+  for (const name of LINKEDIN_TOOL_NAMES) assert.equal(plainNames.has(name), false, name);
+});
+
+test('LinkedIn approval code follow-ups retain the exact approval tools', () => {
+  const selected = selectToolsForTurn(fakeTools(ALL_NAMES), 'Approve and send LI-12AB34CD.');
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('approve_linkedin_message'), true);
+  assert.equal(names.has('draft_linkedin_message'), true);
 });
 
 test('selectToolsForTurn treats whats on my plate as todays agenda', () => {
