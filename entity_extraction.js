@@ -188,6 +188,14 @@ function extractGoalEntities(goal = {}) {
   const entities = [];
 
   for (const address of emailAddresses(text)) {
+    // The full address is always safe to compare exactly, even on a public
+    // provider; only inferring an organization from the domain is not.
+    entities.push({
+      value: address,
+      canonical: canonicalEntity(address),
+      type: 'email',
+      source: 'goal_text'
+    });
     const host = address.split('@')[1] || '';
     if (isPublicMailboxDomain(host)) continue;
     const label = domainLabel(host);
@@ -233,6 +241,12 @@ function extractSignalEntities(signal = {}) {
   const addresses = [...new Set([...emailAddresses(from), ...emailAddresses(signal.address || '')])];
 
   for (const address of addresses) {
+    entities.push({
+      value: address,
+      canonical: canonicalEntity(address),
+      type: 'email',
+      source: 'sender_address'
+    });
     const host = address.split('@')[1] || '';
     if (!host || isPublicMailboxDomain(host)) continue;
     const label = domainLabel(host);

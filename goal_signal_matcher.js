@@ -33,6 +33,8 @@ const MAX_EVIDENCE = 4;
 // Key is `signalType:goalType`. A sending domain matching text the owner wrote
 // into the goal is the motivating case and scores near the top.
 const ENTITY_PAIR_WEIGHTS = {
+  // An exact address written into the goal is the strongest evidence there is.
+  'email:email': 0.99,
   'domain:domain': 0.96,
   'domain:organization': 0.94,
   'organization:domain': 0.94,

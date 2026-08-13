@@ -72,6 +72,7 @@ const { RetrievalTraceStore } = require('./retrieval_trace_store');
 const { GoalIndex } = require('./goal_index');
 const { GoalMatchStore } = require('./goal_match_store');
 const { resolveSignalMatches } = require('./goal_signal_matcher');
+const { linkSignal } = require('./entity_graph');
 const { findOpenWindows } = require('./calendar_availability');
 const {
   evaluateSkillCandidate: runSkillCandidateEvaluation,
@@ -1384,9 +1385,9 @@ async function syncedGoalEntries(now) {
 // they actually have free. Thresholds come from the ledger, so classes the
 // owner keeps acting on get a lower bar than classes they keep ignoring.
 async function matchGoalSignals({ signal, events = [], now = new Date() }) {
-  if (!goalIndex || !goalMatchStore) return { matches: [], windows: [], errors: [] };
+  if (!goalIndex || !goalMatchStore) return { matches: [], windows: [], links: {}, errors: [] };
   const { entries, errors } = await syncedGoalEntries(now);
-  if (!entries.length) return { matches: [], windows: [], errors };
+  if (!entries.length) return { matches: [], windows: [], links: {}, errors };
 
   const resolved = await resolveSignalMatches({
     signal,
@@ -1396,15 +1397,36 @@ async function matchGoalSignals({ signal, events = [], now = new Date() }) {
     now: now.getTime()
   });
   const matches = await goalMatchStore.filterByThreshold(resolved.matches, { now: now.getTime() });
-  const windows = matches.length
-    ? findOpenWindows(events, {
-        now,
-        timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
-        businessStartHour: process.env.AURA_BUSINESS_START_HOUR || 9,
-        businessEndHour: process.env.AURA_BUSINESS_END_HOUR || 17
-      })
-    : [];
-  return { matches, windows, errors: [...errors, ...(resolved.errors || [])] };
+  if (!matches.length) {
+    return { matches, windows: [], links: {}, errors: [...errors, ...(resolved.errors || [])] };
+  }
+
+  // Only once a goal actually matched: identifying the sender and pulling CCC
+  // standing costs a profile read and up to two directory lookups, and there is
+  // nothing to attach them to otherwise.
+  let links = { people: [], clients: [], errors: [] };
+  try {
+    links = await linkSignal({
+      signal,
+      profile: await (cloudState || localProfileStore).getOwnerProfile(),
+      getClientSnapshot: name => ccc.getClientSnapshot(name)
+    });
+  } catch (error) {
+    errors.push(`link:${error?.message || error}`);
+  }
+
+  const windows = findOpenWindows(events, {
+    now,
+    timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
+    businessStartHour: process.env.AURA_BUSINESS_START_HOUR || 9,
+    businessEndHour: process.env.AURA_BUSINESS_END_HOUR || 17
+  });
+  return {
+    matches,
+    windows,
+    links,
+    errors: [...errors, ...(resolved.errors || []), ...(links.errors || [])]
+  };
 }
 
 const executiveLoopEnabled = process.env.AURA_EXECUTIVE_LOOP !== 'false';
@@ -1445,11 +1467,12 @@ const runExecutiveLoop = createExecutiveLoop({
   },
   matchGoalSignals: goalSignalsEnabled && cloudState ? matchGoalSignals : null,
   recordGoalMatch: goalSignalsEnabled && goalMatchStore
-    ? ({ match, signal, source, windows, notificationId }) => goalMatchStore.record({
+    ? ({ match, signal, source, windows, links, notificationId }) => goalMatchStore.record({
         match,
         signal,
         signalSource: source,
         suggestedWindows: windows,
+        links,
         notificationId
       })
     : null,

@@ -353,14 +353,19 @@ const IDENTITY_IQ_WINDOWS = [
   { start: '2026-08-06T22:00:00Z', end: '2026-08-07T00:00:00Z', minutes: 120, label: 'Thursday, Aug 6 3–5 PM' }
 ];
 
-function goalSignalHarness({ matches = [PARTNERSHIP_MATCH], windows = IDENTITY_IQ_WINDOWS, fail = false } = {}) {
+function goalSignalHarness({
+  matches = [PARTNERSHIP_MATCH],
+  windows = IDENTITY_IQ_WINDOWS,
+  links = {},
+  fail = false
+} = {}) {
   const seen = [];
   const recorded = [];
   const harness = createHarness({
     matchGoalSignals: async ({ signal, source, events }) => {
       seen.push({ id: signal.id, source, subject: signal.subject, eventCount: events.length });
       if (fail) throw new Error('index unavailable');
-      return { matches, windows };
+      return { matches, windows, links };
     },
     recordGoalMatch: async entry => { recorded.push(entry); }
   });
@@ -581,4 +586,74 @@ test('calendar signals ignore the owner and events with no other attendees', () 
   });
   assert.equal(signal.address, 'matt@identityiq.com');
   assert.equal(signal.subject, 'Intro call');
+});
+
+test('a goal alert carries the known contact and their client standing', async () => {
+  const harness = goalSignalHarness({
+    links: {
+      people: [{
+        key: 'people.matt_rivera',
+        name: 'Matt Rivera',
+        organization: 'Identity IQ',
+        role: 'VP Partnerships',
+        confidence: 0.99,
+        identified: true,
+        evidence: { matched_on: 'email' }
+      }],
+      clients: [{
+        found: true,
+        client: { name: 'Identity IQ', status: 'Active', billing_status: 'Current' },
+        current_phase: 'Phase 2',
+        outstanding_total: 1250
+      }]
+    }
+  });
+  await harness.run();
+
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEmails([{
+    id: 'email-linked',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Reseller partnership',
+    snippet: 'Following up on the agreement.'
+  }]);
+  await harness.run();
+
+  const alert = harness.alerts.find(item => item.category === 'goal_signal');
+  assert.match(alert.text, /Known contact: Matt Rivera — VP Partnerships at Identity IQ\./);
+  assert.match(alert.text, /CCC: Identity IQ — Phase 2 · Active · Current · \$1250\.00 outstanding\./);
+  assert.equal(alert.options.metadata.linked_people, 1);
+  assert.equal(alert.options.metadata.linked_clients, 1);
+  assert.equal(harness.recorded[0].links.people[0].name, 'Matt Rivera');
+});
+
+test('a company-level person link is worded as context, not identification', () => {
+  const text = formatGoalSignalAlert({
+    match: PARTNERSHIP_MATCH,
+    signal: { from: '"Priya Nair" <priya@identityiq.com>', subject: 'Intro' },
+    windows: [],
+    links: {
+      people: [{
+        name: 'Matt Rivera',
+        organization: 'Identity IQ',
+        role: 'VP Partnerships',
+        identified: false,
+        evidence: { matched_on: 'domain' }
+      }]
+    }
+  });
+
+  assert.match(text, /Possibly related: Matt Rivera — VP Partnerships at Identity IQ\./);
+  assert.doesNotMatch(text, /Known contact/);
+});
+
+test('an alert with no links is unchanged', () => {
+  const text = formatGoalSignalAlert({
+    match: PARTNERSHIP_MATCH,
+    signal: { from: '"Matt Rivera" <matt@identityiq.com>', subject: 'Reseller partnership' },
+    windows: IDENTITY_IQ_WINDOWS,
+    links: {}
+  });
+  assert.doesNotMatch(text, /Known contact|Possibly related|CCC:/);
+  assert.match(text, /You're open Thursday, Aug 6 3–5 PM/);
 });

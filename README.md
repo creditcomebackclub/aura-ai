@@ -273,6 +273,36 @@ ever looking actionable. Automated mail is excluded, connections are held
 during quiet hours (and re-evaluated afterward rather than dropped), and a
 matcher outage retries on the next run instead of silently skipping the signal.
 
+### Linked context
+
+Once a goal matches, the same canonical entities are resolved against the owner
+profile's people records and — when an organization surfaces — against CCC
+client records, so one alert carries the goal, the contact, and the client's
+real standing instead of three disconnected lookups:
+
+```text
+Goal connection
+Matt Rivera emailed you — “Reseller partnership — next steps”.
+This lines up with your goal: setup partnership with identity iq.
+Known contact: Matt Rivera — VP Partnerships at Identity IQ.
+CCC: Identity IQ — Phase 2 · Active · Current · $1250.00 outstanding.
+You're open Thursday, Aug 20 3–5 PM if you want to set up a time.
+```
+
+People matching is deterministic only — a fuzzy vector hit on a person is a
+misidentification, not a useful recall. An exact address match identifies the
+sender ("Known contact"); a shared company domain only places someone at that
+organization and is worded as context instead ("Possibly related"), so a note
+from a colleague never claims to be from the contact you know. Aliases and
+stored addresses are both searchable, and a personal mailbox domain still
+cannot link a person even though an exact personal address can.
+
+Linking runs only after a goal has matched — it costs a profile read and at
+most two directory lookups, and there is nothing to attach them to otherwise.
+A directory outage degrades to the goal connection alone. The ledger records
+the resolved names, roles, and balances as labels, not as a copy of the profile
+or client database.
+
 ### Learning which connections are worth making
 
 Every fired connection is recorded with its full score breakdown, evidence, and
@@ -414,6 +444,7 @@ deletions retain their separate approval gate.
 - `agent_router.js` — Core/Client Operations/Finance routing and least-privilege enforcement
 - `executive_loop.js` — proactive inbox/calendar/meeting/commitment monitoring
 - `entity_extraction.js` — canonical organization/domain/person extraction
+- `entity_graph.js` — links a signal to profile people and CCC client records
 - `goal_index.js` — durable goal entity index with cached embeddings
 - `goal_signal_matcher.js` — two-tier deterministic + semantic goal matching
 - `goal_match_store.js` — goal-connection ledger and adaptive thresholds

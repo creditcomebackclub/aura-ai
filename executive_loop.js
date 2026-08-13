@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { parseDueAt } = require('./due_date');
 const { describeOpenWindows } = require('./calendar_availability');
+const { describeClient, describePerson } = require('./entity_graph');
 
 const EXECUTIVE_LOOP_STATE_KEY = 'executive_loop_v1';
 const MAX_TRACKED_EMAILS = 500;
@@ -228,7 +229,13 @@ function buildMeetingBrief(event, emails, {
 
 // The connect-the-dots alert: who reached out, which goal it advances, and the
 // time the owner actually has free.
-function formatGoalSignalAlert({ match, signal = {}, source = 'email', windows = [] } = {}) {
+function formatGoalSignalAlert({
+  match,
+  signal = {},
+  source = 'email',
+  windows = [],
+  links = {}
+} = {}) {
   const who = senderLabel(signal.from || signal.address);
   const subject = compactText(signal.subject, 160);
   const lines = ['Goal connection'];
@@ -238,6 +245,19 @@ function formatGoalSignalAlert({ match, signal = {}, source = 'email', windows =
     lines.push(`${who} emailed you${subject ? ` — “${subject}”` : ''}.`);
   }
   lines.push(`This lines up with your goal: ${compactText(match?.goal_text, 200)}.`);
+
+  // A domain-only person match places someone at a company without naming
+  // them, so it is worded as context rather than an identification.
+  for (const person of (links.people || []).slice(0, 2)) {
+    const description = compactText(describePerson(person), 180);
+    if (!description) continue;
+    lines.push(person.identified ? `Known contact: ${description}.` : `Possibly related: ${description}.`);
+  }
+  for (const client of (links.clients || []).slice(0, 2)) {
+    const description = compactText(describeClient(client), 200);
+    if (description) lines.push(`CCC: ${description}.`);
+  }
+
   const availability = describeOpenWindows(windows);
   if (availability) lines.push(`You're open ${availability} if you want to set up a time.`);
   return lines.join('\n');
@@ -560,11 +580,12 @@ function createExecutiveLoop({
         goalSignaled.add(signalKey);
         const matches = Array.isArray(outcome?.matches) ? outcome.matches : [];
         const windows = Array.isArray(outcome?.windows) ? outcome.windows : [];
+        const links = outcome?.links && typeof outcome.links === 'object' ? outcome.links : {};
         if (outcome?.errors?.length) errors.push(...outcome.errors.map(item => `goal_signal:${item}`));
 
         for (const match of matches.slice(0, 1)) {
           const alert = await sendAlert(
-            formatGoalSignalAlert({ match, signal, source, windows }),
+            formatGoalSignalAlert({ match, signal, source, windows, links }),
             'goal_signal',
             'normal',
             {
@@ -575,7 +596,9 @@ function createExecutiveLoop({
                 signal_id: signal.id,
                 confidence: match.confidence,
                 tier: match.tier,
-                matched_by: match.matched_by
+                matched_by: match.matched_by,
+                linked_people: (links.people || []).length,
+                linked_clients: (links.clients || []).length
               }
             }
           );
@@ -586,6 +609,7 @@ function createExecutiveLoop({
                 signal,
                 source,
                 windows,
+                links,
                 notificationId: alert?.id ?? null
               });
             } catch (error) {

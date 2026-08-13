@@ -177,6 +177,7 @@ class GoalMatchStore {
     signal = {},
     signalSource = 'email',
     suggestedWindows = [],
+    links = {},
     notificationId = null,
     now = new Date()
   } = {}) {
@@ -204,6 +205,25 @@ class GoalMatchStore {
           minutes: window.minutes,
           label: safeText(window.label, 80)
         })),
+      // Who and what the signal resolved to beyond the goal itself. Stored as
+      // labels only — the ledger is a record of reasoning, not a copy of the
+      // profile or the client database.
+      linked_people: (Array.isArray(links.people) ? links.people : []).slice(0, 2).map(person => ({
+        key: safeText(person.key, 120),
+        name: safeText(person.name, 120),
+        organization: safeText(person.organization, 120),
+        role: safeText(person.role, 120),
+        confidence: Number(person.confidence) || 0,
+        identified: person.identified === true,
+        matched_on: safeText(person.evidence?.matched_on, 40)
+      })),
+      linked_clients: (Array.isArray(links.clients) ? links.clients : []).slice(0, 2).map(client => ({
+        name: safeText(client?.client?.name, 120),
+        status: safeText(client?.client?.status, 60),
+        billing_status: safeText(client?.client?.billing_status, 60),
+        current_phase: safeText(client?.current_phase, 80),
+        outstanding_total: Number(client?.outstanding_total) || 0
+      })),
       notification_id: notificationId == null ? null : String(notificationId).slice(0, 100),
       outcome: null,
       feedback: null,
