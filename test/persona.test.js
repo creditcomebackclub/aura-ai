@@ -35,6 +35,8 @@ test('SOUL.md preserves the proven-necessary safety and accuracy instructions', 
   assert.match(soul, /Write for the ear, not the page/i);
   assert.match(soul, /Ban these closers/i);
   assert.match(soul, /helpdesk closers/i);
+  assert.match(soul, /set_reminder/);
+  assert.match(soul, /successful tool receipt/i);
 });
 
 test('the delete-routes description matches the actual staged approval flow, not immediate deletion', () => {

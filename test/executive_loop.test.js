@@ -14,6 +14,7 @@ const {
 } = require('../executive_loop');
 
 const TZ = 'America/Phoenix';
+const { createReminderInput } = require('../reminders');
 
 test('email triage surfaces action and urgency while ignoring newsletter noise', () => {
   assert.deepEqual(
@@ -124,6 +125,7 @@ function createHarness({
   const alerts = [];
   const dedupe = new Set();
   const commitments = [];
+  const resolvedReminders = [];
   const run = createExecutiveLoop({
     listUnreadEmails: async () => emails,
     listSentEmails: async () => sentEmails,
@@ -143,6 +145,9 @@ function createHarness({
       commitments.push(structuredClone(commitment));
       return { id: commitment.id };
     },
+    resolveReminder: async (task, outcome) => {
+      resolvedReminders.push({ task: structuredClone(task), outcome: structuredClone(outcome) });
+    },
     sendAlert: async (text, category, urgency, options) => {
       const duplicate = dedupe.has(options.dedupeKey);
       dedupe.add(options.dedupeKey);
@@ -156,6 +161,7 @@ function createHarness({
     run,
     alerts,
     commitments,
+    resolvedReminders,
     getState: () => state,
     setNow: value => { currentTime = new Date(value); },
     setEmails: value => { emails = value; },
@@ -180,6 +186,29 @@ test('durable preferences can move the active quiet-hours window', async () => {
   }]);
   const result = await harness.run();
   assert.equal(result.sent, 0);
+});
+
+test('due reminders deliver once and recurring reminders advance only after delivery', async () => {
+  const harness = createHarness({ now: new Date('2026-08-13T16:05:00Z') });
+  harness.setTasks([{
+    id: 'weekly-discussion',
+    title: 'Reminder: Discussion post',
+    due_at: '2026-08-13T16:00:00Z',
+    input: createReminderInput('Your discussion post is due today.', 'weekly')
+  }]);
+
+  const first = await harness.run();
+  assert.deepEqual(first.categories, ['reminder']);
+  assert.equal(harness.alerts[0].category, 'reminder');
+  assert.equal(harness.alerts[0].text, 'Reminder\nYour discussion post is due today.');
+  assert.equal(
+    harness.resolvedReminders[0].outcome.nextDueAt,
+    '2026-08-20T16:00:00.000Z'
+  );
+
+  const repeated = await harness.run();
+  assert.equal(repeated.sent, 0);
+  assert.equal(harness.resolvedReminders.length, 2, 'a deduplicated alert still retries task advancement');
 });
 
 test('first run baselines old data, then alerts once for new executive events', async () => {

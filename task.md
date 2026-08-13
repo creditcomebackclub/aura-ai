@@ -46,9 +46,8 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Eliminate false tool-unavailable replies.** Broaden natural-language routing and recover
-  generic capability denials with mandatory safe reads, while preserving specialist allowlists,
-  web-search privacy/quota gates, and write/action authorization.
+- **Finish action reliability.** Add durable recurring reminders and prevent AURA from claiming
+  an action completed unless the current turn contains the matching successful tool receipt.
 
 ## Blocked
 
@@ -63,6 +62,9 @@ Name exactly what's needed and from whom.*
 ## Done recently
 
 *Last handful of shipped items. Prune older entries — this is not a permanent changelog; git log is.*
+
+- False tool-unavailable replies were fixed in #39: natural routing now recovers omitted safe
+  reads and the live reply gate forces a real attempt before AURA can deny an offered capability.
 
 - Goal connections were production-baselined: the authenticated index and ledger endpoints are
   healthy, and both are correctly empty while the owner has no open tasks.

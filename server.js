@@ -22,7 +22,9 @@ const { generateSimplePdf } = require('./pdf_generator');
 const { isTelegramConfigured, sendTelegramMessage, sendTelegramAudio, isFromOwnerChat, downloadTelegramFile } = require('./telegram');
 const { runDailyGoalsDigest, phoenixDateKey } = require('./daily_goals_digest');
 const { runMorningBrief, filterUpcomingAssignments } = require('./morning_brief');
-const { parseDueAt } = require('./due_date');
+const { parseDueAt, parseClock, zonedParts } = require('./due_date');
+const { createReminderInput, isReminderTask } = require('./reminders');
+const { findUnsupportedActionClaim, toolResultSucceeded } = require('./action_receipts');
 const {
   splitIntoSentences,
   createSpeechChunkAccumulator,
@@ -1258,7 +1260,7 @@ function parseLocalGoal(row) {
   return { ...row, input };
 }
 
-async function listOpenGoals() {
+async function listOpenTasks() {
   const rows = cloudState
     ? await cloudState.listTasks()
     : db.prepare(`
@@ -1268,7 +1270,12 @@ async function listOpenGoals() {
         ORDER BY created_at DESC
       `).all().map(parseLocalGoal);
   return rows
-    .filter(task => !CLOSED_GOAL_STATUSES.has(task.status))
+    .filter(task => !CLOSED_GOAL_STATUSES.has(task.status));
+}
+
+async function listOpenGoals() {
+  return (await listOpenTasks())
+    .filter(task => !isReminderTask(task))
     .map(task => ({ ...task, next_action: summarizeGoal(task).next_action }));
 }
 
@@ -1601,7 +1608,7 @@ const runExecutiveLoop = createExecutiveLoop({
   listCalendarEvents: options => isGoogleCalendarWriteConfigured()
     ? listGoogleCalendarEvents(options)
     : [],
-  listOpenTasks: listOpenGoals,
+  listOpenTasks,
   createCommitment: commitment => {
     if (!cloudState) return null;
     return cloudState.addTask(commitment.title, {
@@ -1616,6 +1623,31 @@ const runExecutiveLoop = createExecutiveLoop({
         recipient: commitment.recipient
       }
     });
+  },
+  resolveReminder: async (task, { deliveredAt, nextDueAt }) => {
+    const input = {
+      ...(task.input || {}),
+      reminder: {
+        ...(task.input?.reminder || {}),
+        last_delivered_at: deliveredAt
+      }
+    };
+    if (cloudState) {
+      if (nextDueAt) {
+        await cloudState.updateTask(task.id, { dueAt: nextDueAt, input });
+      } else {
+        await cloudState.updateTask(task.id, { input });
+        await cloudState.updateTaskStatus(task.id, 'completed');
+      }
+      return;
+    }
+    if (nextDueAt) {
+      db.prepare('UPDATE goals SET due_at = ?, input = ? WHERE id = ?')
+        .run(nextDueAt, JSON.stringify(input), task.id);
+    } else {
+      db.prepare("UPDATE goals SET status = 'completed', input = ? WHERE id = ?")
+        .run(JSON.stringify(input), task.id);
+    }
   },
   matchGoalSignals: goalSignalsEnabled && cloudState ? matchGoalSignals : null,
   recordGoalMatch: goalSignalsEnabled && goalMatchStore
@@ -2094,6 +2126,44 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'get_reminders',
+      description: 'List the owner\'s active one-time and recurring reminders with their exact ids, next delivery times, and recurrence. Read-only. Use before cancelling when the owner names a reminder but not its id.',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_reminder',
+      description: 'Create a durable one-time or recurring reminder delivered in AURA and mirrored to Telegram when configured. Use only when Chris explicitly asks to be reminded. For recurring reminders, require an explicit clock time; if he gives only a weekday, ask one short question for the time instead of inventing one. Confirm only after this tool succeeds.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: 'What the reminder should say.' },
+          when: { type: 'string', description: 'First delivery time: ISO timestamp or a grounded phrase like Thursday at 9 AM, tomorrow at noon, or in 3 days.' },
+          recurrence: { type: 'string', enum: ['once', 'daily', 'weekly'], description: 'How often to deliver the reminder.' }
+        },
+        required: ['message', 'when', 'recurrence']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_reminder',
+      description: 'Cancel one active reminder by the exact id returned by get_reminders. Use when Chris explicitly asks to cancel, stop, or remove that reminder. Confirm only after this tool succeeds.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Exact reminder id returned by get_reminders.' }
+        },
+        required: ['id']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'add_goal',
       description: 'Add a simple one-step goal or to-do to the tracker. For a substantial outcome that needs multiple steps, use set_goal_plan instead. When Chris names a due time, pass it as due_at.',
       parameters: {
@@ -2509,10 +2579,12 @@ async function correctFalseCapabilityDenial({
         parsedToolResult = { ok: false };
       }
       if (Array.isArray(evidence)) {
-        evidence.push(buildToolEvidence(toolCall, parsedToolResult, {
+        const receipt = buildToolEvidence(toolCall, parsedToolResult, {
           durationMs: Date.now() - toolStartedAtMs,
           round
-        }));
+        });
+        evidence.push(receipt);
+        sentenceGate?.markToolOutcome?.(toolCall?.function?.name, receipt.ok);
       }
       sentenceGate?.markToolAttempted?.(toolCall?.function?.name);
       chatHistory.push({
@@ -2567,6 +2639,142 @@ async function correctFalseCapabilityDenial({
   return corrected;
 }
 
+async function correctUnsupportedActionClaim({
+  reply,
+  chatHistory,
+  turnTools,
+  userInstruction = '',
+  onSentence,
+  evidence,
+  sentenceGate = null,
+  signal = null,
+  agent = DEFAULT_AGENTS.aura_core,
+  reasoningEffort: turnReasoningEffort = null,
+  modelRounds = null
+}) {
+  throwIfAborted(signal);
+  const successfulToolNames = (evidence || [])
+    .filter(item => item?.ok === true)
+    .map(item => item.tool)
+    .filter(Boolean);
+  const claim = findUnsupportedActionClaim(reply, successfulToolNames, {
+    candidateToolNames: (turnTools || []).map(tool => tool?.function?.name).filter(Boolean)
+  }) ||
+    sentenceGate?.getUnsupportedActionClaim?.() ||
+    null;
+  if (!claim) return reply;
+
+  console.warn('[receipts] unsupported action claim caught:', {
+    kind: claim.kind,
+    snippet: claim.snippet,
+    tools: claim.tools
+  });
+  sentenceGate?.beginReceiptCorrection?.();
+  const streamSentence = sentenceGate?.onSentence || onSentence;
+  const relevantTools = (turnTools || []).filter(tool => claim.tools.includes(tool?.function?.name));
+  const fallback = `I did not complete that ${claim.kind} action because no successful receipt was recorded.`;
+  const alreadyAttempted = (evidence || []).some(item => claim.tools.includes(item?.tool));
+  if (alreadyAttempted) {
+    streamSentence?.(fallback);
+    return fallback;
+  }
+  if (!relevantTools.length) {
+    streamSentence?.(fallback);
+    return fallback;
+  }
+
+  chatHistory.push({ role: 'assistant', content: reply });
+  chatHistory.push({
+    role: 'system',
+    content: [
+      `INTERNAL RECEIPT CORRECTION: Your previous reply claimed the ${claim.kind} action was complete without a successful tool receipt.`,
+      `Relevant action tools offered now: ${claim.tools.join(', ')}.`,
+      'Call the correct tool now only if the owner explicitly authorized it and supplied every required detail.',
+      'If a required detail is missing or the tool fails, say exactly that instead. Never claim completion without a successful result.'
+    ].join(' ')
+  });
+
+  let response = await createBrainCompletionStreamed({
+    messages: chatHistory,
+    tools: relevantTools,
+    tool_choice: 'required',
+    onSentence: streamSentence,
+    _signal: signal,
+    ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
+    _traceLabel: 'action receipt correction'
+  });
+  appendModelRoundTiming(modelRounds, response, { phase: 'receipt_correction', round: 0 });
+  response = recoverTextToolCalls(response, relevantTools, sentenceGate);
+  const toolCalls = response.choices[0].message.tool_calls || [];
+  if (!toolCalls.length) {
+    sentenceGate?.beginReceiptCorrection?.();
+    streamSentence?.(fallback);
+    return fallback;
+  }
+
+  chatHistory.push(response.choices[0].message);
+  for (const toolCall of toolCalls.slice(0, 1)) {
+    throwIfAborted(signal);
+    const toolStartedAtMs = Date.now();
+    let functionResult;
+    try {
+      if (!claim.tools.includes(toolCall?.function?.name)) {
+        throw new Error(`Tool is not valid for the ${claim.kind} receipt correction.`);
+      }
+      functionResult = await handleToolCall(toolCall, {
+        turn: conversationTurn,
+        requestStartedAtMs: Date.now(),
+        userInstruction,
+        agent,
+        signal
+      });
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error;
+      functionResult = JSON.stringify({
+        tool: toolCall?.function?.name || 'unknown',
+        ok: false,
+        error: error.message
+      });
+    }
+    let parsed = { ok: false };
+    try { parsed = JSON.parse(functionResult); } catch {}
+    const receipt = buildToolEvidence(toolCall, parsed, {
+      durationMs: Date.now() - toolStartedAtMs,
+      round: 0
+    });
+    evidence.push(receipt);
+    sentenceGate?.markToolOutcome?.(toolCall?.function?.name, receipt.ok);
+    chatHistory.push({
+      role: 'tool',
+      tool_call_id: toolCall.id,
+      name: toolCall.function.name,
+      content: functionResult
+    });
+  }
+
+  response = await createBrainCompletionStreamed({
+    messages: chatHistory,
+    onSentence: streamSentence,
+    _signal: signal,
+    ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
+    _traceLabel: 'action receipt correction result'
+  });
+  appendModelRoundTiming(modelRounds, response, { phase: 'receipt_correction', round: 1 });
+  const corrected = response.choices[0].message.content || fallback;
+  const correctedSuccesses = evidence
+    .filter(item => item?.ok === true)
+    .map(item => item.tool)
+    .filter(Boolean);
+  if (findUnsupportedActionClaim(corrected, correctedSuccesses, {
+    candidateToolNames: relevantTools.map(tool => tool?.function?.name).filter(Boolean)
+  })) {
+    sentenceGate?.beginReceiptCorrection?.();
+    streamSentence?.(fallback);
+    return fallback;
+  }
+  return corrected;
+}
+
 // Tool Executors
 // Deletion requires the user to actually say yes. A proposal is stamped with the
 // turn it was made in, and the matching confirmation is only honoured on a LATER
@@ -2574,6 +2782,21 @@ async function correctFalseCapabilityDenial({
 // confirm inside a single exchange no matter how she chains her tool calls.
 const DELETION_CONFIRMATION_TTL_MS = 10 * 60 * 1000;
 let conversationTurn = 0;
+
+function isExplicitReminderRequest(value) {
+  return /\b(?:remind\s+me|set\s+(?:me\s+)?(?:a\s+)?reminder|create\s+(?:me\s+)?(?:a\s+)?reminder|nudge\s+me|prompt\s+me|check[- ]?in\s+with\s+me)\b/i
+    .test(String(value || ''));
+}
+
+function ownerSpecifiedReminderClock(value) {
+  return /\b(?:at\s+)?(?:\d{1,2}(?::[0-5]\d)?\s*(?:am|pm)|noon|midnight)\b/i
+    .test(String(value || ''));
+}
+
+function reminderClock(value) {
+  const match = String(value || '').match(/\b(\d{1,2}(?::[0-5]\d)?\s*(?:am|pm)|noon|midnight)\b/i);
+  return match ? parseClock(match[1]) : null;
+}
 
 // The owner's own words are the gate (see owner_approval.js). Checked against
 // the raw message text, not against anything the model produced, so an
@@ -2635,6 +2858,90 @@ async function handleToolCall(toolCall, options = {}) {
   const turn = options.turn ?? conversationTurn;
   let result;
   switch (name) {
+    case 'get_reminders':
+      result = (await listOpenTasks())
+        .filter(isReminderTask)
+        .map(task => ({
+          id: task.id,
+          message: task.input.reminder.message,
+          next_delivery_at: task.due_at,
+          recurrence: task.input.reminder.recurrence,
+          delivery: task.input.reminder.delivery
+        }));
+      break;
+    case 'set_reminder': {
+      if (!isExplicitReminderRequest(options.userInstruction)) {
+        result = { scheduled: false, error: 'The owner must explicitly ask for a reminder in the current message.' };
+        break;
+      }
+      if (args.recurrence !== 'once' && !ownerSpecifiedReminderClock(options.userInstruction)) {
+        result = { scheduled: false, error: 'Ask the owner what time the recurring reminder should arrive.' };
+        break;
+      }
+      const ownerClock = reminderClock(options.userInstruction);
+      const reminderTimeZone = process.env.AURA_TIMEZONE || 'America/Phoenix';
+      const dueAt = parseDueAt(args.when, {
+        timeZone: reminderTimeZone,
+        now: new Date(options.requestStartedAtMs ?? Date.now())
+      });
+      if (!dueAt) {
+        result = { scheduled: false, error: `Could not parse the reminder time: ${args.when}` };
+        break;
+      }
+      const dueClock = zonedParts(new Date(dueAt), reminderTimeZone);
+      if (ownerClock && (ownerClock.hour !== dueClock.hour || ownerClock.minute !== dueClock.minute)) {
+        result = { scheduled: false, error: 'The reminder time did not match the time in the owner\'s current message.' };
+        break;
+      }
+      if (Date.parse(dueAt) <= (options.requestStartedAtMs ?? Date.now())) {
+        result = { scheduled: false, error: 'The reminder time must be in the future.' };
+        break;
+      }
+      const reminderInput = createReminderInput(args.message, args.recurrence);
+      let saved;
+      if (cloudState) {
+        saved = await cloudState.addTask(`Reminder: ${args.message}`, {
+          dueAt,
+          assignedAgent: agentId,
+          input: reminderInput
+        });
+      } else {
+        const inserted = db.prepare(`
+          INSERT INTO goals (description, status, due_at, input, created_at)
+          VALUES (?, 'pending', ?, ?, CURRENT_TIMESTAMP)
+        `).run(`Reminder: ${args.message}`, dueAt, JSON.stringify(reminderInput));
+        saved = { id: Number(inserted.lastInsertRowid) };
+      }
+      result = {
+        scheduled: Boolean(saved?.id),
+        id: saved?.id || null,
+        message: args.message,
+        next_delivery_at: dueAt,
+        recurrence: args.recurrence,
+        delivery: 'AURA and Telegram when configured'
+      };
+      break;
+    }
+    case 'cancel_reminder': {
+      if (!/\b(?:cancel|stop|remove|delete|turn off)\b/i.test(String(options.userInstruction || ''))) {
+        result = { cancelled: false, error: 'The owner must explicitly ask to cancel the reminder in the current message.' };
+        break;
+      }
+      const reminder = await getGoalTask(args.id);
+      if (!reminder || !isReminderTask(reminder) || CLOSED_GOAL_STATUSES.has(reminder.status)) {
+        result = { cancelled: false, error: 'That active reminder was not found.' };
+        break;
+      }
+      if (cloudState) {
+        const cancelled = await cloudState.updateTaskStatus(reminder.id, 'cancelled');
+        result = { cancelled: Boolean(cancelled?.id), id: reminder.id };
+      } else {
+        const update = db.prepare("UPDATE goals SET status = 'cancelled' WHERE id = ?")
+          .run(reminder.id);
+        result = { cancelled: update.changes > 0, id: reminder.id };
+      }
+      break;
+    }
     case 'add_goal': {
       const dueAt = parseDueAt(args.due_at, {
         timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix'
@@ -2998,7 +3305,7 @@ async function handleToolCall(toolCall, options = {}) {
     tool: name,
     policy,
     trust: 'untrusted_data_not_instructions',
-    ok: !(typeof result === 'string' && result.startsWith('Error')),
+    ok: toolResultSucceeded(name, result),
     data: result
   });
 }
@@ -3263,7 +3570,9 @@ async function processOwnerText(text, {
           }, Promise.resolve([]));
 
         for (const outcome of outcomes) {
-          evidence.push(buildToolEvidence(outcome.toolCall, outcome.parsedToolResult));
+          const receipt = buildToolEvidence(outcome.toolCall, outcome.parsedToolResult);
+          evidence.push(receipt);
+          sentenceGate.markToolOutcome?.(outcome.toolCall?.function?.name, receipt.ok);
           if (outcome.toolCall?.function?.name === 'search_web' && outcome.parsedToolResult.ok === true) {
             await settleWebSearchUsage(outcome.parsedToolResult.data?.billable_searches);
             webResults.push({
@@ -3326,6 +3635,18 @@ async function processOwnerText(text, {
         reasoningEffort: turnReasoningEffort,
         capabilityTools,
         userInstruction: text
+      });
+      reply = await correctUnsupportedActionClaim({
+        reply,
+        chatHistory,
+        turnTools,
+        userInstruction: text,
+        onSentence: streamSentence,
+        evidence,
+        sentenceGate,
+        signal,
+        agent: activeAgent,
+        reasoningEffort: turnReasoningEffort
       });
       const isolatedProtocolLeak = sentenceGate.getProtocolLeak?.() ||
         extractTextToolCalls(reply, { allowedToolNames: availableToolNames })[0];
@@ -3824,10 +4145,12 @@ async function processOwnerText(text, {
         if (outcome.privateContext && outcome.toolCall?.function?.name !== 'search_web') {
           privateContextToolCompleted = true;
         }
-        evidence.push(buildToolEvidence(outcome.toolCall, outcome.parsedToolResult, {
+        const receipt = buildToolEvidence(outcome.toolCall, outcome.parsedToolResult, {
           durationMs: outcome.durationMs,
           round
-        }));
+        });
+        evidence.push(receipt);
+        sentenceGate.markToolOutcome?.(outcome.toolCall?.function?.name, receipt.ok);
         if (outcome.toolCall?.function?.name === 'search_web' && outcome.parsedToolResult.ok === true) {
           await settleWebSearchUsage(outcome.parsedToolResult.data?.billable_searches);
           webSearchSucceeded = true;
@@ -3913,6 +4236,19 @@ async function processOwnerText(text, {
       chatHistory,
       turnTools,
       capabilityTools,
+      userInstruction: text,
+      onSentence: streamSentence,
+      evidence,
+      sentenceGate,
+      signal,
+      agent: activeAgent,
+      reasoningEffort: turnReasoningEffort,
+      modelRounds
+    });
+    reply = await correctUnsupportedActionClaim({
+      reply,
+      chatHistory,
+      turnTools,
       userInstruction: text,
       onSentence: streamSentence,
       evidence,

@@ -72,6 +72,21 @@ test('sentence gate permits an honest limitation after that tool was attempted',
   assert.equal(gate.getDenial(), null);
 });
 
+test('sentence gate suppresses action completion without a successful receipt', () => {
+  const spoken = [];
+  const gate = createSentenceGate(sentence => spoken.push(sentence), {
+    availableToolNames: ['set_reminder']
+  });
+  gate.onSentence("You're set. I'll remind you every Thursday.");
+  assert.deepEqual(spoken, []);
+  assert.equal(gate.getUnsupportedActionClaim().kind, 'reminder');
+
+  gate.beginReceiptCorrection();
+  gate.markToolOutcome('set_reminder', true);
+  gate.onSentence("You're set. I'll remind you every Thursday at 9 AM.");
+  assert.deepEqual(spoken, ["You're set. I'll remind you every Thursday at 9 AM."]);
+});
+
 test('text tool parser recovers only explicitly allowed JSON tool calls', () => {
   const text = [
     '```json',

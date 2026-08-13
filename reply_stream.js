@@ -1,4 +1,5 @@
 const { findFalseCapabilityDenial } = require('./memory_v2');
+const { findUnsupportedActionClaim } = require('./action_receipts');
 
 // Some OpenAI-compatible models occasionally print a tool request as JSON in
 // normal assistant text instead of returning it through the structured
@@ -90,8 +91,10 @@ function createSentenceGate(onSentence, {
   let suppressed = false;
   let correctionOpen = false;
   let denial = null;
+  let unsupportedActionClaim = null;
   let protocolLeak = null;
   const attemptedToolNames = new Set();
+  const successfulToolNames = new Set();
 
   const emit = typeof onSentence === 'function' ? onSentence : null;
 
@@ -109,6 +112,14 @@ function createSentenceGate(onSentence, {
           if (textToolCalls.length || containsTextToolCallMarker(next)) {
             suppressed = true;
             protocolLeak = { calls: textToolCalls, raw: next };
+            return;
+          }
+          const unsupported = findUnsupportedActionClaim(next, [...successfulToolNames], {
+            candidateToolNames: availableToolNames
+          });
+          if (unsupported) {
+            suppressed = true;
+            unsupportedActionClaim = unsupported;
             return;
           }
           if (correctionOpen) {
@@ -135,8 +146,16 @@ function createSentenceGate(onSentence, {
     getProtocolLeak() {
       return protocolLeak;
     },
+    getUnsupportedActionClaim() {
+      return unsupportedActionClaim;
+    },
     markToolAttempted(name) {
       if (typeof name === 'string' && name) attemptedToolNames.add(name);
+    },
+    markToolOutcome(name, ok) {
+      if (typeof name !== 'string' || !name) return;
+      attemptedToolNames.add(name);
+      if (ok === true) successfulToolNames.add(name);
     },
     wasSuppressed() {
       return suppressed;
@@ -151,11 +170,18 @@ function createSentenceGate(onSentence, {
       suppressed = false;
       correctionOpen = true;
     },
+    beginReceiptCorrection() {
+      accumulated = '';
+      suppressed = false;
+      correctionOpen = false;
+      unsupportedActionClaim = null;
+    },
     resetAfterToolRecovery() {
       accumulated = '';
       suppressed = false;
       correctionOpen = false;
       denial = null;
+      unsupportedActionClaim = null;
       protocolLeak = null;
     }
   };

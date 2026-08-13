@@ -21,6 +21,32 @@ test('parseDueAt accepts weekdays and ISO dates', () => {
   assert.equal(parseDueAt('', { timeZone: TZ, now: NOW }), null);
 });
 
+test('parseDueAt grounds explicit local reminder times', () => {
+  assert.equal(
+    parseDueAt('Thursday at 9 AM', { timeZone: TZ, now: NOW }),
+    '2026-08-06T16:00:00.000Z'
+  );
+  assert.equal(
+    parseDueAt('every Thursday at 2:30 pm', { timeZone: TZ, now: NOW }),
+    '2026-08-06T21:30:00.000Z'
+  );
+  assert.equal(
+    parseDueAt('tomorrow at noon', { timeZone: TZ, now: NOW }),
+    '2026-08-06T19:00:00.000Z'
+  );
+});
+
+test('same-day timed weekdays use today only while that time is still ahead', () => {
+  assert.equal(
+    parseDueAt('Wednesday at 11 AM', { timeZone: TZ, now: NOW }),
+    '2026-08-05T18:00:00.000Z'
+  );
+  assert.equal(
+    parseDueAt('Wednesday at 9 AM', { timeZone: TZ, now: NOW }),
+    '2026-08-12T16:00:00.000Z'
+  );
+});
+
 test('due labels distinguish today, overdue, and future', () => {
   const dueToday = parseDueAt('today', { timeZone: TZ, now: NOW });
   assert.equal(isDueToday(dueToday, { timeZone: TZ, now: NOW }), true);

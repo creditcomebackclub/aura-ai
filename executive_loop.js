@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { parseDueAt } = require('./due_date');
 const { describeOpenWindows } = require('./calendar_availability');
 const { describeClient, describePerson } = require('./entity_graph');
+const { isReminderTask, nextReminderDueAt, reminderMessage } = require('./reminders');
 
 const EXECUTIVE_LOOP_STATE_KEY = 'executive_loop_v1';
 const MAX_TRACKED_EMAILS = 500;
@@ -298,6 +299,7 @@ function createExecutiveLoop({
   listCalendarEvents,
   listOpenTasks,
   createCommitment,
+  resolveReminder,
   getMeetingContext,
   matchGoalSignals,
   recordGoalMatch,
@@ -646,6 +648,27 @@ function createExecutiveLoop({
         const title = taskTitle(task);
         if (!title || !Number.isFinite(dueMs)) continue;
         const minutesUntil = (dueMs - currentMs) / 60000;
+        if (isReminderTask(task)) {
+          if (minutesUntil > 0) continue;
+          const dedupeTime = new Date(dueMs).toISOString();
+          const alert = await sendAlert(
+            `Reminder\n${reminderMessage(task)}`,
+            'reminder',
+            'normal',
+            {
+              dedupeKey: `reminder:${task.id}:${dedupeTime}`,
+              metadata: { task_id: task.id, due_at: dedupeTime }
+            }
+          );
+          if (typeof resolveReminder === 'function') {
+            await resolveReminder(task, {
+              deliveredAt: currentTime.toISOString(),
+              nextDueAt: nextReminderDueAt(task, { after: currentTime })
+            });
+          }
+          if (!alert?.deduplicated) sent.push('reminder');
+          continue;
+        }
         if (minutesUntil > 60 || minutesUntil < -1440) continue;
         const timing = minutesUntil < 0
           ? 'is overdue'
