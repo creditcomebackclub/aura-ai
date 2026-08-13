@@ -4,8 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   EXECUTIVE_LOOP_STATE_KEY,
+  calendarSignal,
   classifyEmail,
   extractOwnerCommitment,
+  formatGoalSignalAlert,
   isQuietTime,
   buildMeetingBrief,
   createExecutiveLoop
@@ -106,7 +108,12 @@ test('meeting briefs include attendees and matching unread email context', () =>
   assert.doesNotMatch(brief, /Unrelated/);
 });
 
-function createHarness({ now = new Date('2026-08-03T16:00:00Z'), getPreferences } = {}) {
+function createHarness({
+  now = new Date('2026-08-03T16:00:00Z'),
+  getPreferences,
+  matchGoalSignals,
+  recordGoalMatch
+} = {}) {
   let currentTime = now;
   let state = null;
   let emails = [];
@@ -121,6 +128,8 @@ function createHarness({ now = new Date('2026-08-03T16:00:00Z'), getPreferences 
     listSentEmails: async () => sentEmails,
     getEmailIdentity: async () => 'creditcomebackclub@gmail.com',
     getPreferences,
+    matchGoalSignals,
+    recordGoalMatch,
     listCalendarEvents: async () => events,
     listOpenTasks: async () => tasks,
     getState: async key => key === EXECUTIVE_LOOP_STATE_KEY ? state : null,
@@ -136,7 +145,7 @@ function createHarness({ now = new Date('2026-08-03T16:00:00Z'), getPreferences 
       const duplicate = dedupe.has(options.dedupeKey);
       dedupe.add(options.dedupeKey);
       alerts.push({ text, category, urgency, options, duplicate });
-      return { deduplicated: duplicate };
+      return { id: alerts.length, deduplicated: duplicate };
     },
     timeZone: TZ,
     now: () => new Date(currentTime)
@@ -326,4 +335,250 @@ test('a provider outage cannot make old email look new after recovery', async ()
   assert.ok(state.email_initialized_at);
   assert.deepEqual(state.known_email_ids, ['already-there']);
   assert.deepEqual(alerts, []);
+});
+
+// --- Goal connections -------------------------------------------------------
+
+const PARTNERSHIP_MATCH = {
+  goal_id: 'goal-1',
+  goal_text: 'setup partnership with identity iq',
+  confidence: 0.88,
+  tier: 'deterministic',
+  matched_by: ['domain'],
+  evidence: [{ canonical: 'identityiq', signal_type: 'domain', signal_source: 'sender_domain', weight: 0.88 }],
+  scores: { deterministic: 0.88 }
+};
+
+const IDENTITY_IQ_WINDOWS = [
+  { start: '2026-08-06T22:00:00Z', end: '2026-08-07T00:00:00Z', minutes: 120, label: 'Thursday, Aug 6 3–5 PM' }
+];
+
+function goalSignalHarness({ matches = [PARTNERSHIP_MATCH], windows = IDENTITY_IQ_WINDOWS, fail = false } = {}) {
+  const seen = [];
+  const recorded = [];
+  const harness = createHarness({
+    matchGoalSignals: async ({ signal, source, events }) => {
+      seen.push({ id: signal.id, source, subject: signal.subject, eventCount: events.length });
+      if (fail) throw new Error('index unavailable');
+      return { matches, windows };
+    },
+    recordGoalMatch: async entry => { recorded.push(entry); }
+  });
+  return { ...harness, seen, recorded };
+}
+
+test('the assistant connects an inbound email to an open goal and offers free time', async () => {
+  const harness = goalSignalHarness();
+  await harness.run();
+
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEmails([{
+    id: 'email-iq-1',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Reseller partnership — next steps',
+    snippet: 'Wanted to see if you had time this week to talk through the agreement.'
+  }]);
+  await harness.run();
+
+  const alert = harness.alerts.find(item => item.category === 'goal_signal');
+  assert.ok(alert, 'expected a goal_signal alert');
+  assert.match(alert.text, /Matt Rivera emailed you/);
+  assert.match(alert.text, /lines up with your goal: setup partnership with identity iq/);
+  assert.match(alert.text, /You're open Thursday, Aug 6 3–5 PM if you want to set up a time/);
+  assert.equal(alert.options.metadata.goal_id, 'goal-1');
+  assert.equal(alert.options.metadata.tier, 'deterministic');
+
+  assert.equal(harness.recorded.length, 1);
+  assert.equal(harness.recorded[0].match.goal_id, 'goal-1');
+  assert.equal(harness.recorded[0].source, 'email');
+  assert.ok(harness.recorded[0].notificationId != null, 'the ledger should capture the notification id');
+});
+
+test('a goal connection fires even when the email is not otherwise actionable', async () => {
+  const harness = goalSignalHarness();
+  await harness.run();
+
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEmails([{
+    id: 'email-iq-2',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Great meeting you at the conference',
+    snippet: 'Just wanted to say it was good connecting.'
+  }]);
+  await harness.run();
+
+  assert.equal(harness.alerts.filter(item => item.category === 'executive_email').length, 0);
+  assert.equal(harness.alerts.filter(item => item.category === 'goal_signal').length, 1);
+  assert.deepEqual(harness.seen.map(item => item.id), ['email-iq-2']);
+});
+
+test('automated mail never reaches the goal matcher', async () => {
+  const harness = goalSignalHarness();
+  await harness.run();
+
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEmails([{
+    id: 'newsletter-1',
+    from: 'Digest <no-reply@identityiq.com>',
+    subject: 'Weekly digest',
+    snippet: 'Unsubscribe at any time.'
+  }]);
+  await harness.run();
+
+  assert.deepEqual(harness.seen, []);
+  assert.equal(harness.alerts.filter(item => item.category === 'goal_signal').length, 0);
+});
+
+test('quiet hours hold goal connections without losing them', async () => {
+  const harness = goalSignalHarness();
+  await harness.run();
+
+  harness.setNow('2026-08-04T06:00:00Z'); // 11pm Phoenix
+  harness.setEmails([{
+    id: 'email-iq-3',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Partnership paperwork',
+    snippet: 'Can you review the draft?'
+  }]);
+  await harness.run();
+  assert.equal(harness.alerts.filter(item => item.category === 'goal_signal').length, 0);
+  assert.deepEqual(harness.seen, []);
+
+  harness.setNow('2026-08-04T16:00:00Z'); // 9am Phoenix
+  await harness.run();
+  assert.equal(harness.alerts.filter(item => item.category === 'goal_signal').length, 1);
+  assert.deepEqual(harness.seen.map(item => item.id), ['email-iq-3']);
+});
+
+test('a quiet-hours connection survives even when the email is not actionable', async () => {
+  const harness = goalSignalHarness();
+  await harness.run();
+
+  // Non-actionable mail is marked seen by the email tracker on arrival, so goal
+  // matching must not depend on that tracker to find it again after quiet hours.
+  harness.setNow('2026-08-04T06:00:00Z'); // 11pm Phoenix
+  harness.setEmails([{
+    id: 'email-iq-quiet',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Great meeting you at the conference',
+    snippet: 'Just wanted to say it was good connecting.'
+  }]);
+  await harness.run();
+  assert.deepEqual(harness.seen, []);
+
+  harness.setNow('2026-08-04T16:00:00Z'); // 9am Phoenix
+  await harness.run();
+  assert.deepEqual(harness.seen.map(item => item.id), ['email-iq-quiet']);
+  assert.equal(harness.alerts.filter(item => item.category === 'goal_signal').length, 1);
+});
+
+test('a matcher outage retries the signal on the next run', async () => {
+  const failing = goalSignalHarness({ fail: true });
+  await failing.run();
+  failing.setNow('2026-08-03T16:05:00Z');
+  failing.setEmails([{
+    id: 'email-iq-4',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Partnership',
+    snippet: 'Following up.'
+  }]);
+  const result = await failing.run();
+
+  assert.match(result.errors.find(item => item.startsWith('goal_signal:')), /index unavailable/);
+  assert.deepEqual(failing.getState().goal_signaled_ids, [], 'a failed signal must not be marked as seen');
+});
+
+test('a new calendar invitation is matched like any other signal', async () => {
+  const harness = goalSignalHarness();
+  await harness.run();
+
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEvents([{
+    id: 'event-iq-1',
+    status: 'confirmed',
+    summary: 'Intro call',
+    start: { dateTime: '2026-08-06T22:00:00Z' },
+    end: { dateTime: '2026-08-06T23:00:00Z' },
+    attendees: [{ email: 'matt@identityiq.com', displayName: 'Matt Rivera' }]
+  }]);
+  await harness.run();
+
+  const alert = harness.alerts.find(item => item.category === 'goal_signal');
+  assert.ok(alert);
+  assert.match(alert.text, /Intro call puts you with Matt Rivera/);
+  assert.equal(harness.seen[0].source, 'calendar');
+  assert.equal(harness.recorded[0].source, 'calendar');
+});
+
+test('the baseline run never fires goal connections for pre-existing mail', async () => {
+  const harness = goalSignalHarness();
+  harness.setEmails([{
+    id: 'old-email',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Partnership',
+    snippet: 'Following up.'
+  }]);
+  harness.setEvents([{
+    id: 'old-event',
+    status: 'confirmed',
+    summary: 'Intro call',
+    start: { dateTime: '2026-08-06T22:00:00Z' },
+    end: { dateTime: '2026-08-06T23:00:00Z' },
+    attendees: [{ email: 'matt@identityiq.com', displayName: 'Matt Rivera' }]
+  }]);
+  await harness.run();
+
+  assert.deepEqual(harness.seen, []);
+  assert.equal(harness.alerts.filter(item => item.category === 'goal_signal').length, 0);
+});
+
+test('the same signal is only ever announced once', async () => {
+  const harness = goalSignalHarness();
+  await harness.run();
+  harness.setNow('2026-08-03T16:05:00Z');
+  harness.setEmails([{
+    id: 'email-iq-5',
+    from: '"Matt Rivera" <matt@identityiq.com>',
+    subject: 'Partnership',
+    snippet: 'Following up.'
+  }]);
+  await harness.run();
+  await harness.run();
+
+  assert.equal(harness.seen.length, 1);
+  assert.equal(harness.alerts.filter(item => item.category === 'goal_signal' && !item.duplicate).length, 1);
+});
+
+test('goal alerts read naturally with and without free time', () => {
+  const withTime = formatGoalSignalAlert({
+    match: PARTNERSHIP_MATCH,
+    signal: { from: '"Matt Rivera" <matt@identityiq.com>', subject: 'Reseller partnership' },
+    windows: IDENTITY_IQ_WINDOWS
+  });
+  assert.equal(
+    withTime,
+    'Goal connection\n' +
+    'Matt Rivera emailed you — “Reseller partnership”.\n' +
+    'This lines up with your goal: setup partnership with identity iq.\n' +
+    "You're open Thursday, Aug 6 3–5 PM if you want to set up a time."
+  );
+
+  const withoutTime = formatGoalSignalAlert({
+    match: PARTNERSHIP_MATCH,
+    signal: { from: 'matt@identityiq.com', subject: 'Reseller partnership' },
+    windows: []
+  });
+  assert.doesNotMatch(withoutTime, /You're open/);
+});
+
+test('calendar signals ignore the owner and events with no other attendees', () => {
+  assert.equal(calendarSignal({ id: 'e1', attendees: [] }), null);
+  assert.equal(calendarSignal({ id: 'e2', attendees: [{ email: 'me@x.com', self: true }] }), null);
+  const signal = calendarSignal({
+    id: 'e3',
+    summary: 'Intro call',
+    attendees: [{ email: 'me@x.com', self: true }, { email: 'matt@identityiq.com', displayName: 'Matt Rivera' }]
+  });
+  assert.equal(signal.address, 'matt@identityiq.com');
+  assert.equal(signal.subject, 'Intro call');
 });

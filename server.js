@@ -69,6 +69,10 @@ const { DurableSkillsStore } = require('./durable_skills_store');
 const { SkillOutcomeStore, classifyOwnerFeedback } = require('./skill_outcome_store');
 const { BeliefStore, renderBeliefContext } = require('./belief_store');
 const { RetrievalTraceStore } = require('./retrieval_trace_store');
+const { GoalIndex } = require('./goal_index');
+const { GoalMatchStore } = require('./goal_match_store');
+const { resolveSignalMatches } = require('./goal_signal_matcher');
+const { findOpenWindows } = require('./calendar_availability');
 const {
   evaluateSkillCandidate: runSkillCandidateEvaluation,
   shouldAutoRollback
@@ -323,6 +327,22 @@ async function getEmbedding(text) {
   const response = await openaiEmbeddings.embeddings.create({
     model: 'text-embedding-3-small',
     input: text
+  });
+  return response.data[0].embedding;
+}
+
+// Goal vectors are cached in a Supabase state row that the Executive Loop reads
+// every five minutes, so their size matters in a way memory vectors do not.
+// text-embedding-3-small is Matryoshka-trained: a 256-dimension slice keeps the
+// signal that short goal text carries at a sixth of the stored bytes.
+const GOAL_EMBEDDING_DIMENSIONS = 256;
+
+async function getGoalEmbedding(text) {
+  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
+  const response = await openaiEmbeddings.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: text,
+    dimensions: GOAL_EMBEDDING_DIMENSIONS
   });
   return response.data[0].embedding;
 }
@@ -592,6 +612,16 @@ const skillOutcomeStore = cloudState
   : null;
 const beliefStore = cloudState
   ? new BeliefStore({ stateStore: cloudState })
+  : null;
+const goalSignalsEnabled = process.env.AURA_GOAL_SIGNALS !== 'false';
+const goalIndex = cloudState
+  ? new GoalIndex({
+      stateStore: cloudState,
+      embed: process.env.OPENAI_API_KEY ? getGoalEmbedding : null
+    })
+  : null;
+const goalMatchStore = cloudState
+  ? new GoalMatchStore({ stateStore: cloudState })
   : null;
 
 const learningReview = new LearningReviewController({
@@ -1332,6 +1362,51 @@ async function deliverDailyGoalsDigest() {
   });
 }
 
+// The Executive Loop calls the matcher once per new signal, but the goal index
+// only needs reconciling once per run — this memo keeps a burst of new mail from
+// re-reading and re-writing the index for every message.
+const GOAL_INDEX_SYNC_TTL_MS = 60000;
+let goalIndexSyncedAt = 0;
+let goalIndexEntries = [];
+
+async function syncedGoalEntries(now) {
+  const nowMs = now.getTime();
+  if (goalIndexSyncedAt && nowMs - goalIndexSyncedAt < GOAL_INDEX_SYNC_TTL_MS) {
+    return { entries: goalIndexEntries, errors: [] };
+  }
+  const synced = await goalIndex.sync(await listOpenGoals(), { now });
+  goalIndexSyncedAt = nowMs;
+  goalIndexEntries = synced.goals || [];
+  return { entries: goalIndexEntries, errors: synced.errors || [] };
+}
+
+// Connects one inbound signal to the owner's open goals, then offers the time
+// they actually have free. Thresholds come from the ledger, so classes the
+// owner keeps acting on get a lower bar than classes they keep ignoring.
+async function matchGoalSignals({ signal, events = [], now = new Date() }) {
+  if (!goalIndex || !goalMatchStore) return { matches: [], windows: [], errors: [] };
+  const { entries, errors } = await syncedGoalEntries(now);
+  if (!entries.length) return { matches: [], windows: [], errors };
+
+  const resolved = await resolveSignalMatches({
+    signal,
+    goalEntries: entries,
+    embed: process.env.OPENAI_API_KEY ? getGoalEmbedding : null,
+    minConfidence: await goalMatchStore.minThreshold({ now: now.getTime() }),
+    now: now.getTime()
+  });
+  const matches = await goalMatchStore.filterByThreshold(resolved.matches, { now: now.getTime() });
+  const windows = matches.length
+    ? findOpenWindows(events, {
+        now,
+        timeZone: process.env.AURA_TIMEZONE || 'America/Phoenix',
+        businessStartHour: process.env.AURA_BUSINESS_START_HOUR || 9,
+        businessEndHour: process.env.AURA_BUSINESS_END_HOUR || 17
+      })
+    : [];
+  return { matches, windows, errors: [...errors, ...(resolved.errors || [])] };
+}
+
 const executiveLoopEnabled = process.env.AURA_EXECUTIVE_LOOP !== 'false';
 const executivePreferenceDefaults = {
   quietStartHour: process.env.AURA_EXECUTIVE_QUIET_START || 21,
@@ -1368,6 +1443,16 @@ const runExecutiveLoop = createExecutiveLoop({
       }
     });
   },
+  matchGoalSignals: goalSignalsEnabled && cloudState ? matchGoalSignals : null,
+  recordGoalMatch: goalSignalsEnabled && goalMatchStore
+    ? ({ match, signal, source, windows, notificationId }) => goalMatchStore.record({
+        match,
+        signal,
+        signalSource: source,
+        suggestedWindows: windows,
+        notificationId
+      })
+    : null,
   getMeetingContext: async event => {
     const clientSnapshots = [];
     for (const attendee of (event?.attendees || []).slice(0, 6)) {
@@ -3795,6 +3880,60 @@ app.get('/api/learning/summary', async (req, res) => {
     return res.status(503).json({ error: 'The durable skill outcome ledger is not enabled.' });
   }
   res.json({ summary: await skillOutcomeStore.summary() });
+});
+
+// Goal connections: what fired, why it fired, and how the thresholds have moved.
+app.get('/api/goals/matches', async (req, res) => {
+  if (!goalMatchStore) {
+    return res.status(503).json({ error: 'The durable goal match ledger is not enabled.' });
+  }
+  const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+  const [matches, summary] = await Promise.all([
+    goalMatchStore.list(limit),
+    goalMatchStore.summary()
+  ]);
+  res.json({ matches, summary });
+});
+
+app.get('/api/goals/index', async (req, res) => {
+  if (!goalIndex) {
+    return res.status(503).json({ error: 'The durable goal index is not enabled.' });
+  }
+  // Vectors are the bulk of each row and are not useful to read back.
+  const goals = (await goalIndex.list()).map(({ embedding, ...entry }) => ({
+    ...entry,
+    embedded: Array.isArray(embedding) && embedding.length > 0
+  }));
+  res.json({ goals });
+});
+
+app.post('/api/goals/matches/:id/feedback', async (req, res) => {
+  if (!goalMatchStore) {
+    return res.status(503).json({ error: 'The durable goal match ledger is not enabled.' });
+  }
+  try {
+    const match = await goalMatchStore.setFeedback(req.params.id, {
+      rating: req.body?.rating,
+      note: req.body?.note || ''
+    });
+    if (!match) return res.status(404).json({ error: 'Goal match not found.' });
+    res.json({ match });
+  } catch (error) {
+    res.status(400).json({ error: error.message || String(error) });
+  }
+});
+
+app.post('/api/goals/matches/:id/outcome', async (req, res) => {
+  if (!goalMatchStore) {
+    return res.status(503).json({ error: 'The durable goal match ledger is not enabled.' });
+  }
+  try {
+    const match = await goalMatchStore.setOutcome(req.params.id, req.body?.outcome);
+    if (!match) return res.status(404).json({ error: 'Goal match not found.' });
+    res.json({ match });
+  } catch (error) {
+    res.status(400).json({ error: error.message || String(error) });
+  }
 });
 
 app.get('/api/learning/episodes', async (req, res) => {

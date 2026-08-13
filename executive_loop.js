@@ -2,12 +2,16 @@
 
 const crypto = require('crypto');
 const { parseDueAt } = require('./due_date');
+const { describeOpenWindows } = require('./calendar_availability');
 
 const EXECUTIVE_LOOP_STATE_KEY = 'executive_loop_v1';
 const MAX_TRACKED_EMAILS = 500;
 const MAX_TRACKED_SENT_EMAILS = 500;
 const MAX_TRACKED_EVENTS = 250;
 const MAX_BRIEFED_MEETINGS = 250;
+const MAX_TRACKED_GOAL_SIGNALS = 400;
+// Bounded per run so a burst of new mail cannot fan out into many model calls.
+const MAX_GOAL_SIGNALS_PER_RUN = 6;
 
 function compactText(value, maxLength = 180) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
@@ -222,6 +226,39 @@ function buildMeetingBrief(event, emails, {
   return lines.join('\n');
 }
 
+// The connect-the-dots alert: who reached out, which goal it advances, and the
+// time the owner actually has free.
+function formatGoalSignalAlert({ match, signal = {}, source = 'email', windows = [] } = {}) {
+  const who = senderLabel(signal.from || signal.address);
+  const subject = compactText(signal.subject, 160);
+  const lines = ['Goal connection'];
+  if (source === 'calendar') {
+    lines.push(`${subject || 'A new event'} puts you with ${who}.`);
+  } else {
+    lines.push(`${who} emailed you${subject ? ` — “${subject}”` : ''}.`);
+  }
+  lines.push(`This lines up with your goal: ${compactText(match?.goal_text, 200)}.`);
+  const availability = describeOpenWindows(windows);
+  if (availability) lines.push(`You're open ${availability} if you want to set up a time.`);
+  return lines.join('\n');
+}
+
+// Attendees of a new event, shaped like an inbound signal for the matcher.
+function calendarSignal(event) {
+  const attendees = (event?.attendees || []).filter(attendee => attendee?.email && !attendee.self);
+  if (!attendees.length) return null;
+  return {
+    id: event.id,
+    address: attendees.map(attendee => attendee.email).join(' '),
+    displayName: compactText(attendees[0].displayName || attendees[0].email, 80),
+    from: attendees[0].displayName
+      ? `"${compactText(attendees[0].displayName, 80)}" <${attendees[0].email}>`
+      : attendees[0].email,
+    subject: compactText(event.summary, 200),
+    snippet: compactText(event.description, 400)
+  };
+}
+
 function taskTitle(task) {
   return compactText(task?.description || task?.title, 180);
 }
@@ -238,6 +275,8 @@ function createExecutiveLoop({
   listOpenTasks,
   createCommitment,
   getMeetingContext,
+  matchGoalSignals,
+  recordGoalMatch,
   getPreferences,
   getState,
   setState,
@@ -293,6 +332,7 @@ function createExecutiveLoop({
         ? previous.calendar_events
         : {},
       briefed_meetings: Array.isArray(previous?.briefed_meetings) ? previous.briefed_meetings : [],
+      goal_signaled_ids: Array.isArray(previous?.goal_signaled_ids) ? previous.goal_signaled_ids : [],
       last_run_at: currentTime.toISOString()
     };
     const errors = [];
@@ -339,14 +379,29 @@ function createExecutiveLoop({
     else errors.push(`tasks:${taskResult.reason?.message || taskResult.reason}`);
 
     const knownEmails = new Set(state.known_email_ids);
+    const newEmails = [];
+    const baselineGoalSignalKeys = [];
     if (emailResult.status === 'fulfilled' && !emailInitialized) {
-      for (const email of emails) if (email?.id) knownEmails.add(email.id);
+      for (const email of emails) {
+        if (!email?.id) continue;
+        knownEmails.add(email.id);
+        // Baseline goal matching alongside email: enabling the loop must not
+        // replay connections for mail that was already sitting in the inbox.
+        baselineGoalSignalKeys.push(`email:${email.id}`);
+      }
       state.email_initialized_at = currentTime.toISOString();
     } else {
       const eligibleEmails = [];
       for (const email of emails) {
-        if (!email?.id || knownEmails.has(email.id)) continue;
+        if (!email?.id) continue;
         const classification = classifyEmail(email);
+        // Goal matching keeps its own seen-set, so it considers every human
+        // email in the inbox rather than inheriting the alert tracker's dedupe.
+        // Two reasons: "just checking in" advances a partnership without ever
+        // looking actionable, and a connection deferred by quiet hours must
+        // still be there in the morning.
+        if (classification.category !== 'automated') newEmails.push(email);
+        if (knownEmails.has(email.id)) continue;
         if (!classification.actionable) {
           knownEmails.add(email.id);
           continue;
@@ -410,11 +465,15 @@ function createExecutiveLoop({
 
     const previousEvents = state.calendar_events;
     const nextEvents = { ...previousEvents };
+    const newEvents = [];
     for (const event of events) {
       if (!event?.id) continue;
       const currentSnapshot = eventSnapshot(event);
       const prior = previousEvents[event.id];
       if (!calendarInitialized || !prior) {
+        // Only after the baseline run: a genuinely new invitation can be the
+        // first time a goal's counterparty appears anywhere.
+        if (calendarInitialized && currentSnapshot.status !== 'cancelled') newEvents.push(event);
         nextEvents[event.id] = currentSnapshot;
         continue;
       }
@@ -477,6 +536,68 @@ function createExecutiveLoop({
     }
     state.briefed_meetings = [...briefed].slice(-MAX_BRIEFED_MEETINGS);
 
+    // Goal connections. Held back entirely during quiet hours — and because a
+    // signal is only marked as seen once it has actually been evaluated, the
+    // ones skipped tonight are still waiting in the morning.
+    const goalSignaled = new Set([...state.goal_signaled_ids, ...baselineGoalSignalKeys]);
+    if (typeof matchGoalSignals === 'function' && !quiet) {
+      const candidates = [
+        ...newEmails.map(email => ({ signal: email, source: 'email' })),
+        ...newEvents.map(event => ({ signal: calendarSignal(event), source: 'calendar' }))
+      ].filter(candidate => candidate.signal?.id && !goalSignaled.has(`${candidate.source}:${candidate.signal.id}`));
+
+      for (const { signal, source } of candidates.slice(0, MAX_GOAL_SIGNALS_PER_RUN)) {
+        const signalKey = `${source}:${signal.id}`;
+        let outcome = null;
+        try {
+          outcome = await matchGoalSignals({ signal, source, events, now: currentTime });
+        } catch (error) {
+          errors.push(`goal_signal:${error?.message || error}`);
+          continue;
+        }
+        // Mark seen only after a clean evaluation, so a provider outage retries
+        // rather than silently dropping the signal.
+        goalSignaled.add(signalKey);
+        const matches = Array.isArray(outcome?.matches) ? outcome.matches : [];
+        const windows = Array.isArray(outcome?.windows) ? outcome.windows : [];
+        if (outcome?.errors?.length) errors.push(...outcome.errors.map(item => `goal_signal:${item}`));
+
+        for (const match of matches.slice(0, 1)) {
+          const alert = await sendAlert(
+            formatGoalSignalAlert({ match, signal, source, windows }),
+            'goal_signal',
+            'normal',
+            {
+              dedupeKey: `goal-signal:${signalKey}:${match.goal_id}`,
+              metadata: {
+                goal_id: match.goal_id,
+                signal_source: source,
+                signal_id: signal.id,
+                confidence: match.confidence,
+                tier: match.tier,
+                matched_by: match.matched_by
+              }
+            }
+          );
+          if (typeof recordGoalMatch === 'function') {
+            try {
+              await recordGoalMatch({
+                match,
+                signal,
+                source,
+                windows,
+                notificationId: alert?.id ?? null
+              });
+            } catch (error) {
+              errors.push(`goal_match_record:${error?.message || error}`);
+            }
+          }
+          if (!alert?.deduplicated) sent.push('goal_signal');
+        }
+      }
+    }
+    state.goal_signaled_ids = [...goalSignaled].slice(-MAX_TRACKED_GOAL_SIGNALS);
+
     if (!quiet) {
       for (const task of tasks) {
         const dueMs = Date.parse(task?.due_at);
@@ -536,6 +657,8 @@ module.exports = {
   isQuietTime,
   eventFingerprint,
   eventStartMs,
+  calendarSignal,
+  formatGoalSignalAlert,
   relatedUnreadForEvent,
   relatedTasksForEvent,
   buildMeetingBrief,

@@ -220,7 +220,9 @@ enabling it does not replay old mail or events. Later runs surface:
 - calendar cancellations and reschedules;
 - meeting briefs 8–20 minutes before timed events, including matching unread
   mail, open follow-ups, and verified CCC client phase/billing context when an
-  attendee matches a client; and
+  attendee matches a client;
+- goal connections, when a new email or calendar invitation involves someone
+  tied to an open goal (see "Goal connections" below); and
 - due or recently overdue tasks.
 
 Routine email and task alerts are deferred during quiet hours (9:00 PM–7:00 AM
@@ -230,6 +232,73 @@ Configure `AURA_EXECUTIVE_QUIET_START`, `AURA_EXECUTIVE_QUIET_END`,
 the behavior. The protected `POST /internal/scheduled/executive-loop` route can
 also trigger an operational run and returns provider counts plus the authenticated
 mailbox identity, never message content.
+
+## Goal connections
+
+AURA links inbound signals to the goals they advance. If an open goal reads
+"setup partnership with identity iq" and a new email arrives from
+`matt@identityiq.com`, she surfaces the connection along with the time actually
+free on the calendar:
+
+```text
+Goal connection
+Matt Rivera emailed you — “Reseller partnership — next steps”.
+This lines up with your goal: setup partnership with identity iq.
+You're open Thursday, Aug 20 3–5 PM if you want to set up a time.
+```
+
+Matching runs in two tiers, cheapest first:
+
+1. **Deterministic.** Goal text and sender identity are reduced to a canonical
+   form that ignores case, spacing, punctuation, corporate suffixes,
+   subdomains, and TLDs — so "Identity IQ", "identityiq", and `identityiq.com`
+   all resolve to the same entity with no model call. Goals dictated in
+   lowercase still match, because candidates come from contiguous word runs
+   rather than capitalization. Public mailbox domains (Gmail, iCloud, Outlook,
+   …) are never treated as an organization.
+2. **Semantic.** When tier 1 finds nothing confident, the signal is embedded
+   once and compared against cached goal vectors, blended with lexical and
+   named-entity overlap through the same scorer used for memory recall
+   (`retrieval_scoring.js`). A confident deterministic hit short-circuits before
+   any embedding is purchased, so the common case is free.
+
+Goal vectors are cached per goal and only recomputed when the goal's text
+changes, using a 256-dimension slice of `text-embedding-3-small`. With no
+`OPENAI_API_KEY` — or during a provider outage — tier 1 keeps working on its
+own.
+
+Every new human email is checked, not only the ones the urgency classifier
+flags: "great meeting you at the conference" advances a partnership without
+ever looking actionable. Automated mail is excluded, connections are held
+during quiet hours (and re-evaluated afterward rather than dropped), and a
+matcher outage retries on the next run instead of silently skipping the signal.
+
+### Learning which connections are worth making
+
+Every fired connection is recorded with its full score breakdown, evidence, and
+suggested times. Outcomes then tune how eager AURA is, per match class
+(`domain`, `organization`, `person`, `phrase`, `semantic`):
+
+- acting on a match, or rating it positive, lowers that class's confidence bar;
+- rejecting it, or leaving it unacknowledged for a week, raises it.
+
+Thresholds use Laplace-smoothed precision against a 0.75 target, only move once
+a class has at least three resolved observations, and stay clamped to
+0.45–0.90 — so one stray rejection cannot silence a whole class, and one class's
+history never affects another.
+
+Inspect the ledger and current thresholds at authenticated
+`GET /api/goals/matches`, or the indexed goals and their entities at
+`GET /api/goals/index`. Record an outcome with
+`POST /api/goals/matches/:id/outcome` and `{ "outcome": "acted" | "ignored" }`,
+or submit explicit feedback with `POST /api/goals/matches/:id/feedback` and
+`{ "rating": "positive" | "negative", "note": "..." }`.
+
+Set `AURA_GOAL_SIGNALS=false` to disable the feature. Suggested times respect
+`AURA_BUSINESS_START_HOUR` (default 9) and `AURA_BUSINESS_END_HOUR` (default
+17), skip weekends, and are computed from the calendar events the Executive
+Loop already fetched — no extra API call. Subject lines are screened for
+credentials and one-time codes before anything reaches the ledger.
 
 The Gmail account identity is stored with the durable baseline. Switching OAuth
 to a different mailbox automatically resets only the inbox and sent-mail cursors;
@@ -344,6 +413,11 @@ deletions retain their separate approval gate.
 - `server.js` — HTTP/WebSocket server, agent loop, tools, cron jobs
 - `agent_router.js` — Core/Client Operations/Finance routing and least-privilege enforcement
 - `executive_loop.js` — proactive inbox/calendar/meeting/commitment monitoring
+- `entity_extraction.js` — canonical organization/domain/person extraction
+- `goal_index.js` — durable goal entity index with cached embeddings
+- `goal_signal_matcher.js` — two-tier deterministic + semantic goal matching
+- `goal_match_store.js` — goal-connection ledger and adaptive thresholds
+- `calendar_availability.js` — open business-hours windows from known events
 - `agent_policy.js` — tool authorization and argument validation
 - `memory_store.js` — structured long-term memory
 - `memory_v2.js` — pinned profile, extraction, corrections, retrieval, summaries
