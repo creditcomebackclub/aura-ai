@@ -82,6 +82,7 @@ const {
   updateGoalPlanStep
 } = require('./goal_plans');
 const { normalizeAgentTelemetryMessage, summarizeAgentTelemetry } = require('./agent_telemetry');
+const { normalizeVadDiagnostic } = require('./audio_vad_telemetry');
 const { resolveSignalMatches } = require('./goal_signal_matcher');
 const { linkSignal } = require('./entity_graph');
 const { buildSchedulingReply } = require('./reply_draft');
@@ -146,6 +147,7 @@ const {
   buildDeepgramLiveUrl,
   classifyDeepgramLiveMessage,
   deepgramStreamingAvailable,
+  resolveDeepgramEndpointingMs,
   DEFAULT_SAMPLE_RATE: DEEPGRAM_LIVE_SAMPLE_RATE
 } = require('./deepgram_live');
 const WebSocket = require('ws');
@@ -4387,6 +4389,14 @@ app.post('/api/chat/cancel', (req, res) => {
   return res.json({ cancelled: Boolean(controller) });
 });
 
+app.post('/api/audio/vad-events', (req, res) => {
+  const diagnostic = normalizeVadDiagnostic(req.body);
+  if (!diagnostic) return res.status(400).json({ error: 'Invalid VAD diagnostic.' });
+  // Signal metadata only. No audio, transcript, or device identity is accepted.
+  console.info('[audio-vad]', JSON.stringify(diagnostic));
+  return res.status(204).end();
+});
+
 app.post('/api/chat', async (req, res) => {
   let streamStarted = false;
   const suppliedTurnId = typeof req.body?.turn_id === 'string' ? req.body.turn_id.trim() : '';
@@ -5123,6 +5133,7 @@ function attachDeepgramSttProxy(socket) {
   let finalized = false;
   let finals = [];
   let interim = '';
+  let bestConfidence = 0;
   let stopTimer = null;
 
   function clearStopTimer() {
@@ -5155,7 +5166,7 @@ function attachDeepgramSttProxy(socket) {
     clearStopTimer();
     const text = [...finals, interim].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
     interim = '';
-    socket.emit('stt:final', { transcript: text, reason });
+    socket.emit('stt:final', { transcript: text, reason, confidence: bestConfidence });
     cleanupDeepgram();
   }
 
@@ -5164,6 +5175,7 @@ function attachDeepgramSttProxy(socket) {
     finalized = false;
     finals = [];
     interim = '';
+    bestConfidence = 0;
     if (!deepgramStreamingAvailable()) {
       socket.emit('stt:error', {
         code: 'streaming_unavailable',
@@ -5180,7 +5192,7 @@ function attachDeepgramSttProxy(socket) {
     live.on('open', () => {
       socket.emit('stt:ready', {
         sample_rate: DEEPGRAM_LIVE_SAMPLE_RATE,
-        endpointing_ms: Number(process.env.AURA_DEEPGRAM_ENDPOINTING_MS) || 400
+        endpointing_ms: resolveDeepgramEndpointingMs()
       });
     });
 
@@ -5189,6 +5201,7 @@ function attachDeepgramSttProxy(socket) {
       const raw = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
       const event = classifyDeepgramLiveMessage(raw);
       if (event.kind === 'results') {
+        bestConfidence = Math.max(bestConfidence, Number(event.confidence) || 0);
         if (event.transcript) {
           if (event.isFinal) {
             finals.push(event.transcript);

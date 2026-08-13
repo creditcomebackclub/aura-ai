@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   buildDeepgramLiveUrl,
   classifyDeepgramLiveMessage,
+  extractLiveConfidence,
   resolveDeepgramEndpointingMs,
   resolveDeepgramUtteranceEndMs,
   deepgramStreamingAvailable,
@@ -14,7 +15,7 @@ const {
 test('Deepgram live URL includes nova-3 streaming + endpointing knobs', () => {
   const url = buildDeepgramLiveUrl({
     AURA_DEEPGRAM_MODEL: 'nova-3',
-    AURA_DEEPGRAM_ENDPOINTING_MS: '400',
+    AURA_DEEPGRAM_ENDPOINTING_MS: '700',
     AURA_DEEPGRAM_UTTERANCE_END_MS: '1000'
   });
   assert.match(url, /^wss:\/\/api\.deepgram\.com\/v1\/listen\?/);
@@ -22,13 +23,15 @@ test('Deepgram live URL includes nova-3 streaming + endpointing knobs', () => {
   assert.match(url, /encoding=linear16/);
   assert.match(url, /sample_rate=16000/);
   assert.match(url, /interim_results=true/);
-  assert.match(url, /endpointing=400/);
+  assert.match(url, /endpointing=700/);
   assert.match(url, /utterance_end_ms=1000/);
   assert.match(url, /keyterm=MRR/);
 });
 
 test('endpointing defaults and clamps', () => {
-  assert.equal(resolveDeepgramEndpointingMs({}), 400);
+  assert.equal(resolveDeepgramEndpointingMs({}), 700);
+  assert.equal(resolveDeepgramEndpointingMs({ AURA_DEEPGRAM_ENDPOINTING_MS: '400' }), 700);
+  assert.equal(resolveDeepgramEndpointingMs({ AURA_DEEPGRAM_ENDPOINTING_MS: '650' }), 650);
   assert.equal(resolveDeepgramUtteranceEndMs({}), 1800);
   assert.equal(resolveDeepgramUtteranceEndMs({ AURA_DEEPGRAM_UTTERANCE_END_MS: '500' }), 1800);
 });
@@ -38,11 +41,12 @@ test('classifyDeepgramLiveMessage maps Results / UtteranceEnd / Error', () => {
     type: 'Results',
     is_final: false,
     speech_final: false,
-    channel: { alternatives: [{ transcript: 'what is my' }] }
+    channel: { alternatives: [{ transcript: 'what is my', confidence: 0.84 }] }
   }));
   assert.equal(interim.kind, 'results');
   assert.equal(interim.transcript, 'what is my');
   assert.equal(interim.isFinal, false);
+  assert.equal(interim.confidence, 0.84);
 
   const finalSpeech = classifyDeepgramLiveMessage(JSON.stringify({
     type: 'Results',
@@ -65,6 +69,7 @@ test('extractLiveTranscript reads channel alternatives', () => {
     extractLiveTranscript({ channel: { alternatives: [{ transcript: '  hi  ' }] } }),
     'hi'
   );
+  assert.equal(extractLiveConfidence({ channel: { alternatives: [{ confidence: 1.4 }] } }), 1);
 });
 
 test('deepgramStreamingAvailable requires key + deepgram provider', () => {

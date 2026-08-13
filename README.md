@@ -36,6 +36,26 @@ is needed in this mode.
 `AURA_ACCESS_TOKEN` remains available as a legacy LAN option. The cloud service
 uses Supabase Auth instead.
 
+## Voice interruption tuning
+
+AURA requests the browser/platform microphone pipeline's echo cancellation,
+noise suppression, automatic gain control, and (where supported) voice isolation
+before local voice-activity detection or transcription. The local interruption
+gate calibrates the room floor for 650 ms, requires 220 ms of speech confidence,
+uses a higher threshold to start than to stay open, and waits 700 ms after speech
+falls away before ending a turn. Conversation-mode no-speech timeout remains 8s.
+Deepgram live endpointing is also 700 ms so the assistant does not answer during
+a brief thinking pause.
+
+For the cleanest interruption behavior, use a headset or a close microphone,
+keep it near your mouth, and point it away from speakers, fans, keyboards, or
+traffic. This still materially improves separation even with browser processing.
+
+Rejected partial starts and a quick re-interruption after endpointing are logged
+as `[audio-vad]` diagnostics with timestamp, audio level, calibrated noise floor,
+VAD confidence, and duration. These events never contain PCM, transcripts, device
+names, or other microphone content; the browser caps them at 16 per page session.
+
 ## Privacy and security
 
 - Supabase is accessed only by the server. Never expose its service-role key to
