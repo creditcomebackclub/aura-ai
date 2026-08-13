@@ -42,6 +42,24 @@ test('daily goals digest includes due labels when present', () => {
   assert.match(text, /Call the court \(due today\)/);
 });
 
+test('daily goals digest surfaces the selected next move', () => {
+  const text = formatDailyGoalsDigest([{
+    title: 'Launch the offer',
+    created_at: new Date().toISOString(),
+    next_action: { action: 'Interview five prospects' }
+  }]);
+  assert.match(text, /Next move: Interview five prospects/);
+});
+
+test('daily goals digest does not repeat an unplanned one-step goal as its own next move', () => {
+  const text = formatDailyGoalsDigest([{
+    title: 'Pay rent',
+    created_at: new Date().toISOString(),
+    next_action: { action: 'Pay rent' }
+  }]);
+  assert.doesNotMatch(text, /Next move: Pay rent/);
+});
+
 test('daily goals digest runner sends once, mirrors Telegram, and dedupes', async () => {
   const goals = [{ title: 'Pay rent', created_at: new Date().toISOString() }];
   const alerts = [];

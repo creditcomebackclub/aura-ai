@@ -78,6 +78,43 @@ test('tool arguments reject unsafe identifiers and invalid writes', () => {
   );
 });
 
+test('goal plans are bounded internal writes with validated progress updates', () => {
+  const parsed = parseAndAuthorizeToolCall(toolCall('set_goal_plan', {
+    title: 'Launch the offer',
+    desired_outcome: 'Ten customers onboarded.',
+    steps: [
+      { title: 'Define the offer' },
+      { title: 'Invite prospects', due_at: 'Friday' }
+    ]
+  }));
+  assert.equal(parsed.policy, 'reversible_write');
+  assert.equal(parsed.args.steps.length, 2);
+  assert.equal(getToolPolicy('get_goal_plans'), 'read');
+
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('set_goal_plan', {
+      title: 'Too small', desired_outcome: 'Done', steps: [{ title: 'Only step' }]
+    })),
+    /between 2 and 12 steps/
+  );
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('set_goal_plan', {
+      title: 'Duplicate',
+      desired_outcome: 'Done',
+      steps: [{ title: 'Call Chris' }, { title: ' call  chris ' }]
+    })),
+    /unique titles/
+  );
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('update_goal_step', {
+      goal_id: '38b6a3f2-847f-4df0-a2f2-1f4ce70ba327',
+      step_id: 'step-1',
+      status: 'finished-ish'
+    })),
+    /Invalid goal step status/
+  );
+});
+
 test('manual skill management requires a direct owner workflow request', () => {
   assert.equal(
     isExplicitSkillManagementRequest('Create a client-sweep workflow from these steps.', 'create'),

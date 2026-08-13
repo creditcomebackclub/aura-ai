@@ -27,8 +27,20 @@ const CALENDAR_WRITE_TOOL_NAMES = new Set([
   'create_calendar_event'
 ]);
 
-const GOAL_TOOL_NAMES = new Set(['get_goals', 'add_goal', 'update_goal_status']);
-const GOAL_WRITE_TOOL_NAMES = new Set(['add_goal', 'update_goal_status']);
+const GOAL_TOOL_NAMES = new Set([
+  'get_goals',
+  'get_goal_plans',
+  'add_goal',
+  'set_goal_plan',
+  'update_goal_step',
+  'update_goal_status'
+]);
+const GOAL_WRITE_TOOL_NAMES = new Set([
+  'add_goal',
+  'set_goal_plan',
+  'update_goal_step',
+  'update_goal_status'
+]);
 const BLACKBOARD_TOOL_NAMES = new Set(['check_blackboard']);
 const TELEGRAM_TOOL_NAMES = new Set(['send_telegram_message']);
 const WEB_SEARCH_TOOL_NAMES = new Set(['search_web']);
@@ -53,8 +65,8 @@ const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
 
 const OUTBOUND_EMAIL_KEYWORD_PATTERN = /\b(email|e-?mail|send)\b/i;
 const CALENDAR_WRITE_KEYWORD_PATTERN = /\b(schedule|scheduling|scheduled|book|booking|invite|invitation|calendar event|add (?:this |it |an? )?to (?:my )?calendar|put .+ on (?:my )?calendar|block off|hold on my calendar)\b/i;
-const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|search|remember|memory|profile|mail|consult|consultation|schedule|book|invite|skill|skills|procedure|workflow)\b/i;
-const GOAL_KEYWORD_PATTERN = /\b(goal|goals|todo|to-?do|task|tasks)\b/i;
+const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|plan|planning|milestone|search|remember|memory|profile|mail|consult|consultation|schedule|book|invite|skill|skills|procedure|workflow)\b/i;
+const GOAL_KEYWORD_PATTERN = /\b(goal|goals|todo|to-?do|task|tasks|plan|planning|milestone|milestones|next action|prioriti[sz]e|what should (?:i|we) do next|what(?:'s| is) next|where should (?:i|we) start)\b/i;
 const BLACKBOARD_KEYWORD_PATTERN = /\b(blackboard|consult|consultation)\b/i;
 const TELEGRAM_KEYWORD_PATTERN = /\b(telegram|text (?:him|her|me|chris)|message (?:chris|me))\b/i;
 const WEB_SEARCH_KEYWORD_PATTERN = /\b(search(?:\s+the)?\s+web|google|look\s+(?:it\s+)?up online|web\s+search|latest news|weather|who is|what(?:'s| is) (?:the )?(?:news|score|price of))\b/i;

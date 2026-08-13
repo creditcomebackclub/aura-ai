@@ -46,8 +46,9 @@ whoever unblocks it knows what to do.
 
 *What's actively being worked on this session/sprint.*
 
-- **Deploy the response-baseline follow-up.** Ship cancelled-turn hygiene, daily-plate read
-  routing, and `/api/agents/telemetry`; then verify the new routing/timing metadata on live turns.
+- **Ship Phase 7A goal planning.** Deploy the atomic plan ledger, deterministic portfolio-wide
+  next action, Core-only planning tools, authenticated `/api/goals/plans`, and morning-brief next
+  moves; then create the owner's first real strategic plans through AURA.
 
 ## Blocked
 
@@ -65,6 +66,8 @@ Name exactly what's needed and from whom.*
 
 - Goal connections were production-baselined: the authenticated index and ledger endpoints are
   healthy, and both are correctly empty while the owner has no open tasks.
+- Response-baseline follow-up deployed in #35: cancelled turns no longer enter context/learning,
+  daily-plate reads calendar/goals/Blackboard, and privacy-bounded agent telemetry is live.
 - Relationship Memory MVP is deployed and verified without a migration. Three `people.*` entries
   are live; richer aliases/contact/context fields remain empty until the owner states that data.
 - GitHub Actions `test` is required on `main`, must come from the GitHub Actions app, and must run
@@ -103,6 +106,8 @@ actually decided are coming next.*
 - Collect at least 20 organic specialist-routed turns, then review failure rate, latency,
   fallbacks, and allowlist anomalies in `/api/agents/telemetry`. Telemetry never authorizes a
   reversible-write specialist by itself; expansion still requires manual safety review.
+- After Phase 7A is live, capture 3–5 owner goals with concrete outcomes/deadlines and use real
+  progress to tune next-action ranking before adding autonomous plan advancement.
 
 ---
 

@@ -86,15 +86,19 @@ a visual in-app dashboard and a fixed retrieval evaluation set/benchmark.
 Partial gate met: the owner can inspect or correct every traced influential
 memory. Full completion still needs a fixed benchmark proving recall quality.
 
-### 5. Bounded proactive planning
+### 5. Bounded proactive planning — plan ledger and next action implemented
 
-Let AURA propose and track multi-step internal plans from open commitments and
-recurring patterns. Reads and internal organization may run autonomously;
-external or destructive actions retain the existing current-turn authorization
-and approval boundaries.
+Substantial goals can carry an atomic definition of done, 2–12 ordered steps,
+progress, due dates, and one deterministic portfolio-wide next action in the
+existing durable task record. Matching step titles preserve progress across a
+revision, removed steps retire, and the morning brief surfaces the selected
+move. Plan text remains inert and cannot authorize an external or destructive
+tool. Remaining work is autonomous internal preparation and evidence-driven
+advancement from real owner plans.
 
-Success gate: AURA advances internal work without prompting while never treating
-learned behavior as permission for an external action.
+Partial gate met: AURA can organize and prioritize multi-step internal work
+without widening permissions. Full completion requires proving that proactive
+advancement helps on real goals without noisy or ungrounded status changes.
 
 ### 6. Capability self-model
 
