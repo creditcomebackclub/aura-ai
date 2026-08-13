@@ -89,6 +89,11 @@ Authorization is layered:
 Specialists are read-only. They never execute actions or create tasks. Core writes
 chat-created goals and Executive Loop commitments with
 `assigned_agent = 'aura_core'`, and stamps the resolved Core id on audited actions.
+Core also owns durable goal plans in `aura_tasks.input.goal_plan`: `set_goal_plan`
+atomically creates or revises the definition of done and ordered steps,
+`update_goal_step` records proven progress, and `goal_plans.js` deterministically
+selects one next action. Stored plan text is inert and never authorizes the
+external action it describes.
 Assistant-message `brain.agent` metadata records which lens answered each model
 turn. New turns also record the requested/selected lens, registry outcome and
 resolution time, response-ready timing, model, reasoning effort, and tool
@@ -224,6 +229,7 @@ Mac companion tools.
 | Specialist routing telemetry | `agent_telemetry.js`, `server.js`, assistant `brain` metadata | Read-only; authenticated at `GET /api/agents/telemetry` |
 | Global tool authorization | `agent_policy.js` | Live; composed with specialist allowlist/risk checks |
 | Task-to-agent assignment | `aura_tasks.assigned_agent`, `supabase_state_store.js` | Core tasks are attributed; specialists are read-only |
+| Goal plan ledger + next-action selection | `goal_plans.js`, `aura_tasks.input.goal_plan`, `server.js` | Core-only internal planning; read at `GET /api/goals/plans` |
 | Action-to-agent attribution | `aura_actions.agent_id`, `supabase_state_store.js` | Resolved active Core id is stamped by the tool handler |
 | Mac capability delegation (cloud → Mac) | `companion_client.js` (`CompanionClient.execute`) | Live |
 | Mac capability execution (on the Mac) | `companion_worker.js`, `mac_integration.js` | Live, runs as launchd service `com.aura.companion` |

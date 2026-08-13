@@ -233,6 +233,21 @@ the behavior. The protected `POST /internal/scheduled/executive-loop` route can
 also trigger an operational run and returns provider counts plus the authenticated
 mailbox identity, never message content.
 
+## Goal planning and next actions
+
+Simple to-dos still use the existing goal tracker. Substantial outcomes can now
+carry an atomic durable plan in the existing `aura_tasks.input` record: a
+definition of done, 2–12 ordered steps, per-step status/due dates, a revision
+number, progress, and one deterministic next action. Revising a plan preserves
+matching completed or active steps and retires removed ones instead of resetting
+the whole goal.
+
+`get_goal_plans` ranks the portfolio by overdue/due state, priority, active work,
+and plan order. The selected move also appears in the morning brief. Inspect the
+same read-only portfolio at authenticated `GET /api/goals/plans`. Plan text is
+internal organization only: a step mentioning email, scheduling, purchasing, or
+deletion never grants authority to execute that action.
+
 ## Goal connections
 
 AURA links inbound signals to the goals they advance. If an open goal reads
@@ -486,6 +501,7 @@ deletions retain their separate approval gate.
 - `entity_extraction.js` — canonical organization/domain/person extraction
 - `entity_graph.js` — links a signal to profile people and CCC client records
 - `goal_index.js` — durable goal entity index with cached embeddings
+- `goal_plans.js` — atomic plan revisions, progress, and deterministic next-action selection
 - `goal_signal_matcher.js` — two-tier deterministic + semantic goal matching
 - `goal_match_store.js` — goal-connection ledger and adaptive thresholds
 - `calendar_availability.js` — open business-hours windows from known events

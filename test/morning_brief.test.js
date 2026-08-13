@@ -75,6 +75,21 @@ test('morning brief formats a strange little spark for text and speech', () => {
   assert.match(brief.spoken, /Today's strange little spark\. Honey never spoils/);
 });
 
+test('morning brief carries a planned goal next action into text and speech', () => {
+  const brief = buildMorningBrief({
+    goals: [{
+      title: 'Launch the offer',
+      created_at: NOW.toISOString(),
+      next_action: { action: 'Interview five prospects' }
+    }],
+    now: NOW,
+    timeZone: TZ
+  });
+
+  assert.match(brief.text, /Next: Interview five prospects/);
+  assert.match(brief.spoken, /Launch the offer; next, Interview five prospects/);
+});
+
 test('spark preference is discovered from durable profile entries', () => {
   const value = 'The owner prefers a daily morning brief with a unique “strange little spark”.';
   assert.equal(findMorningBriefSparkPreference({

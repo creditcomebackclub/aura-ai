@@ -9,6 +9,12 @@ function goalTitle(goal) {
   return String(goal?.description || goal?.title || 'Untitled').trim() || 'Untitled';
 }
 
+function goalNextAction(goal) {
+  const action = String(goal?.next_action?.action || '').trim();
+  if (!action) return '';
+  return action.toLowerCase() === goalTitle(goal).toLowerCase() ? '' : action;
+}
+
 function isStaleGoal(goal, nowMs = Date.now()) {
   const created = new Date(goal?.created_at).getTime();
   return Number.isFinite(created) && created <= nowMs - STALE_MS;
@@ -27,7 +33,8 @@ function formatDailyGoalsDigest(goals, { nowMs = Date.now(), timeZone = 'America
     const stale = isStaleGoal(goal, nowMs) ? 'open over two weeks' : null;
     const tags = [dueLabel, stale].filter(Boolean);
     const suffix = tags.length ? `, ${tags.join(', ')}` : '';
-    return `${index + 1}) ${title}${suffix}`;
+    const next = goalNextAction(goal);
+    return `${index + 1}) ${title}${suffix}${next ? ` — next: ${next}` : ''}`;
   });
 
   if (open.length === 1) {
@@ -35,7 +42,8 @@ function formatDailyGoalsDigest(goals, { nowMs = Date.now(), timeZone = 'America
     const stale = isStaleGoal(open[0], nowMs);
     const extras = [dueLabel, stale ? 'been over two weeks' : null].filter(Boolean);
     const extraBit = extras.length ? ` (${extras.join(', ')})` : '';
-    return `Morning — you've got one thing on your list: ${goalTitle(open[0])}${extraBit}. Ask me anytime if you want to update or knock it out.`;
+    const next = goalNextAction(open[0]);
+    return `Morning — you've got one thing on your list: ${goalTitle(open[0])}${extraBit}.${next ? ` Next move: ${next}.` : ''} Ask me anytime if you want to update or knock it out.`;
   }
 
   return `Morning — you've got ${open.length} things on your list: ${items.join('; ')}. Ask me anytime if you want to update or knock any out.`;
@@ -101,6 +109,7 @@ async function runDailyGoalsDigest({
 module.exports = {
   STALE_MS,
   formatDailyGoalsDigest,
+  goalNextAction,
   goalTitle,
   isStaleGoal,
   phoenixDateKey,

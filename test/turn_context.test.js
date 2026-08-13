@@ -29,6 +29,11 @@ const ALL_NAMES = [
   'check_email',
   'check_calendar',
   'get_goals',
+  'get_goal_plans',
+  'add_goal',
+  'set_goal_plan',
+  'update_goal_step',
+  'update_goal_status',
   'search_web',
   'send_telegram_message',
   'list_skills',
@@ -179,11 +184,34 @@ test('selectToolsForTurn treats whats on my plate as todays agenda', () => {
   );
   const names = new Set(selected.map(tool => tool.function.name));
   assert.equal(names.has('get_goals'), true);
+  assert.equal(names.has('get_goal_plans'), true);
   assert.equal(names.has('add_goal'), false);
+  assert.equal(names.has('set_goal_plan'), false);
+  assert.equal(names.has('update_goal_step'), false);
   assert.equal(names.has('update_goal_status'), false);
   assert.equal(names.has('check_calendar'), true);
   assert.equal(names.has('check_blackboard'), true);
   assert.equal(names.has('check_email'), false);
+});
+
+test('selectToolsForTurn offers the planning ledger only on planning turns', () => {
+  const selected = selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'Make me a plan to launch the new offer'
+  );
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('get_goal_plans'), true);
+  assert.equal(names.has('set_goal_plan'), true);
+  assert.equal(names.has('update_goal_step'), true);
+  assert.equal(names.has('check_calendar'), false);
+  assert.equal(names.has('send_email'), false);
+});
+
+test('selectToolsForTurn offers portfolio reads for a natural next-move question', () => {
+  const selected = selectToolsForTurn(fakeTools(ALL_NAMES), 'What should I do next?');
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('get_goal_plans'), true);
+  assert.equal(names.has('get_goals'), true);
 });
 
 test('selectToolsForTurn drops calendar write tools on plain chit-chat', () => {

@@ -15,7 +15,10 @@ const TOOL_POLICIES = Object.freeze({
   search_web: 'read',
   list_deletable_test_letters: 'read',
   add_goal: 'reversible_write',
+  set_goal_plan: 'reversible_write',
+  update_goal_step: 'reversible_write',
   update_goal_status: 'reversible_write',
+  get_goal_plans: 'read',
   log_finance: 'reversible_write',
   save_semantic_memory: 'reversible_write',
   list_skills: 'read',
@@ -134,6 +137,17 @@ function validateToolArguments(name, args) {
     }
   };
 
+  const requireGoalId = (value, label = 'Goal id') => {
+    const validNumericId = Number.isInteger(value) && value > 0;
+    const validStringId = typeof value === 'string' && (
+      /^[1-9][0-9]*$/.test(value) ||
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    );
+    if (!validNumericId && !validStringId) {
+      throw new Error(`${label} must be a positive integer or UUID.`);
+    }
+  };
+
   if (['get_table_schema', 'query_database_table', 'count_database_rows'].includes(name)) {
     requireString('table_name', 80);
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(args.table_name)) {
@@ -211,6 +225,52 @@ function validateToolArguments(name, args) {
       }
     }
   }
+  if (name === 'set_goal_plan') {
+    if (args.id !== undefined && args.id !== null) requireGoalId(args.id);
+    requireString('title', 1000);
+    requireString('desired_outcome', 1200);
+    if (args.due_at !== undefined && args.due_at !== null &&
+        (typeof args.due_at !== 'string' || args.due_at.length > 80)) {
+      throw new Error('Goal plan due_at must be a short date string.');
+    }
+    if (!Array.isArray(args.steps) || args.steps.length < 2 || args.steps.length > 12) {
+      throw new Error('Goal plans require between 2 and 12 steps.');
+    }
+    const seen = new Set();
+    args.steps = args.steps.map(step => {
+      if (!step || typeof step !== 'object' || Array.isArray(step)) {
+        throw new Error('Each goal plan step must be an object.');
+      }
+      if (typeof step.title !== 'string' || !step.title.trim() || step.title.length > 500) {
+        throw new Error('Each goal plan step requires a title of 500 characters or fewer.');
+      }
+      const key = step.title.trim().replace(/\s+/g, ' ').toLowerCase();
+      if (seen.has(key)) throw new Error('Goal plan steps must have unique titles.');
+      seen.add(key);
+      if (step.due_at !== undefined && step.due_at !== null &&
+          (typeof step.due_at !== 'string' || step.due_at.length > 80)) {
+        throw new Error('Goal plan step due_at must be a short date string.');
+      }
+      return {
+        title: step.title.trim().replace(/\s+/g, ' '),
+        ...(step.due_at !== undefined ? { due_at: step.due_at } : {})
+      };
+    });
+    if (containsSearchSecret([
+      args.title,
+      args.desired_outcome,
+      ...args.steps.map(step => step.title)
+    ].join('\n'))) {
+      throw new Error('Goal plans cannot contain credentials or secrets.');
+    }
+  }
+  if (name === 'update_goal_step') {
+    requireGoalId(args.goal_id);
+    requireString('step_id', 80);
+    if (!['pending', 'active', 'blocked', 'completed', 'dropped'].includes(args.status)) {
+      throw new Error('Invalid goal step status.');
+    }
+  }
   if (name === 'save_semantic_memory') requireString('fact', 2000);
   if (name === 'view_skill') requireString('name', 80);
   if (name === 'manage_skill') {
@@ -228,12 +288,7 @@ function validateToolArguments(name, args) {
   }
 
   if (name === 'update_goal_status') {
-    const validNumericId = Number.isInteger(args.id) && args.id > 0;
-    const validStringId = typeof args.id === 'string' && (
-      /^[1-9][0-9]*$/.test(args.id) ||
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(args.id)
-    );
-    if (!validNumericId && !validStringId) throw new Error('Goal id must be a positive integer or UUID.');
+    requireGoalId(args.id);
     if (!['pending', 'active', 'paused', 'completed', 'dropped'].includes(args.status)) {
       throw new Error('Invalid goal status.');
     }

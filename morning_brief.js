@@ -4,6 +4,7 @@
 
 const {
   formatDailyGoalsDigest,
+  goalNextAction,
   goalTitle,
   phoenixDateKey,
   STALE_MS
@@ -39,7 +40,8 @@ function formatGoalLine(goal, index, { nowMs, timeZone }) {
   const stale = Number.isFinite(created) && created <= nowMs - STALE_MS;
   const tags = [dueLabel, stale && !dueLabel ? 'open over two weeks' : null].filter(Boolean);
   const suffix = tags.length ? ` — ${tags.join(', ')}` : '';
-  return `${index + 1}. ${title}${suffix}`;
+  const next = goalNextAction(goal);
+  return `${index + 1}. ${title}${suffix}${next ? `\n   Next: ${next}` : ''}`;
 }
 
 function formatGoalsSection(goals, { nowMs, timeZone } = {}) {
@@ -54,7 +56,9 @@ function spokenGoalsSection(goals, { nowMs, timeZone } = {}) {
   if (!sorted.length) return null;
   const bits = sorted.map(goal => {
     const dueLabel = formatDueLabel(goal.due_at, { timeZone, now: new Date(nowMs) });
-    return dueLabel ? `${goalTitle(goal)}, ${dueLabel}` : goalTitle(goal);
+    const base = dueLabel ? `${goalTitle(goal)}, ${dueLabel}` : goalTitle(goal);
+    const next = goalNextAction(goal);
+    return next ? `${base}; next, ${next}` : base;
   });
   if (bits.length === 1) return `On your list: ${bits[0]}.`;
   return `On your list, ${bits.length} things: ${bits.join('; ')}.`;

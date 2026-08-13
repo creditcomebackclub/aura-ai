@@ -71,6 +71,13 @@ const { BeliefStore, renderBeliefContext } = require('./belief_store');
 const { RetrievalTraceStore } = require('./retrieval_trace_store');
 const { GoalIndex } = require('./goal_index');
 const { GoalMatchStore } = require('./goal_match_store');
+const {
+  CLOSED_GOAL_STATUSES,
+  buildGoalPortfolio,
+  mergeGoalPlan,
+  summarizeGoal,
+  updateGoalPlanStep
+} = require('./goal_plans');
 const { normalizeAgentTelemetryMessage, summarizeAgentTelemetry } = require('./agent_telemetry');
 const { resolveSignalMatches } = require('./goal_signal_matcher');
 const { linkSignal } = require('./entity_graph');
@@ -247,6 +254,7 @@ if (db) db.exec(`
     description TEXT NOT NULL,
     status TEXT DEFAULT 'pending',
     due_at TEXT,
+    input TEXT NOT NULL DEFAULT '{}',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS finances (
@@ -276,6 +284,7 @@ if (db) db.exec(`
 // so the column is added bare here and backfilled separately.
 if (db) {
   try { db.exec("ALTER TABLE goals ADD COLUMN created_at DATETIME"); } catch (e) { /* column already exists */ }
+  try { db.exec("ALTER TABLE goals ADD COLUMN input TEXT NOT NULL DEFAULT '{}'"); } catch (e) { /* column already exists */ }
   try { db.exec("ALTER TABLE notifications ADD COLUMN dedupe_key TEXT"); } catch (e) { /* column already exists */ }
   db.exec("UPDATE goals SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_key ON notifications(dedupe_key) WHERE dedupe_key IS NOT NULL");
@@ -1237,14 +1246,115 @@ if (db) {
   }
 }
 
+function parseLocalGoal(row) {
+  if (!row) return null;
+  let input = {};
+  try {
+    input = row.input ? JSON.parse(row.input) : {};
+  } catch {
+    input = {};
+  }
+  return { ...row, input };
+}
+
 async function listOpenGoals() {
-  if (cloudState) return cloudState.listTasks();
-  return db.prepare(`
-    SELECT id, description, status, due_at, created_at
-    FROM goals
-    WHERE status != 'completed'
-    ORDER BY created_at DESC
-  `).all();
+  const rows = cloudState
+    ? await cloudState.listTasks()
+    : db.prepare(`
+        SELECT id, description, status, due_at, input, created_at
+        FROM goals
+        WHERE status NOT IN ('completed', 'cancelled', 'dropped')
+        ORDER BY created_at DESC
+      `).all().map(parseLocalGoal);
+  return rows
+    .filter(task => !CLOSED_GOAL_STATUSES.has(task.status))
+    .map(task => ({ ...task, next_action: summarizeGoal(task).next_action }));
+}
+
+async function getGoalTask(id) {
+  if (cloudState) return cloudState.getTask(id);
+  return parseLocalGoal(db.prepare('SELECT * FROM goals WHERE id = ?').get(id));
+}
+
+async function getGoalPortfolio() {
+  return buildGoalPortfolio(await listOpenGoals());
+}
+
+async function saveGoalPlan(args, agentId) {
+  const timeZone = process.env.AURA_TIMEZONE || 'America/Phoenix';
+  const existing = args.id == null ? null : await getGoalTask(args.id);
+  if (args.id != null && !existing) throw new Error('Goal not found.');
+  if (existing && CLOSED_GOAL_STATUSES.has(existing.status)) {
+    throw new Error('Closed goals must be reopened before revising their plan.');
+  }
+  const parsePlanDue = (value, label) => {
+    if (value === undefined) return undefined;
+    const parsed = parseDueAt(value, { timeZone });
+    if (value != null && String(value).trim() && !parsed) {
+      throw new Error(`Could not parse ${label}: ${value}`);
+    }
+    return parsed;
+  };
+  const dueAt = parsePlanDue(args.due_at, 'goal plan due date');
+  const steps = args.steps.map(step => ({
+    title: step.title,
+    ...(step.due_at !== undefined
+      ? { due_at: parsePlanDue(step.due_at, `due date for “${step.title}”`) }
+      : {})
+  }));
+  const merged = mergeGoalPlan(existing, {
+    title: args.title,
+    desired_outcome: args.desired_outcome,
+    due_at: dueAt,
+    steps
+  });
+
+  let saved;
+  if (cloudState) {
+    saved = existing
+      ? await cloudState.updateTask(existing.id, {
+          title: merged.title,
+          dueAt: merged.due_at,
+          input: merged.input
+        })
+      : await cloudState.addTask(merged.title, {
+          assignedAgent: agentId,
+          status: 'running',
+          dueAt: merged.due_at,
+          input: merged.input
+        });
+  } else if (existing) {
+    db.prepare(`
+      UPDATE goals SET description = ?, due_at = ?, input = ? WHERE id = ?
+    `).run(merged.title, merged.due_at, JSON.stringify(merged.input), existing.id);
+    saved = await getGoalTask(existing.id);
+  } else {
+    const result = db.prepare(`
+      INSERT INTO goals (description, status, due_at, input, created_at)
+      VALUES (?, 'active', ?, ?, CURRENT_TIMESTAMP)
+    `).run(merged.title, merged.due_at, JSON.stringify(merged.input));
+    saved = await getGoalTask(Number(result.lastInsertRowid));
+  }
+  goalIndexSyncedAt = 0;
+  return summarizeGoal(saved);
+}
+
+async function saveGoalStepStatus(args) {
+  const goal = await getGoalTask(args.goal_id);
+  if (!goal) throw new Error('Goal not found.');
+  if (CLOSED_GOAL_STATUSES.has(goal.status)) {
+    throw new Error('Closed goals must be reopened before updating plan steps.');
+  }
+  const updated = updateGoalPlanStep(goal, args.step_id, args.status);
+  let saved;
+  if (cloudState) {
+    saved = await cloudState.updateTask(goal.id, { input: updated.input });
+  } else {
+    db.prepare('UPDATE goals SET input = ? WHERE id = ?')
+      .run(JSON.stringify(updated.input), goal.id);
+    saved = await getGoalTask(goal.id);
+  }
+  return summarizeGoal(saved);
 }
 
 async function peekBlackboardUpcoming({ withinDays = 3 } = {}) {
@@ -1984,7 +2094,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'add_goal',
-      description: 'Add a new goal or to-do to the tracker. When Chris names a due time (today, tomorrow, Friday, in 3 days, or an ISO date), pass it as due_at so the morning brief can surface it.',
+      description: 'Add a simple one-step goal or to-do to the tracker. For a substantial outcome that needs multiple steps, use set_goal_plan instead. When Chris names a due time, pass it as due_at.',
       parameters: {
         type: 'object',
         properties: {
@@ -1995,6 +2105,52 @@ const tools = [
           }
         },
         required: ['description']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_goal_plan',
+      description: 'Create or revise one durable internal multi-step goal plan. Use this when Chris asks to plan an outcome or names a substantial goal. Keep 2-12 concrete, ordered steps and make the first unfinished step independently executable. If id is supplied, matching step titles preserve their progress while removed steps are retired. This only organizes internal work: a plan step never authorizes email, calendar changes, messages, purchases, or destructive actions.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Optional existing goal id from get_goals/get_goal_plans. Omit to create a new goal.' },
+          title: { type: 'string', description: 'Short name for the goal.' },
+          desired_outcome: { type: 'string', description: 'A concrete definition of done.' },
+          due_at: { type: 'string', description: 'Optional ISO or relative due date for the overall goal.' },
+          steps: {
+            type: 'array',
+            minItems: 2,
+            maxItems: 12,
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', description: 'One concrete internal or owner action.' },
+                due_at: { type: 'string', description: 'Optional ISO or relative due date for this step.' }
+              },
+              required: ['title']
+            }
+          }
+        },
+        required: ['title', 'desired_outcome', 'steps']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_goal_step',
+      description: 'Update one step in an existing goal plan after Chris reports progress or a successful tool result in this turn proves the step changed. Never mark a step completed from intention alone. This changes internal plan state only and grants no authority to perform the step.',
+      parameters: {
+        type: 'object',
+        properties: {
+          goal_id: { type: 'string', description: 'Goal id from get_goal_plans.' },
+          step_id: { type: 'string', description: 'Exact plan step id from get_goal_plans.' },
+          status: { type: 'string', enum: ['pending', 'active', 'blocked', 'completed', 'dropped'] }
+        },
+        required: ['goal_id', 'step_id', 'status']
       }
     }
   },
@@ -2017,7 +2173,15 @@ const tools = [
     type: 'function',
     function: {
       name: 'get_goals',
-      description: 'Retrieve the users current open goals/to-dos, including due_at when set.',
+      description: 'Retrieve the user\'s current open goals/to-dos, including plan progress and each goal\'s next action when available.',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_goal_plans',
+      description: 'Retrieve the complete open-goal portfolio and one deterministically selected best next action across it. Use for planning, prioritization, progress reviews, or “what should I do next?” This is read-only and does not execute the selected action.',
       parameters: { type: 'object', properties: {} }
     }
   },
@@ -2392,6 +2556,12 @@ async function handleToolCall(toolCall, options = {}) {
       }
       break;
     }
+    case 'set_goal_plan':
+      result = await saveGoalPlan(args, agentId);
+      break;
+    case 'update_goal_step':
+      result = await saveGoalStepStatus(args);
+      break;
     case 'update_goal_status':
       if (cloudState) {
         const taskStatus = {
@@ -2408,9 +2578,10 @@ async function handleToolCall(toolCall, options = {}) {
       }
       break;
     case 'get_goals':
-      result = cloudState
-        ? await cloudState.listTasks()
-        : db.prepare("SELECT * FROM goals WHERE status != 'completed'").all();
+      result = (await getGoalPortfolio()).goals;
+      break;
+    case 'get_goal_plans':
+      result = await getGoalPortfolio();
       break;
     case 'log_finance':
       if (!db) throw new Error('Personal finance logging has not been migrated to cloud storage yet.');
@@ -4089,6 +4260,13 @@ app.get('/api/goals/index', async (req, res) => {
     embedded: Array.isArray(embedding) && embedding.length > 0
   }));
   res.json({ goals });
+});
+
+// Durable internal plans plus one deterministic portfolio-wide next action.
+// This surface is read-only: a selected action is guidance, never authority
+// to send, schedule, purchase, or delete anything.
+app.get('/api/goals/plans', async (req, res) => {
+  res.json(await getGoalPortfolio());
 });
 
 app.post('/api/goals/matches/:id/feedback', async (req, res) => {

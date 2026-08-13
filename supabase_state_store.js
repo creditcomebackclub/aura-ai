@@ -548,6 +548,7 @@ class SupabaseStateStore {
       assigned_agent: options.assignedAgent || null,
       title,
       description: options.description || null,
+      status: options.status || 'pending',
       priority: options.priority || 'normal',
       due_at: options.dueAt || null,
       input: options.input || {}
@@ -567,6 +568,27 @@ class SupabaseStateStore {
       return existing;
     }
     return null;
+  }
+
+  async getTask(id) {
+    const { data, error } = await this.client.from('aura_tasks').select('*')
+      .eq('owner_id', this.ownerId).eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
+  async updateTask(id, changes = {}) {
+    const patch = { updated_at: new Date().toISOString() };
+    if (changes.title !== undefined) patch.title = changes.title;
+    if (changes.description !== undefined) patch.description = changes.description;
+    if (changes.status !== undefined) patch.status = changes.status;
+    if (changes.priority !== undefined) patch.priority = changes.priority;
+    if (changes.dueAt !== undefined) patch.due_at = changes.dueAt;
+    if (changes.input !== undefined) patch.input = changes.input;
+    const { data, error } = await this.client.from('aura_tasks').update(patch)
+      .eq('owner_id', this.ownerId).eq('id', id).select('*').maybeSingle();
+    if (error) throw error;
+    return data;
   }
 
   async updateTaskStatus(id, status) {
