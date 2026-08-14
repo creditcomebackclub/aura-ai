@@ -108,6 +108,7 @@ const {
 const { isDirectCalendarConfigured, getDirectCalendarText } = require('./calendar_feed');
 const {
   buildTemporalContext,
+  extractCalendarRescheduleTargetInstruction,
   groundCalendarEventArgs,
   isExplicitCalendarCancelRequest,
   isExplicitCalendarRescheduleRequest,
@@ -3465,7 +3466,7 @@ async function handleToolCall(toolCall, options = {}) {
         break;
       }
       const instruction = String(options.userInstruction || '');
-      const targetPhrase = instruction.match(/^.*\b(?:to|until)\b([\s\S]*)$/i)?.[1] || instruction;
+      const targetPhrase = extractCalendarRescheduleTargetInstruction(instruction);
       const grounded = groundCalendarEventArgs({
         start: args.new_start,
         time_zone: args.time_zone || process.env.AURA_TIMEZONE || 'America/Phoenix'

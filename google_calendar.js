@@ -427,6 +427,14 @@ function buildRescheduledEventTimes(event, newStart, {
   };
 }
 
+function calendarEventTimesChanged(event, times) {
+  if (event.start?.date || times.start?.date) {
+    return event.start?.date !== times.start?.date || event.end?.date !== times.end?.date;
+  }
+  return Date.parse(event.start?.dateTime) !== Date.parse(times.start?.dateTime) ||
+    Date.parse(event.end?.dateTime) !== Date.parse(times.end?.dateTime);
+}
+
 function searchWindowForEvent(originalStart, timeZone, now) {
   const fallbackNow = now instanceof Date ? now : new Date(now || Date.now());
   if (!Number.isFinite(fallbackNow.getTime())) throw new Error('Invalid calendar search time.');
@@ -487,6 +495,9 @@ async function rescheduleGoogleCalendarEvent({
     now
   });
   const times = buildRescheduledEventTimes(event, new_start, { timeZone });
+  if (!calendarEventTimesChanged(event, times)) {
+    throw new Error('The requested start matches the event\'s current start; no calendar change was made.');
+  }
   const { calendarId } = calendarOAuthConfig();
   const attendeeEmails = event.attendees.map(attendee => attendee.email).filter(Boolean);
   const sendUpdates = attendeeEmails.length ? 'all' : 'none';
@@ -576,6 +587,7 @@ module.exports = {
   normalizeCalendarEventQuery,
   findMatchingCalendarEvent,
   buildRescheduledEventTimes,
+  calendarEventTimesChanged,
   rescheduleGoogleCalendarEvent,
   cancelGoogleCalendarEvent
 };
