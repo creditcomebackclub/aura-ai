@@ -27,6 +27,8 @@ test('router keeps mixed, ambiguous, and action turns on Core', () => {
   assert.equal(routeAgentId('Delete that test letter'), 'aura_core');
   assert.equal(routeAgentId('Make a plan to improve MRR'), 'aura_core');
   assert.equal(routeAgentId('Remind me every Thursday at 9 AM'), 'aura_core');
+  assert.equal(routeAgentId('Reschedule my 10am event to next Tuesday'), 'aura_core');
+  assert.equal(routeAgentId('Cancel my Pay Gilbert Traffic calendar event'), 'aura_core');
 });
 
 test('disabled database specialists fall back to Core', () => {

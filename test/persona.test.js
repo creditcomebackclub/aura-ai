@@ -49,8 +49,9 @@ test('the delete-routes description matches the actual staged approval flow, not
   );
 });
 
-test('calendar creation acts on a clear owner command without a redundant approval queue', () => {
-  assert.match(soul, /Calendar creation: one call, `create_calendar_event`, immediate/i);
+test('calendar lifecycle acts on a clear owner command without a redundant approval queue', () => {
+  assert.match(soul, /Calendar lifecycle: one immediate call/i);
+  assert.match(soul, /`create_calendar_event`, `reschedule_calendar_event`, or `cancel_calendar_event`/i);
   assert.match(soul, /Do not propose, stage, ask for approval, or send him to the actions queue/i);
   assert.doesNotMatch(soul, /Putting events on Google Calendar \(`propose_calendar_event`/i);
 });
