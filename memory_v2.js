@@ -571,6 +571,15 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
     ]
   },
   {
+    tools: ['reschedule_calendar_event', 'cancel_calendar_event'],
+    capability: /\b(?:calendar|schedule|event|meeting|appointment|reschedule|cancel)\b/i,
+    patterns: [
+      /\b(?:i\s+)?(?:can'?t|cannot|unable to)\b[^.]{0,60}\b(?:reschedule|move|change|cancel|delete|remove)\b[^.]{0,60}\b(?:calendar|event|meeting|appointment)\b/i,
+      /\b(?:i\s+)?(?:don'?t|do\s+not)\s+have\b[^.]{0,60}\bcalendar\b[^.]{0,50}\b(?:edit|reschedul(?:e|ing)|cancel|management)\s+tools?\b/i,
+      /\b(?:calendar|event)\b[^.]{0,60}\b(?:edit|reschedul(?:e|ing)|cancel|management)\s+tools?\b[^.]{0,40}\b(?:aren'?t|are\s+not|unavailable|not\s+available)\b/i
+    ]
+  },
+  {
     tools: ['check_blackboard'],
     capability: /\b(?:blackboard|assignment|deadline|discussion\s+post|schoolwork)\b/i,
     patterns: [

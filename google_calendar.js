@@ -1,5 +1,7 @@
 'use strict';
 
+const { utcFromZoned, zonedParts } = require('./calendar_time');
+
 // Google Calendar API path for AURA. Conversational reads can still use the
 // private iCal feed (calendar_feed.js); structured Executive Loop reads and
 // event writes use Calendar API + OAuth refresh token.
@@ -249,12 +251,32 @@ async function createGoogleCalendarEvent(args = {}) {
   };
 }
 
-async function listGoogleCalendarEvents({
+function mapGoogleCalendarEvent(item) {
+  return {
+    id: item.id,
+    status: item.status || 'confirmed',
+    summary: item.summary || '(Untitled event)',
+    description: item.description || '',
+    location: item.location || '',
+    start: item.start || {},
+    end: item.end || {},
+    attendees: (item.attendees || []).map(attendee => ({
+      email: attendee.email || '',
+      displayName: attendee.displayName || '',
+      responseStatus: attendee.responseStatus || ''
+    })),
+    organizer: item.organizer || null,
+    recurringEventId: item.recurringEventId || null,
+    updated: item.updated || null,
+    htmlLink: item.htmlLink || null
+  };
+}
+
+async function listGoogleCalendarEventsWithToken(token, {
   timeMin = new Date().toISOString(),
   timeMax = new Date(Date.now() + 7 * 86400000).toISOString(),
   maxResults = 50
 } = {}) {
-  const token = await refreshCalendarAccessToken();
   const { calendarId } = calendarOAuthConfig();
   const url = new URL(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
@@ -274,23 +296,271 @@ async function listGoogleCalendarEvents({
     throw new Error(`Google Calendar list failed (${response.status}): ${errText}`);
   }
   const data = await response.json();
-  return (data.items || []).map(item => ({
-    id: item.id,
-    status: item.status || 'confirmed',
-    summary: item.summary || '(Untitled event)',
-    description: item.description || '',
-    location: item.location || '',
-    start: item.start || {},
-    end: item.end || {},
-    attendees: (item.attendees || []).map(attendee => ({
-      email: attendee.email || '',
-      displayName: attendee.displayName || '',
-      responseStatus: attendee.responseStatus || ''
-    })),
-    organizer: item.organizer || null,
-    updated: item.updated || null,
-    htmlLink: item.htmlLink || null
-  }));
+  return (data.items || []).map(mapGoogleCalendarEvent);
+}
+
+async function listGoogleCalendarEvents({
+  timeMin = new Date().toISOString(),
+  timeMax = new Date(Date.now() + 7 * 86400000).toISOString(),
+  maxResults = 50
+} = {}) {
+  const token = await refreshCalendarAccessToken();
+  return listGoogleCalendarEventsWithToken(token, { timeMin, timeMax, maxResults });
+}
+
+function normalizeCalendarEventQuery(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function eventStartLabel(event, timeZone) {
+  if (event.start?.date) return `${event.start.date} (all day)`;
+  if (event.start?.dateTime) {
+    return formatCalendarDateTime(event.start.dateTime, event.start.timeZone || timeZone);
+  }
+  return 'unknown time';
+}
+
+function filterEventsByOriginalStart(events, originalStart, timeZone) {
+  if (!originalStart) return events;
+  const raw = String(originalStart).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return events.filter(event => {
+      if (event.start?.date) return event.start.date === raw;
+      if (!event.start?.dateTime) return false;
+      const parts = zonedParts(new Date(event.start.dateTime), event.start.timeZone || timeZone);
+      return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}` === raw;
+    });
+  }
+  const expected = new Date(raw);
+  if (!Number.isFinite(expected.getTime())) {
+    throw new Error('original_start must be an ISO date or datetime.');
+  }
+  return events.filter(event => {
+    if (!event.start?.dateTime) return false;
+    const actual = new Date(event.start.dateTime);
+    return Number.isFinite(actual.getTime()) && Math.abs(actual - expected) <= 15 * 60 * 1000;
+  });
+}
+
+function findMatchingCalendarEvent(events, {
+  query,
+  originalStart = null,
+  timeZone = process.env.AURA_TIMEZONE || 'America/Phoenix'
+} = {}) {
+  const normalizedQuery = normalizeCalendarEventQuery(query);
+  if (!normalizedQuery) throw new Error('event_query is required.');
+
+  const active = (events || []).filter(event => event?.id && event.status !== 'cancelled');
+  const exact = active.filter(event => normalizeCalendarEventQuery(event.summary) === normalizedQuery);
+  const titleMatches = exact.length
+    ? exact
+    : active.filter(event => {
+      const title = normalizeCalendarEventQuery(event.summary);
+      return title && (title.includes(normalizedQuery) || normalizedQuery.includes(title));
+    });
+  const matches = filterEventsByOriginalStart(titleMatches, originalStart, timeZone);
+
+  if (matches.length === 1) return matches[0];
+  if (matches.length === 0) {
+    const when = originalStart ? ` at ${originalStart}` : '';
+    throw new Error(`No upcoming calendar event matched "${String(query).trim()}"${when}.`);
+  }
+  const candidates = matches
+    .slice(0, 5)
+    .map(event => `${event.summary} — ${eventStartLabel(event, timeZone)}`)
+    .join('; ');
+  throw new Error(`More than one calendar event matched. Ask which one: ${candidates}`);
+}
+
+function buildRescheduledEventTimes(event, newStart, {
+  timeZone = process.env.AURA_TIMEZONE || 'America/Phoenix'
+} = {}) {
+  const raw = String(newStart || '').trim();
+  if (!raw) throw new Error('new_start is required.');
+  const oldAllDay = Boolean(event.start?.date);
+  const newIsDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+
+  if (oldAllDay) {
+    if (!newIsDateOnly) throw new Error('An all-day event must be moved to an ISO date.');
+    if (!event.end?.date) throw new Error('The existing all-day event has no valid end date.');
+    const durationDays = Math.round(
+      (Date.parse(`${event.end.date}T12:00:00Z`) - Date.parse(`${event.start.date}T12:00:00Z`)) / 86400000
+    );
+    if (!Number.isFinite(durationDays) || durationDays < 1) {
+      throw new Error('The existing all-day event has an invalid date range.');
+    }
+    return {
+      start: { date: raw },
+      end: { date: addDaysToDateOnly(raw, durationDays) }
+    };
+  }
+
+  if (!event.start?.dateTime || !event.end?.dateTime) {
+    throw new Error('The existing event has no valid start and end time.');
+  }
+  const oldStart = new Date(event.start.dateTime);
+  const oldEnd = new Date(event.end.dateTime);
+  if (!Number.isFinite(oldStart.getTime()) || !Number.isFinite(oldEnd.getTime()) || oldEnd <= oldStart) {
+    throw new Error('The existing event has an invalid time range.');
+  }
+  const zone = event.start.timeZone || timeZone;
+  let nextStart;
+  if (newIsDateOnly) {
+    const [year, month, day] = raw.split('-').map(Number);
+    const oldLocal = zonedParts(oldStart, zone);
+    nextStart = utcFromZoned(year, month, day, oldLocal.hour, oldLocal.minute, oldLocal.second, zone);
+  } else {
+    nextStart = new Date(raw);
+    if (!Number.isFinite(nextStart.getTime())) {
+      throw new Error('new_start must be an ISO date or datetime.');
+    }
+  }
+  const nextEnd = new Date(nextStart.getTime() + (oldEnd - oldStart));
+  return {
+    start: { dateTime: nextStart.toISOString(), timeZone: zone },
+    end: { dateTime: nextEnd.toISOString(), timeZone: event.end.timeZone || zone }
+  };
+}
+
+function searchWindowForEvent(originalStart, timeZone, now) {
+  const fallbackNow = now instanceof Date ? now : new Date(now || Date.now());
+  if (!Number.isFinite(fallbackNow.getTime())) throw new Error('Invalid calendar search time.');
+  if (!originalStart) {
+    return {
+      timeMin: new Date(fallbackNow.getTime() - 2 * 86400000).toISOString(),
+      timeMax: new Date(fallbackNow.getTime() + 120 * 86400000).toISOString()
+    };
+  }
+  const raw = String(originalStart).trim();
+  let anchor;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [year, month, day] = raw.split('-').map(Number);
+    anchor = utcFromZoned(year, month, day, 12, 0, 0, timeZone);
+  } else {
+    anchor = new Date(raw);
+  }
+  if (!Number.isFinite(anchor.getTime())) {
+    throw new Error('original_start must be an ISO date or datetime.');
+  }
+  return {
+    timeMin: new Date(anchor.getTime() - 2 * 86400000).toISOString(),
+    timeMax: new Date(anchor.getTime() + 2 * 86400000).toISOString()
+  };
+}
+
+async function resolveGoogleCalendarEvent({
+  event_query,
+  original_start = null,
+  timeZone = process.env.AURA_TIMEZONE || 'America/Phoenix',
+  now = new Date()
+} = {}) {
+  const token = await refreshCalendarAccessToken();
+  const window = searchWindowForEvent(original_start, timeZone, now);
+  const events = await listGoogleCalendarEventsWithToken(token, {
+    ...window,
+    maxResults: 250
+  });
+  const event = findMatchingCalendarEvent(events, {
+    query: event_query,
+    originalStart: original_start,
+    timeZone
+  });
+  return { token, event };
+}
+
+async function rescheduleGoogleCalendarEvent({
+  event_query,
+  original_start = null,
+  new_start,
+  timeZone = process.env.AURA_TIMEZONE || 'America/Phoenix',
+  now = new Date()
+} = {}) {
+  const { token, event } = await resolveGoogleCalendarEvent({
+    event_query,
+    original_start,
+    timeZone,
+    now
+  });
+  const times = buildRescheduledEventTimes(event, new_start, { timeZone });
+  const { calendarId } = calendarOAuthConfig();
+  const attendeeEmails = event.attendees.map(attendee => attendee.email).filter(Boolean);
+  const sendUpdates = attendeeEmails.length ? 'all' : 'none';
+  const url = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(event.id)}`
+  );
+  url.searchParams.set('sendUpdates', sendUpdates);
+  const response = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(times)
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Google Calendar reschedule failed (${response.status}): ${errText}`);
+  }
+  const updated = mapGoogleCalendarEvent(await response.json());
+  const displayEvent = {
+    ...event,
+    ...updated,
+    start: updated.start?.date || updated.start?.dateTime ? updated.start : times.start,
+    end: updated.end?.date || updated.end?.dateTime ? updated.end : times.end
+  };
+  return {
+    id: event.id,
+    htmlLink: displayEvent.htmlLink,
+    summary: formatEventSummary({
+      event: displayEvent,
+      attendeeEmails,
+      htmlLink: displayEvent.htmlLink
+    }),
+    previous_start: event.start,
+    new_start: displayEvent.start,
+    attendees_notified: sendUpdates === 'all'
+  };
+}
+
+async function cancelGoogleCalendarEvent({
+  event_query,
+  original_start = null,
+  timeZone = process.env.AURA_TIMEZONE || 'America/Phoenix',
+  now = new Date()
+} = {}) {
+  const { token, event } = await resolveGoogleCalendarEvent({
+    event_query,
+    original_start,
+    timeZone,
+    now
+  });
+  const { calendarId } = calendarOAuthConfig();
+  const attendeeEmails = event.attendees.map(attendee => attendee.email).filter(Boolean);
+  const sendUpdates = attendeeEmails.length ? 'all' : 'none';
+  const url = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(event.id)}`
+  );
+  url.searchParams.set('sendUpdates', sendUpdates);
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Google Calendar cancellation failed (${response.status}): ${errText}`);
+  }
+  return {
+    id: event.id,
+    title: event.summary,
+    original_start: event.start,
+    original_start_label: eventStartLabel(event, timeZone),
+    attendees_notified: sendUpdates === 'all'
+  };
 }
 
 module.exports = {
@@ -302,5 +572,10 @@ module.exports = {
   formatCalendarDateTime,
   formatEventSummary,
   createGoogleCalendarEvent,
-  listGoogleCalendarEvents
+  listGoogleCalendarEvents,
+  normalizeCalendarEventQuery,
+  findMatchingCalendarEvent,
+  buildRescheduledEventTimes,
+  rescheduleGoogleCalendarEvent,
+  cancelGoogleCalendarEvent
 };

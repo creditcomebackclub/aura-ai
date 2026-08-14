@@ -51,6 +51,10 @@ const TOOL_POLICIES = Object.freeze({
   // same turn. The handler independently checks the raw owner instruction;
   // model-composed arguments alone can never authorize a calendar mutation.
   create_calendar_event: 'reversible_write',
+  reschedule_calendar_event: 'reversible_write',
+  // Cancelling can notify attendees and removes the event, so keep its risk
+  // distinct even though a direct current-turn owner command executes it.
+  cancel_calendar_event: 'external_action',
   // No staging - the recipient is fixed to the owner's own chat regardless,
   // so a confirmation step protects against nothing here (unlike email).
   send_telegram_message: 'destructive_write'
@@ -259,6 +263,18 @@ function validateToolArguments(name, args) {
         }
         return email.trim().toLowerCase();
       });
+    }
+  }
+  if (name === 'reschedule_calendar_event' || name === 'cancel_calendar_event') {
+    requireString('event_query', 500);
+    if (args.original_start !== undefined && args.original_start !== null) {
+      requireString('original_start', 80);
+    }
+    if (args.time_zone !== undefined && args.time_zone !== null) {
+      requireString('time_zone', 80);
+    }
+    if (name === 'reschedule_calendar_event') {
+      requireString('new_start', 80);
     }
   }
   if (name === 'send_telegram_message') {

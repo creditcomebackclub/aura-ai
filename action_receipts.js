@@ -37,6 +37,16 @@ const ACTION_RECEIPT_RULES = Object.freeze([
     pattern: /\b(?:i(?:'ve| have)?\s+(?:scheduled|booked|created|added)\b.{0,100}\b(?:calendar|event|meeting|appointment|consult)|i\s+(?:put|added)\s+(?:it|that|the\s+\w+)\s+on\s+your\s+calendar|(?:it|that)\s+(?:is|'s|was)\s+on\s+your\s+calendar|(?:the|your)\s+(?:event|meeting|appointment)\s+(?:is|has been|was)\s+(?:scheduled|booked|created))\b/i
   },
   {
+    kind: 'calendar reschedule',
+    tools: ['reschedule_calendar_event'],
+    pattern: /\b(?:i(?:'ve| have)?\s+(?:rescheduled|moved|changed)\b.{0,100}\b(?:calendar|event|meeting|appointment|consult)|(?:the|your)\s+(?:event|meeting|appointment|consult)\s+(?:(?:is|has been|was)\s+)?(?:rescheduled|moved|changed))\b/i
+  },
+  {
+    kind: 'calendar cancellation',
+    tools: ['cancel_calendar_event'],
+    pattern: /\b(?:i(?:'ve| have)?\s+(?:cancelled|canceled|deleted|removed)\b.{0,100}\b(?:calendar|event|meeting|appointment|consult)|(?:the|your)\s+(?:event|meeting|appointment|consult)\s+(?:(?:is|has been|was)\s+)?(?:cancelled|canceled|deleted|removed))\b/i
+  },
+  {
     kind: 'goal',
     tools: ['add_goal', 'set_goal_plan', 'update_goal_step', 'update_goal_status'],
     pattern: /\b(?:i(?:'ve| have)?\s+(?:added|saved|created|updated|completed|marked)\b.{0,100}\b(?:goal|task|to-?do|plan)|(?:the|your)\s+(?:goal|task|to-?do|plan)\s+(?:is|has been|was)\s+(?:added|saved|created|updated|completed|marked))\b/i
@@ -101,6 +111,12 @@ function toolResultSucceeded(name, result) {
   }
   if (name === 'create_calendar_event') {
     return typeof result === 'string' && /^Created on Google Calendar\./i.test(result);
+  }
+  if (name === 'reschedule_calendar_event') {
+    return typeof result === 'string' && /^Rescheduled on Google Calendar\./i.test(result);
+  }
+  if (name === 'cancel_calendar_event') {
+    return typeof result === 'string' && /^Cancelled on Google Calendar\./i.test(result);
   }
   if (name === 'confirm_test_letter_deletion') {
     return typeof result === 'string' && /^Deleted at\b/i.test(result);

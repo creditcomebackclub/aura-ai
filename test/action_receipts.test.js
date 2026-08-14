@@ -8,6 +8,8 @@ test('completion claims require the matching successful receipt', () => {
   assert.equal(findUnsupportedActionClaim("You're set. I'll remind you every Thursday.").kind, 'reminder');
   assert.equal(findUnsupportedActionClaim('The draft is on Telegram.').kind, 'telegram');
   assert.equal(findUnsupportedActionClaim('I have scheduled the meeting on your calendar.').kind, 'calendar');
+  assert.equal(findUnsupportedActionClaim('I have rescheduled your appointment.').kind, 'calendar reschedule');
+  assert.equal(findUnsupportedActionClaim('I cancelled your calendar event.').kind, 'calendar cancellation');
   assert.equal(findUnsupportedActionClaim('I will remember that preference.').kind, 'memory');
   assert.equal(findUnsupportedActionClaim("I'll check in with you every Thursday.").kind, 'reminder');
   assert.equal(findUnsupportedActionClaim("I'll make sure to remind you every Thursday.").kind, 'reminder');
@@ -39,6 +41,10 @@ test('failed action results never become successful evidence', () => {
   assert.equal(toolResultSucceeded('send_email', 'Sent to person@example.com.'), true);
   assert.equal(toolResultSucceeded('create_calendar_event', 'Calendar event failed: outage'), false);
   assert.equal(toolResultSucceeded('create_calendar_event', 'Created on Google Calendar.'), true);
+  assert.equal(toolResultSucceeded('reschedule_calendar_event', 'Calendar event not rescheduled: ambiguous'), false);
+  assert.equal(toolResultSucceeded('reschedule_calendar_event', 'Rescheduled on Google Calendar.'), true);
+  assert.equal(toolResultSucceeded('cancel_calendar_event', 'Calendar event not cancelled: ambiguous'), false);
+  assert.equal(toolResultSucceeded('cancel_calendar_event', 'Cancelled on Google Calendar.'), true);
   assert.equal(toolResultSucceeded('draft_linkedin_message', { drafted: true, sent: false }), true);
   assert.equal(toolResultSucceeded('draft_linkedin_message', { drafted: false, sent: false }), false);
   assert.equal(toolResultSucceeded('approve_linkedin_message', { sent: false, status: 'failed' }), false);

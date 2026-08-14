@@ -161,6 +161,27 @@ test('create_calendar_event is a validated reversible write', () => {
   assert.deepEqual(parsed.args.attendees, ['client@example.com']);
 });
 
+test('calendar reschedule and cancellation have validated action policies', () => {
+  assert.equal(getToolPolicy('reschedule_calendar_event'), 'reversible_write');
+  assert.equal(getToolPolicy('cancel_calendar_event'), 'external_action');
+  assert.throws(
+    () => parseAndAuthorizeToolCall(toolCall('reschedule_calendar_event', {
+      event_query: 'Pay Gilbert Traffic'
+    })),
+    /new_start is required/
+  );
+  const reschedule = parseAndAuthorizeToolCall(toolCall('reschedule_calendar_event', {
+    event_query: 'Pay Gilbert Traffic',
+    original_start: '2026-08-14T10:00:00-07:00',
+    new_start: '2026-08-18'
+  }));
+  assert.equal(reschedule.args.new_start, '2026-08-18');
+  const cancellation = parseAndAuthorizeToolCall(toolCall('cancel_calendar_event', {
+    event_query: 'Pay Gilbert Traffic'
+  }));
+  assert.equal(cancellation.args.event_query, 'Pay Gilbert Traffic');
+});
+
 test('set_reminder validates a durable recurrence', () => {
   assert.equal(getToolPolicy('set_reminder'), 'reversible_write');
   assert.throws(
@@ -991,6 +1012,14 @@ test('findFalseCapabilityDenial only fires when the denied capability was actual
   );
   assert.ok(calendarWriteDenial);
   assert.ok(calendarWriteDenial.tools.includes('create_calendar_event'));
+
+  const calendarLifecycleDenial = findFalseCapabilityDenial(
+    "I can't reschedule or cancel calendar events with the tools available in this chat.",
+    ['check_calendar', 'reschedule_calendar_event', 'cancel_calendar_event']
+  );
+  assert.ok(calendarLifecycleDenial);
+  assert.ok(calendarLifecycleDenial.tools.includes('reschedule_calendar_event'));
+  assert.ok(calendarLifecycleDenial.tools.includes('cancel_calendar_event'));
 });
 
 test('findFalseCapabilityDenial catches generic tool-availability wording across capabilities', () => {
