@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   buildGoogleCalendarEvent,
   buildRescheduledEventTimes,
+  calendarEventTimesChanged,
   cancelGoogleCalendarEvent,
   findMatchingCalendarEvent,
   formatEventSummary,
@@ -197,6 +198,21 @@ test('buildRescheduledEventTimes preserves local clock time and duration for a d
     start: { dateTime: '2026-08-18T17:00:00.000Z', timeZone: 'America/Phoenix' },
     end: { dateTime: '2026-08-18T18:00:00.000Z', timeZone: 'America/Phoenix' }
   });
+});
+
+test('calendar reschedule detects a no-op even when timestamp formats differ', () => {
+  const event = {
+    start: { dateTime: '2026-08-14T10:00:00-07:00', timeZone: 'America/Phoenix' },
+    end: { dateTime: '2026-08-14T10:30:00-07:00', timeZone: 'America/Phoenix' }
+  };
+  assert.equal(calendarEventTimesChanged(event, {
+    start: { dateTime: '2026-08-14T17:00:00.000Z', timeZone: 'America/Phoenix' },
+    end: { dateTime: '2026-08-14T17:30:00.000Z', timeZone: 'America/Phoenix' }
+  }), false);
+  assert.equal(calendarEventTimesChanged(event, {
+    start: { dateTime: '2026-08-18T17:00:00.000Z', timeZone: 'America/Phoenix' },
+    end: { dateTime: '2026-08-18T17:30:00.000Z', timeZone: 'America/Phoenix' }
+  }), true);
 });
 
 test('rescheduleGoogleCalendarEvent patches only event times and notifies attendees', async () => {

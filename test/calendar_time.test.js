@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildTemporalContext,
+  extractCalendarRescheduleTargetInstruction,
   groundCalendarEventArgs,
   isExplicitCalendarCancelRequest,
   isExplicitCalendarRescheduleRequest,
@@ -28,7 +29,8 @@ test('only direct owner language authorizes rescheduling or cancellation', () =>
     'Can you reschedule my client call for tomorrow?',
     'Yeah, go ahead and move it to Friday',
     'Okay. So you should have the ability to reschedule events now. So go ahead and reschedule the Gilbert traffic ticket. For next Tuesday at the same time.',
-    'The reschedule pay Gilbert traffic ticket at 10AM to next Tuesday at the same time.'
+    'The reschedule pay Gilbert traffic ticket at 10AM to next Tuesday at the same time.',
+    'Can you reschedule the pay Gilbert traffic ticket for today? Reschedule it, for next Tuesday at the same time.'
   ]) {
     assert.equal(isExplicitCalendarRescheduleRequest(instruction), true, instruction);
   }
@@ -48,7 +50,8 @@ test('only direct owner language authorizes rescheduling or cancellation', () =>
     'Delete the 10am appointment from my calendar',
     'Remove the client call from my calendar',
     'Yes, cancel it',
-    'Okay. The calendar is connected. So go ahead and cancel the Gilbert traffic ticket event.'
+    'Okay. The calendar is connected. So go ahead and cancel the Gilbert traffic ticket event.',
+    'Just cancel Friday and create a fresh one for Tuesday.'
   ]) {
     assert.equal(isExplicitCalendarCancelRequest(instruction), true, instruction);
   }
@@ -63,13 +66,28 @@ test('only direct owner language authorizes rescheduling or cancellation', () =>
   }
 });
 
+test('reschedule target extraction prefers the destination date over the current date', () => {
+  const instruction = 'Can you reschedule the pay Gilbert traffic ticket for today? Reschedule it, for next Tuesday at the same time.';
+  const target = extractCalendarRescheduleTargetInstruction(instruction);
+  assert.equal(target, 'next Tuesday at the same time.');
+  const grounded = groundCalendarEventArgs({
+    start: '2026-08-14',
+    time_zone: TIME_ZONE
+  }, target, {
+    now: new Date('2026-08-14T17:00:00Z'),
+    timeZone: TIME_ZONE
+  });
+  assert.equal(grounded.eventArgs.start, '2026-08-18');
+});
+
 test('only the owner\'s explicit scheduling language authorizes an immediate calendar write', () => {
   for (const instruction of [
     'Schedule lunch with Mike tomorrow at 1:30',
     'Book a dentist appointment on August 12 at 10am',
     'Put the client call on my calendar Friday at 2',
     'Block off next Monday afternoon',
-    'Set up a meeting with Alex on Wednesday at noon'
+    'Set up a meeting with Alex on Wednesday at noon',
+    'Just cancel Friday and create a fresh one for Tuesday'
   ]) {
     assert.equal(isExplicitCalendarWriteRequest(instruction), true, instruction);
   }
