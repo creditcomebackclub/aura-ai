@@ -39,18 +39,30 @@ function isExplicitCalendarWriteRequest(instruction) {
 }
 
 function externalTextRequestsCalendarAction(text, actionPattern) {
-  return new RegExp(
+  const namedSource = new RegExp(
     `\\b(?:email|message|webpage|website|document|note)\\b.{0,60}\\b(?:says?|said|asks?|asked|tells?|told)\\b.{0,100}\\b(?:${actionPattern})\\b`
-  ).test(text);
+  );
+  const reportedInstruction = new RegExp(
+    `\\b(?:says?|said|asks?|asked|tells?|told|suggests?|suggested|requested)\\b.{0,120}\\b(?:${actionPattern})\\b`
+  );
+  return namedSource.test(text) || reportedInstruction.test(text);
 }
 
 function startsWithCalendarActionCommand(text, actionPattern) {
-  return new RegExp(
-    `^(?:(?:yes|yeah|okay|ok)[,;:]?\\s+)?(?:aura[,;:]?\\s+)?(?:please\\s+)?` +
+  const sentenceCommand = new RegExp(
+    `(?:^|[.!?]+\\s*)(?:(?:yes|yeah|okay|ok|hey)[,;:]?\\s+)?(?:so\\s+)?` +
+    `(?:aura[,;:]?\\s+)?(?:please\\s+)?` +
     `(?:(?:(?:can|could|would|will)\\s+you|(?:can|could|should)\\s+we)\\s+(?:please\\s+)?|` +
     `(?:i(?:'d| would)\\s+like|i\\s+(?:want|need))\\s+(?:you\\s+)?to\\s+|let'?s\\s+|` +
     `go\\s+ahead\\s+and\\s+)?(?:${actionPattern})\\b`
-  ).test(text);
+  );
+  const strongImperative = new RegExp(
+    `\\b(?:go\\s+ahead\\s+and|please|` +
+    `(?:can|could|would|will)\\s+you(?:\\s+please)?|` +
+    `(?:i(?:'d| would)\\s+like|i\\s+(?:want|need))\\s+(?:you\\s+)?to)\\s+` +
+    `(?:${actionPattern})\\b`
+  );
+  return sentenceCommand.test(text) || strongImperative.test(text);
 }
 
 function isExplicitCalendarRescheduleRequest(instruction) {
@@ -61,7 +73,8 @@ function isExplicitCalendarRescheduleRequest(instruction) {
     return false;
   }
   if (externalTextRequestsCalendarAction(text, actionPattern)) return false;
-  if (!startsWithCalendarActionCommand(text, actionPattern)) return false;
+  const transcribedImperative = /^the\s+reschedule\b(?!\s+(?:was|is|has|had|failed|worked|succeeded))/i.test(text);
+  if (!startsWithCalendarActionCommand(text, actionPattern) && !transcribedImperative) return false;
   if (/\breschedule\b/.test(text)) return true;
   if (/\bmove\b.{0,160}\b(?:calendar|event|appointment|meeting|call)\b/.test(text)) return true;
   if (/\bmove\b.{0,160}\b(?:to|until)\b/.test(text)) return true;

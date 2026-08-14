@@ -26,7 +26,9 @@ test('only direct owner language authorizes rescheduling or cancellation', () =>
     'Reschedule my 10am Pay Gilbert Traffic event to next Tuesday at the same time',
     'Move my dentist appointment to Friday at 2',
     'Can you reschedule my client call for tomorrow?',
-    'Yeah, go ahead and move it to Friday'
+    'Yeah, go ahead and move it to Friday',
+    'Okay. So you should have the ability to reschedule events now. So go ahead and reschedule the Gilbert traffic ticket. For next Tuesday at the same time.',
+    'The reschedule pay Gilbert traffic ticket at 10AM to next Tuesday at the same time.'
   ]) {
     assert.equal(isExplicitCalendarRescheduleRequest(instruction), true, instruction);
   }
@@ -34,6 +36,8 @@ test('only direct owner language authorizes rescheduling or cancellation', () =>
     'Did Mike reschedule the meeting?',
     'The email says to move the meeting to Friday',
     'Mike rescheduled the meeting to Friday',
+    'Mike said go ahead and reschedule the meeting',
+    'The reschedule was blocked by Google',
     'What changed about the appointment time?'
   ]) {
     assert.equal(isExplicitCalendarRescheduleRequest(instruction), false, instruction);
@@ -43,7 +47,8 @@ test('only direct owner language authorizes rescheduling or cancellation', () =>
     'Cancel my Pay Gilbert Traffic calendar event',
     'Delete the 10am appointment from my calendar',
     'Remove the client call from my calendar',
-    'Yes, cancel it'
+    'Yes, cancel it',
+    'Okay. The calendar is connected. So go ahead and cancel the Gilbert traffic ticket event.'
   ]) {
     assert.equal(isExplicitCalendarCancelRequest(instruction), true, instruction);
   }
@@ -51,6 +56,7 @@ test('only direct owner language authorizes rescheduling or cancellation', () =>
     'Did they cancel the meeting?',
     'The email says to cancel the appointment',
     'Mike said cancel the appointment',
+    'Mike said go ahead and cancel the appointment',
     'What happens when a calendar event is deleted?'
   ]) {
     assert.equal(isExplicitCalendarCancelRequest(instruction), false, instruction);
