@@ -24,7 +24,9 @@ const OUTBOUND_EMAIL_TOOL_NAMES = new Set([
 ]);
 
 const CALENDAR_WRITE_TOOL_NAMES = new Set([
-  'create_calendar_event'
+  'create_calendar_event',
+  'reschedule_calendar_event',
+  'cancel_calendar_event'
 ]);
 
 const GOAL_TOOL_NAMES = new Set([
@@ -73,8 +75,8 @@ const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
 );
 
 const OUTBOUND_EMAIL_KEYWORD_PATTERN = /\b(email|e-?mail|send)\b/i;
-const CALENDAR_WRITE_KEYWORD_PATTERN = /\b(schedule|scheduling|scheduled|book|booking|invite|invitation|calendar event|add (?:this |it |an? )?to (?:my )?calendar|put .+ on (?:my )?calendar|block off|hold on my calendar)\b/i;
-const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|plan|planning|milestone|search|remember|remind|reminder|memory|profile|mail|consult|consultation|schedule|book|invite|skill|skills|procedure|workflow|linkedin|networking)\b/i;
+const CALENDAR_WRITE_KEYWORD_PATTERN = /\b(schedule|scheduling|scheduled|book|booking|invite|invitation|reschedule|rescheduling|move .{0,100}(?:event|meeting|appointment|calendar|to|until)|change .{0,100}(?:event|meeting|appointment|calendar|date|day|time)|cancel .{0,100}(?:event|meeting|appointment|calendar|call)|(?:delete|remove) .{0,100}(?:event|meeting|appointment|calendar|call)|calendar event|add (?:this |it |an? )?to (?:my )?calendar|put .+ on (?:my )?calendar|block off|hold on my calendar)\b/i;
+const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|plan|planning|milestone|search|remember|remind|reminder|memory|profile|mail|consult|consultation|schedule|book|invite|reschedule|cancel|skill|skills|procedure|workflow|linkedin|networking)\b/i;
 const GOAL_KEYWORD_PATTERN = /\b(goal|goals|todo|to-?do|task|tasks|plan|planning|milestone|milestones|next action|prioriti[sz]e|what should (?:i|we) do next|what(?:'s| is) next|where should (?:i|we) start)\b/i;
 const BLACKBOARD_KEYWORD_PATTERN = /\b(blackboard|consult|consultation)\b/i;
 const TELEGRAM_KEYWORD_PATTERN = /\b(telegram|text (?:him|her|me|chris)|message (?:chris|me))\b/i;

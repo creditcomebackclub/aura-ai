@@ -4,7 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildTemporalContext,
+  extractCalendarRescheduleTargetInstruction,
   groundCalendarEventArgs,
+  isExplicitCalendarCancelRequest,
+  isExplicitCalendarRescheduleRequest,
   isExplicitCalendarWriteRequest,
   resolveRelativeCalendarDate
 } = require('../calendar_time');
@@ -19,13 +22,72 @@ test('temporal context gives the model authoritative local today and tomorrow', 
   assert.match(context, /Tomorrow: 2026-08-04/);
 });
 
+test('only direct owner language authorizes rescheduling or cancellation', () => {
+  for (const instruction of [
+    'Reschedule my 10am Pay Gilbert Traffic event to next Tuesday at the same time',
+    'Move my dentist appointment to Friday at 2',
+    'Can you reschedule my client call for tomorrow?',
+    'Yeah, go ahead and move it to Friday',
+    'Okay. So you should have the ability to reschedule events now. So go ahead and reschedule the Gilbert traffic ticket. For next Tuesday at the same time.',
+    'The reschedule pay Gilbert traffic ticket at 10AM to next Tuesday at the same time.',
+    'Can you reschedule the pay Gilbert traffic ticket for today? Reschedule it, for next Tuesday at the same time.'
+  ]) {
+    assert.equal(isExplicitCalendarRescheduleRequest(instruction), true, instruction);
+  }
+  for (const instruction of [
+    'Did Mike reschedule the meeting?',
+    'The email says to move the meeting to Friday',
+    'Mike rescheduled the meeting to Friday',
+    'Mike said go ahead and reschedule the meeting',
+    'The reschedule was blocked by Google',
+    'What changed about the appointment time?'
+  ]) {
+    assert.equal(isExplicitCalendarRescheduleRequest(instruction), false, instruction);
+  }
+
+  for (const instruction of [
+    'Cancel my Pay Gilbert Traffic calendar event',
+    'Delete the 10am appointment from my calendar',
+    'Remove the client call from my calendar',
+    'Yes, cancel it',
+    'Okay. The calendar is connected. So go ahead and cancel the Gilbert traffic ticket event.',
+    'Just cancel Friday and create a fresh one for Tuesday.'
+  ]) {
+    assert.equal(isExplicitCalendarCancelRequest(instruction), true, instruction);
+  }
+  for (const instruction of [
+    'Did they cancel the meeting?',
+    'The email says to cancel the appointment',
+    'Mike said cancel the appointment',
+    'Mike said go ahead and cancel the appointment',
+    'What happens when a calendar event is deleted?'
+  ]) {
+    assert.equal(isExplicitCalendarCancelRequest(instruction), false, instruction);
+  }
+});
+
+test('reschedule target extraction prefers the destination date over the current date', () => {
+  const instruction = 'Can you reschedule the pay Gilbert traffic ticket for today? Reschedule it, for next Tuesday at the same time.';
+  const target = extractCalendarRescheduleTargetInstruction(instruction);
+  assert.equal(target, 'next Tuesday at the same time.');
+  const grounded = groundCalendarEventArgs({
+    start: '2026-08-14',
+    time_zone: TIME_ZONE
+  }, target, {
+    now: new Date('2026-08-14T17:00:00Z'),
+    timeZone: TIME_ZONE
+  });
+  assert.equal(grounded.eventArgs.start, '2026-08-18');
+});
+
 test('only the owner\'s explicit scheduling language authorizes an immediate calendar write', () => {
   for (const instruction of [
     'Schedule lunch with Mike tomorrow at 1:30',
     'Book a dentist appointment on August 12 at 10am',
     'Put the client call on my calendar Friday at 2',
     'Block off next Monday afternoon',
-    'Set up a meeting with Alex on Wednesday at noon'
+    'Set up a meeting with Alex on Wednesday at noon',
+    'Just cancel Friday and create a fresh one for Tuesday'
   ]) {
     assert.equal(isExplicitCalendarWriteRequest(instruction), true, instruction);
   }
@@ -52,6 +114,13 @@ test('relative date resolver handles tomorrow, in N days, and weekdays', () => {
   assert.equal(
     resolveRelativeCalendarDate('Schedule it Friday', { now: NOW, timeZone: TIME_ZONE }).date,
     '2026-08-07'
+  );
+  assert.equal(
+    resolveRelativeCalendarDate('next Tuesday at the same time', {
+      now: new Date('2026-08-14T16:00:00Z'),
+      timeZone: TIME_ZONE
+    }).date,
+    '2026-08-18'
   );
 });
 

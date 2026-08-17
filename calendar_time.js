@@ -35,7 +35,71 @@ function isExplicitCalendarWriteRequest(instruction) {
   if (/\bblock\s+off\b/.test(text)) return true;
   if (/\binvite\b.{0,160}\b(?:to|for|on|at)\b/.test(text)) return true;
   if (/\b(?:add|put)\b.{0,160}\b(?:calendar|schedule)\b/.test(text)) return true;
+  if (/\b(?:create|add|make)\b.{0,80}\b(?:fresh|new|replacement|another)\s+(?:one|event|appointment|meeting)\b/.test(text)) {
+    return true;
+  }
   return /\b(?:create|make|set\s+up)\b.{0,100}\b(?:calendar\s+)?(?:event|appointment|meeting|call)\b/.test(text);
+}
+
+function externalTextRequestsCalendarAction(text, actionPattern) {
+  const namedSource = new RegExp(
+    `\\b(?:email|message|webpage|website|document|note)\\b.{0,60}\\b(?:says?|said|asks?|asked|tells?|told)\\b.{0,100}\\b(?:${actionPattern})\\b`
+  );
+  const reportedInstruction = new RegExp(
+    `\\b(?:says?|said|asks?|asked|tells?|told|suggests?|suggested|requested)\\b.{0,120}\\b(?:${actionPattern})\\b`
+  );
+  return namedSource.test(text) || reportedInstruction.test(text);
+}
+
+function startsWithCalendarActionCommand(text, actionPattern) {
+  const sentenceCommand = new RegExp(
+    `(?:^|[.!?]+\\s*)(?:(?:yes|yeah|okay|ok|hey)[,;:]?\\s+)?(?:so\\s+)?(?:just\\s+)?` +
+    `(?:aura[,;:]?\\s+)?(?:please\\s+)?` +
+    `(?:(?:(?:can|could|would|will)\\s+you|(?:can|could|should)\\s+we)\\s+(?:please\\s+)?|` +
+    `(?:i(?:'d| would)\\s+like|i\\s+(?:want|need))\\s+(?:you\\s+)?to\\s+|let'?s\\s+|` +
+    `go\\s+ahead\\s+and\\s+)?(?:${actionPattern})\\b`
+  );
+  const strongImperative = new RegExp(
+    `\\b(?:go\\s+ahead\\s+and|please|` +
+    `(?:can|could|would|will)\\s+you(?:\\s+please)?|` +
+    `(?:i(?:'d| would)\\s+like|i\\s+(?:want|need))\\s+(?:you\\s+)?to)\\s+` +
+    `(?:${actionPattern})\\b`
+  );
+  return sentenceCommand.test(text) || strongImperative.test(text);
+}
+
+function isExplicitCalendarRescheduleRequest(instruction) {
+  const text = String(instruction || '').trim().toLowerCase();
+  if (!text) return false;
+  const actionPattern = 'reschedule|move|change';
+  if (/^(?:did|does|has|have|is|are|was|were|what|when|where|why|how|who)\b.{0,180}\b(?:reschedule|move|change)\b/.test(text)) {
+    return false;
+  }
+  if (externalTextRequestsCalendarAction(text, actionPattern)) return false;
+  const transcribedImperative = /^the\s+reschedule\b(?!\s+(?:was|is|has|had|failed|worked|succeeded))/i.test(text);
+  if (!startsWithCalendarActionCommand(text, actionPattern) && !transcribedImperative) return false;
+  if (/\breschedule\b/.test(text)) return true;
+  if (/\bmove\b.{0,160}\b(?:calendar|event|appointment|meeting|call)\b/.test(text)) return true;
+  if (/\bmove\b.{0,160}\b(?:to|until)\b/.test(text)) return true;
+  return /\bchange\b.{0,100}\b(?:date|day|time)\b.{0,100}\b(?:calendar|event|appointment|meeting|call)\b/.test(text) ||
+    /\bchange\b.{0,100}\b(?:calendar|event|appointment|meeting|call)\b.{0,100}\b(?:date|day|time|to)\b/.test(text);
+}
+
+function isExplicitCalendarCancelRequest(instruction) {
+  const text = String(instruction || '').trim().toLowerCase();
+  if (!text) return false;
+  const actionPattern = 'cancel|delete|remove';
+  if (/^(?:did|does|has|have|is|are|was|were|what|when|where|why|how|who)\b.{0,180}\b(?:cancel|delete|remove)\b/.test(text)) {
+    return false;
+  }
+  if (externalTextRequestsCalendarAction(text, actionPattern)) return false;
+  if (!startsWithCalendarActionCommand(text, actionPattern)) return false;
+  if (/\bcancel\b/.test(text)) return true;
+  if (/\b(?:cancel|delete|remove)\b\s+(?:it|that|this)\b/.test(text)) return true;
+  if (/\bcancel\b.{0,160}\b(?:calendar|event|appointment|meeting|call)\b/.test(text)) return true;
+  if (/\bcancel\b.{0,160}\b(?:on|from)\s+(?:my\s+)?calendar\b/.test(text)) return true;
+  return /\b(?:delete|remove)\b.{0,160}\b(?:calendar|event|appointment|meeting|call)\b/.test(text) ||
+    /\b(?:delete|remove)\b.{0,160}\bfrom\s+(?:my\s+)?calendar\b/.test(text);
 }
 
 function zonedParts(date, timeZone) {
@@ -153,6 +217,20 @@ function resolveRelativeCalendarDate(instruction, {
   return null;
 }
 
+function extractCalendarRescheduleTargetInstruction(instruction) {
+  const text = String(instruction || '').trim();
+  if (!text) return text;
+  const relativeDatePattern = /\b(?:day\s+after\s+tomorrow|today|tomorrow|in\s+\d{1,3}\s+days?|(?:(?:next|this)\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat))\b/i;
+  const prepositions = [...text.matchAll(/\b(?:to|until|for)\b/gi)];
+  for (let index = prepositions.length - 1; index >= 0; index -= 1) {
+    const candidate = text.slice(prepositions[index].index + prepositions[index][0].length).trim();
+    if (relativeDatePattern.test(candidate)) return candidate;
+  }
+  const dates = [...text.matchAll(new RegExp(relativeDatePattern.source, 'gi'))];
+  if (dates.length) return text.slice(dates[dates.length - 1].index).trim();
+  return text;
+}
+
 function buildTemporalContext({
   now = new Date(),
   timeZone = 'America/Phoenix'
@@ -243,7 +321,10 @@ module.exports = {
   addDateKeyDays,
   buildTemporalContext,
   dateKey,
+  extractCalendarRescheduleTargetInstruction,
   groundCalendarEventArgs,
+  isExplicitCalendarCancelRequest,
+  isExplicitCalendarRescheduleRequest,
   isExplicitCalendarWriteRequest,
   resolveRelativeCalendarDate,
   utcFromZoned,

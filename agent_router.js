@@ -47,7 +47,7 @@ const DEFAULT_AGENTS = Object.freeze({
   })
 });
 
-const WRITE_OR_EXTERNAL_PATTERN = /\b(?:send|email|message|schedule|book|create|add|plan|planning|prioriti[sz]e|delete|remove|log|remember|remind|reminder|forget|teach|text|telegram)\b/i;
+const WRITE_OR_EXTERNAL_PATTERN = /\b(?:send|email|message|schedule|book|reschedule|cancel|create|add|plan|planning|prioriti[sz]e|delete|remove|log|remember|remind|reminder|forget|teach|text|telegram)\b/i;
 const MUTATION_PATTERN = /\b(?:update|change|mark|edit)\b.{0,50}\b(?:goal|task|calendar|event|record|skill|workflow|status)\b/i;
 const FINANCE_PATTERN = /\b(?:mrr|revenue|income|collections?|collected|payments?|paid|paying|balances?|outstanding|owes?|owed|invoice|billing|commission|financial|finances?|money|cash|churn)\b/i;
 const CLIENT_OPERATIONS_PATTERN = /\b(?:client\s+(?:status|snapshot|progress|phase|record)|active\s+clients?|(?:what|which|current)\s+phase|disputes?|bureaus?|furnishers?|letters?|mailed|responses?|round\s+\d+|phase\s+\d+|stalled|missing\s+records?)\b/i;

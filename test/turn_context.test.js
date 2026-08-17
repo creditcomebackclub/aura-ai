@@ -224,6 +224,23 @@ test('selectToolsForTurn keeps calendar write tools when scheduling', () => {
   assert.equal(names.has('send_owner_email'), false);
 });
 
+test('selectToolsForTurn offers the full calendar lifecycle for move and cancel commands', () => {
+  const reschedule = new Set(selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'Reschedule my 10am Pay Gilbert Traffic event to next Tuesday at the same time'
+  ).map(tool => tool.function.name));
+  assert.equal(reschedule.has('reschedule_calendar_event'), true);
+  assert.equal(reschedule.has('cancel_calendar_event'), true);
+  assert.equal(reschedule.has('check_calendar'), true);
+
+  const cancellation = new Set(selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'Cancel my Pay Gilbert Traffic calendar event'
+  ).map(tool => tool.function.name));
+  assert.equal(cancellation.has('cancel_calendar_event'), true);
+  assert.equal(cancellation.has('check_calendar'), true);
+});
+
 test('selectToolsForTurn offers durable reminders only for reminder turns', () => {
   const reminder = selectToolsForTurn(
     fakeTools(ALL_NAMES),
@@ -303,4 +320,6 @@ test('selectToolsForTurn drops calendar write tools on plain chit-chat', () => {
   const selected = selectToolsForTurn(fakeTools(ALL_NAMES), "Hey, what's up?");
   const names = new Set(selected.map(tool => tool.function.name));
   assert.equal(names.has('create_calendar_event'), false);
+  assert.equal(names.has('reschedule_calendar_event'), false);
+  assert.equal(names.has('cancel_calendar_event'), false);
 });
