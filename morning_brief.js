@@ -107,6 +107,13 @@ function spokenCalendarSection(calendarText) {
 function cleanBlackboardTitle(title) {
   return String(title || '')
     .replace(/\s*\[due\s+day\s+\d+\]\s*/gi, ' ')
+    // Blackboard titles abbreviate "week" as "WK"/"WK2"/"W-K 3". The morning
+    // brief is assembled deterministically and read aloud verbatim, so this
+    // never passes through a model that could apply the owner's stated
+    // "say week, not W K" preference - the expansion has to happen here or it
+    // never happens. "WK2" -> "week 2", "W-K" -> "week", case-insensitive.
+    .replace(/\bw[-.\s]?k\s*(\d+)\b/gi, 'week $1')
+    .replace(/\bw[-.\s]?k\b/gi, 'week')
     .replace(/\s+/g, ' ')
     .trim();
 }
