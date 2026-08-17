@@ -12,7 +12,11 @@ const DEEPGRAM_KEYTERMS = [
   'Credit Comeback',
   'Phoenix',
   'outstanding balance',
-  'client phase'
+  'client phase',
+  // Nova-3 was misreading "back" as "Jack" ("the back way" -> "the Jack
+  // way") - boosting the word it kept losing to a phonetically close one.
+  'back',
+  'back way'
 ];
 
 function resolveSttProvider(env = process.env) {
