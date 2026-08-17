@@ -123,14 +123,31 @@ test('blackboard section groups by day and drops 11:59pm noise', () => {
     { title: 'Live quiz', due_at: '2026-08-06T18:00:00Z' }
   ], { timeZone: TZ });
 
+  // "Wk 5" is expanded to "week 5" - the brief is read aloud verbatim with no
+  // model in the loop, so the owner's "say week, not W K" preference is applied
+  // here at assembly time.
   assert.equal(text, [
     'Blackboard (3)',
     'Wed, Aug 5',
-    '• Wk 5 - Labs',
-    '• Wk 5 - Pre-Assessment',
+    '• week 5 - Labs',
+    '• week 5 - Pre-Assessment',
     'Thu, Aug 6',
     '• Live quiz — 11:00 AM'
   ].join('\n'));
+});
+
+test('blackboard "WK" abbreviations expand to "week" without touching lookalike words', () => {
+  const text = formatBlackboardSection([
+    { title: 'WK2 Discussion', due_at: '2026-08-06T06:59:00Z' },
+    { title: 'W-K 3 Post-Assessment', due_at: '2026-08-06T06:59:00Z' },
+    { title: 'WK Presentations Lab', due_at: '2026-08-06T06:59:00Z' },
+    { title: 'Awkward network essay', due_at: '2026-08-06T06:59:00Z' }
+  ], { timeZone: TZ });
+  assert.match(text, /• week 2 Discussion/);
+  assert.match(text, /• week 3 Post-Assessment/);
+  assert.match(text, /• week Presentations Lab/);
+  // "awkward" and "network" contain the letters w-k but must be left alone.
+  assert.match(text, /• Awkward network essay/);
 });
 
 test('filterUpcomingAssignments keeps only the next N days', () => {
