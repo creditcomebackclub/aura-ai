@@ -159,6 +159,30 @@ test('selectToolsForTurn drops gated tools on plain chit-chat', () => {
   assert.equal(names.has('check_calendar'), false);
 });
 
+test('selectToolsForTurn offers add_goal when the turn says "to do list" (with a space)', () => {
+  const selected = selectToolsForTurn(
+    fakeTools(ALL_NAMES),
+    'Can you add to my to do list, buy a Credit Comeback Club hat?'
+  );
+  const names = new Set(selected.map(tool => tool.function.name));
+  // The write tool must be present - this exact phrasing previously stripped it
+  // and AURA reported "I only have read access, there's no add-goal action."
+  assert.equal(names.has('add_goal'), true);
+  assert.equal(names.has('get_goals'), true);
+});
+
+test('selectToolsForTurn offers add_goal for "put X on my list" without the word todo', () => {
+  const selected = selectToolsForTurn(fakeTools(ALL_NAMES), 'Put buying milk on my list');
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('add_goal'), true);
+});
+
+test('selectToolsForTurn does not treat "list my emails" as a goal turn', () => {
+  const selected = selectToolsForTurn(fakeTools(ALL_NAMES), 'List my unread emails');
+  const names = new Set(selected.map(tool => tool.function.name));
+  assert.equal(names.has('add_goal'), false);
+});
+
 test('selectToolsForTurn keeps business tools when the turn mentions clients', () => {
   const selected = selectToolsForTurn(fakeTools(ALL_NAMES), 'What is the balance for client Mary?');
   const names = new Set(selected.map(tool => tool.function.name));

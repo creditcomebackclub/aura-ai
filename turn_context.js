@@ -77,7 +77,13 @@ const BUSINESS_INTEL_KEYWORD_PATTERN = new RegExp(
 const OUTBOUND_EMAIL_KEYWORD_PATTERN = /\b(email|e-?mail|send)\b/i;
 const CALENDAR_WRITE_KEYWORD_PATTERN = /\b(schedule|scheduling|scheduled|book|booking|invite|invitation|reschedule|rescheduling|move .{0,100}(?:event|meeting|appointment|calendar|to|until)|change .{0,100}(?:event|meeting|appointment|calendar|date|day|time)|cancel .{0,100}(?:event|meeting|appointment|calendar|call)|(?:delete|remove) .{0,100}(?:event|meeting|appointment|calendar|call)|calendar event|add (?:this |it |an? )?to (?:my )?calendar|put .+ on (?:my )?calendar|block off|hold on my calendar)\b/i;
 const HEAVY_CONTEXT_KEYWORD_PATTERN = /\b(email|e-?mail|calendar|blackboard|goal|goals|todo|to-do|plan|planning|milestone|search|remember|remind|reminder|memory|profile|mail|consult|consultation|schedule|book|invite|reschedule|cancel|skill|skills|procedure|workflow|linkedin|networking)\b/i;
-const GOAL_KEYWORD_PATTERN = /\b(goal|goals|todo|to-?do|task|tasks|plan|planning|milestone|milestones|next action|prioriti[sz]e|what should (?:i|we) do next|what(?:'s| is) next|where should (?:i|we) start)\b/i;
+// "to[-\s]?do" matches "todo", "to-do", AND "to do" (with a space) - the last
+// is the most common spoken/typed form ("add it to my to do list") and was
+// previously missed, so an explicit add-a-task request carried no goal keyword
+// and the goal-write tools were stripped from the turn. Also recognize
+// "add/put ... (to|on) my list" phrasings that name a list without the word
+// "todo" at all. "list" alone stays ungated to avoid matching "list my emails".
+const GOAL_KEYWORD_PATTERN = /\b(goal|goals|to[-\s]?do|task|tasks|checklist|(?:add|put|throw|stick)\b[^.?!]{0,30}\b(?:to|on)\s+(?:my\s+|the\s+)?list|plan|planning|milestone|milestones|next action|prioriti[sz]e|what should (?:i|we) do next|what(?:'s| is) next|where should (?:i|we) start)\b/i;
 const BLACKBOARD_KEYWORD_PATTERN = /\b(blackboard|consult|consultation)\b/i;
 const TELEGRAM_KEYWORD_PATTERN = /\b(telegram|text (?:him|her|me|chris)|message (?:chris|me))\b/i;
 const WEB_SEARCH_KEYWORD_PATTERN = /\b(search(?:\s+the)?\s+(?:web|internet)|google|browse(?:\s+the)?\s+(?:web|internet)|look\s+(?:it\s+)?up(?:\s+(?:online|on\s+the\s+web))?|web\s+search|latest news|weather|who is|what(?:'s| is) (?:the )?(?:news|score|price of))\b/i;
