@@ -95,8 +95,9 @@ stays in the main loop because its public-input screen, quota, and private-data
 boundary must run there; explicit public lookups force that tool on round zero.
 
 Specialists are read-only. They never execute actions or create tasks. Core writes
-chat-created goals and Executive Loop commitments with
-`assigned_agent = 'aura_core'`, and stamps the resolved Core id on audited actions.
+chat-created goals with `assigned_agent = 'aura_core'`. Executive Loop email
+commitments are staged with the same assignment and `status = 'awaiting_approval'`;
+they become pending tasks only after owner review. Core stamps the resolved id on audited actions.
 Core also owns durable goal plans in `aura_tasks.input.goal_plan`: `set_goal_plan`
 atomically creates or revises the definition of done and ordered steps,
 `update_goal_step` records proven progress, and `goal_plans.js` deterministically
@@ -250,6 +251,9 @@ Mac companion tools.
 | Task-to-agent assignment | `aura_tasks.assigned_agent`, `supabase_state_store.js` | Core tasks are attributed; specialists are read-only |
 | Goal plan ledger + next-action selection | `goal_plans.js`, `aura_tasks.input.goal_plan`, `server.js` | Core-only internal planning; read at `GET /api/goals/plans` |
 | Durable reminders + completion receipts | `reminders.js`, `action_receipts.js`, `executive_loop.js`, `server.js` | Core-only; one-time/daily/weekly delivery through notifications and Telegram mirror |
+| Reliability status + daily digest | `reliability_status.js`, `client_watchlist.js`, `server.js` | Read/review surfaces; no automatic repair or approval |
+| Owner Control Center | `public/control.html`, `public/control.js`, `public/control.css` | Authenticated reliability, memory, commitment, and watchlist review UI |
+| Voice stream fencing + lifecycle telemetry | `public/voice_turn_protocol.js`, `audio_turn_telemetry.js`, `server.js` | Final-answer-only for tool-capable turns; transcript/audio excluded from diagnostics |
 | Action-to-agent attribution | `aura_actions.agent_id`, `supabase_state_store.js` | Resolved active Core id is stamped by the tool handler |
 | Mac capability delegation (cloud → Mac) | `companion_client.js` (`CompanionClient.execute`) | Live |
 | Mac capability execution (on the Mac) | `companion_worker.js`, `mac_integration.js` | Live, runs as launchd service `com.aura.companion` |

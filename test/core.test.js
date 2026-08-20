@@ -610,9 +610,10 @@ test('rejected and background-inferred preferences never enter durable memory', 
 
 test('memory confirmation replies are strict and reject mixed requests', () => {
   assert.equal(classifyMemoryConfirmationReply('Yes, remember that.'), 'approved');
+  assert.equal(classifyMemoryConfirmationReply('Do it'), 'approved');
   assert.equal(classifyMemoryConfirmationReply('No thanks.'), 'rejected');
   assert.equal(classifyMemoryConfirmationReply('Yes, and check my calendar.'), null);
-  assert.equal(classifyMemoryConfirmationReply('Do it'), null);
+  assert.equal(classifyMemoryConfirmationReply('Do it, and check my calendar.'), null);
 });
 
 test('episodic memory records notable outcomes without polluting the owner profile', async () => {
@@ -1052,6 +1053,30 @@ test('findFalseCapabilityDenial catches generic tool-availability wording across
   );
   assert.ok(genericDenial);
   assert.equal(genericDenial.generic, true);
+
+  const passiveWebDenial = findFalseCapabilityDenial(
+    "The web-searching tool isn't available in this session.",
+    ['search_web']
+  );
+  assert.ok(passiveWebDenial);
+  assert.deepEqual(passiveWebDenial.tools, ['search_web']);
+
+  const passiveCccDenial = findFalseCapabilityDenial(
+    "The CCC records aren't available in this session.",
+    ['get_client_snapshot']
+  );
+  assert.ok(passiveCccDenial);
+  assert.deepEqual(passiveCccDenial.tools, ['get_client_snapshot']);
+});
+
+test('successful tools remain eligible for false-denial correction while failed tools do not', () => {
+  const text = "The CCC records aren't available in this session.";
+  assert.ok(findFalseCapabilityDenial(text, ['calculate_financial_metrics'], {
+    successfulToolNames: ['calculate_financial_metrics']
+  }));
+  assert.equal(findFalseCapabilityDenial(text, ['calculate_financial_metrics'], {
+    failedToolNames: ['calculate_financial_metrics']
+  }), null);
 });
 
 test('findFalseCapabilityDenial ignores capabilities already attempted this turn', () => {

@@ -473,8 +473,8 @@ function createExecutiveLoop({
           day: 'numeric'
         }).format(new Date(commitment.due_at));
         const alert = await sendAlert(
-          `Commitment captured\n${commitment.title.replace(/^Follow through:\s*/i, '')}\nDue ${dueLabel}.`,
-          'commitment_captured',
+          `Commitment found\n${commitment.title.replace(/^Follow through:\s*/i, '')}\nDue ${dueLabel}. Review it before I add it to your active list.`,
+          'commitment_review',
           'normal',
           {
             dedupeKey: `commitment-captured:${email.id}`,

@@ -265,6 +265,9 @@ function classifyMemoryConfirmationReply(text) {
   if (/^(?:yes|yeah|yep|yup|sure|okay|ok|absolutely|definitely|please do)(?:\s+(?:please\s+)?(?:remember|save)(?:\s+(?:that|it|the preference))?)?(?:\s+(?:thanks|thank you))?$/.test(normalized)) {
     return 'approved';
   }
+  if (/^(?:do it|save it|remember it)(?:\s+(?:please|thanks|thank you))?$/.test(normalized)) {
+    return 'approved';
+  }
   return null;
 }
 
@@ -631,19 +634,25 @@ const LIVE_CAPABILITY_DENIAL_CHECKS = [
   }
 ];
 
-const GENERIC_TOOL_UNAVAILABLE_PATTERN = /\b(?:i\s+)?(?:(?:don['’]?t|do\s+not)\s+have|can['’]?t|cannot|unable\s+to)\b[^.]{0,180}(?:\btools?\b|\bcapabilit(?:y|ies)\b|\b(?:available|loaded)\s+(?:to\s+me\s+)?(?:in|from)\s+(?:this\s+)?chat\b)/i;
+const GENERIC_TOOL_UNAVAILABLE_PATTERN = /(?:\b(?:i\s+)?(?:(?:don['’]?t|do\s+not)\s+have|can['’]?t|cannot|unable\s+to)\b[^.]{0,180}(?:\btools?\b|\bcapabilit(?:y|ies)\b|\b(?:available|loaded)\s+(?:to\s+me\s+)?(?:in|from)\s+(?:this\s+)?chat\b)|\b(?:web[- ]?search(?:ing)?\s+tools?|ccc\s+(?:records?|data|tools?)|client\s+(?:records?|data|tools?)|(?:the|this|that|a)\s+(?:tool|capability))\b[^.]{0,100}\b(?:isn['’]?t|is\s+not|aren['’]?t|are\s+not|unavailable|not\s+available)\b[^.]{0,80}\b(?:session|chat|right\s+now|currently)?)/i;
 
 function findFalseCapabilityDenial(text, availableToolNames = [], {
   attemptedToolNames = [],
+  failedToolNames = attemptedToolNames,
+  successfulToolNames = [],
   genericToolNames = availableToolNames
 } = {}) {
-  const attempted = new Set(
-    (Array.isArray(attemptedToolNames) ? attemptedToolNames : [])
+  const failed = new Set(
+    (Array.isArray(failedToolNames) ? failedToolNames : [])
+      .filter(name => typeof name === 'string' && name)
+  );
+  const successful = new Set(
+    (Array.isArray(successfulToolNames) ? successfulToolNames : [])
       .filter(name => typeof name === 'string' && name)
   );
   const available = new Set(
     (Array.isArray(availableToolNames) ? availableToolNames : [])
-      .filter(name => typeof name === 'string' && name && !attempted.has(name))
+      .filter(name => typeof name === 'string' && name && (!failed.has(name) || successful.has(name)))
   );
   const genericAvailable = new Set(
     (Array.isArray(genericToolNames) ? genericToolNames : [])
@@ -1016,39 +1025,43 @@ class MemoryV2 {
   async _stageMemoryCandidates(entries, currentProfile) {
     if (typeof this.profileStore.setOwnerMemoryCandidates !== 'function') return [];
     const now = new Date().toISOString();
-    let pending = (Array.isArray(currentProfile?.memory_candidates)
-      ? currentProfile.memory_candidates
-      : [])
-      .map(candidate => normalizeMemoryCandidate(candidate))
-      .filter(Boolean);
     const staged = [];
-    for (const entry of entries) {
-      const candidate = normalizeMemoryCandidate({
-        id: crypto.randomUUID(),
-        entry,
-        created_at: now,
-        updated_at: now,
-        occurrences: 1
-      });
-      if (!candidate) continue;
-      const existing = pending.find(item =>
-        item.entry.key === candidate.entry.key &&
-        canonicalMemory(item.entry) === canonicalMemory(candidate.entry)
-      );
-      if (existing) {
-        existing.occurrences += 1;
-        existing.updated_at = now;
-        staged.push(existing);
-        continue;
+    const prepared = entries.map(entry => normalizeMemoryCandidate({
+      id: crypto.randomUUID(),
+      entry,
+      created_at: now,
+      updated_at: now,
+      occurrences: 1
+    })).filter(Boolean);
+    const mergeCandidates = currentCandidates => {
+      staged.length = 0;
+      let pending = (Array.isArray(currentCandidates) ? currentCandidates : [])
+        .map(candidate => normalizeMemoryCandidate(candidate))
+        .filter(Boolean);
+      for (const candidate of prepared) {
+        const existing = pending.find(item =>
+          item.entry.key === candidate.entry.key &&
+          canonicalMemory(item.entry) === canonicalMemory(candidate.entry)
+        );
+        if (existing) {
+          existing.occurrences += 1;
+          existing.updated_at = now;
+          staged.push(existing);
+          continue;
+        }
+        // A newer interpretation of the same preference replaces an unconfirmed
+        // older one; AURA should never ask two contradictory versions in a row.
+        pending = pending.filter(item => item.entry.key !== candidate.entry.key);
+        pending.push(candidate);
+        staged.push(candidate);
       }
-      // A newer interpretation of the same preference replaces an unconfirmed
-      // older one; AURA should never ask two contradictory versions in a row.
-      pending = pending.filter(item => item.entry.key !== candidate.entry.key);
-      pending.push(candidate);
-      staged.push(candidate);
+      return pending.slice(-MEMORY_CONFIRMATION_MAX_PENDING);
+    };
+    if (typeof this.profileStore.mutateOwnerMemoryCandidates === 'function') {
+      await this.profileStore.mutateOwnerMemoryCandidates(mergeCandidates);
+    } else {
+      await this.profileStore.setOwnerMemoryCandidates(mergeCandidates(currentProfile?.memory_candidates));
     }
-    pending = pending.slice(-MEMORY_CONFIRMATION_MAX_PENDING);
-    await this.profileStore.setOwnerMemoryCandidates(pending);
     return staged;
   }
 
@@ -1074,7 +1087,10 @@ class MemoryV2 {
             explicit: true
           })
         : [];
-      if (typeof this.profileStore.setOwnerMemoryCandidates === 'function') {
+      if (typeof this.profileStore.mutateOwnerMemoryCandidates === 'function') {
+        await this.profileStore.mutateOwnerMemoryCandidates(current =>
+          current.filter(item => normalizeMemoryCandidate(item)?.id !== id));
+      } else if (typeof this.profileStore.setOwnerMemoryCandidates === 'function') {
         await this.profileStore.setOwnerMemoryCandidates(pending);
       }
       return { resolved: true, approved: Boolean(approved), candidate, learned };

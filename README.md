@@ -225,9 +225,12 @@ planning, and decisions. Routine multi-source status reads stay at the configure
 base effort; the number of tool groups alone is not treated as reasoning depth.
 
 Natural-language tool routing recognizes direct requests and contextual retries.
-Explicit public lookups require a web-search call, and if AURA claims an untried
-capability is unavailable, the reply is suppressed and retried with the relevant
-safe tool. A genuine failure may be reported only after that tool was attempted;
+Explicit live-data questions require a relevant read-tool call on the first model
+round; explicit public lookups require `search_web`. If AURA claims an available
+tool is missing, the reply gate catches passive as well as first-person denials.
+Successful current-turn receipts are reused without repeating the lookup, while a
+genuine failure is named precisely (for example, a reached web-search quota) only
+after that tool was attempted;
 action recovery never widens the normal router or bypasses authorization.
 
 ## Agent routing telemetry
@@ -244,7 +247,37 @@ model input, tool arguments, and tool results are never returned.
 The phone and home-screen interface is text-free. A canvas waveform reacts to
 AURA's actual speech through the Web Audio API, with a reduced-motion fallback.
 Live-web evidence remains available to AURA for grounded spoken answers, while
-the visual surface stays clear on both phone and desktop.
+the visual surface stays clear on both phone and desktop. Playback uses the
+device's native volume; there is no in-app gain control or compressor.
+
+Tool-capable turns speak only the final, corrected answer. Stream events are
+fenced by turn id, generation, and monotonic sequence, and proactive alerts wait
+until an interactive turn is idle. `POST /api/audio/turn-events` accepts only
+bounded lifecycle metadata (never transcript or audio content) for diagnosing
+stale events, playback completion, interruption, and alert deferral.
+
+## Reliability controls
+
+The authenticated reliability surfaces are intentionally inspect/review first:
+open `/control.html` on a device already signed into AURA for the owner-facing
+Control Center, or use the endpoints directly.
+
+- `GET /api/memory/health` — pending preference candidates and durable extraction
+  queue counts, including recent failed jobs;
+- `POST /api/memory/candidates/:id` with `{ "decision": "approve" | "reject" }`
+  — resolve one pending preference by its durable candidate id;
+- `POST /api/memory/jobs/:messageId/replay` — requeue one failed extraction job;
+- `GET /api/reliability/status` — combined memory, agent/tool, commitment, client,
+  and integration health;
+- `GET /api/clients/watchlist?stalled_days=45&overdue_days=3&limit=100` — explainable
+  CCC billing/phase/activity signals; and
+- `GET /api/commitments/review` plus `POST /api/commitments/review/:id` with
+  `{ "decision": "approve" | "reject" }` — review sent-email promises before
+  they become active tasks. The status transition is conditional, so concurrent
+  review requests cannot overwrite one another.
+
+The once-daily reliability digest emits only when the combined status needs
+review. It does not execute a repair or approve a candidate.
 
 ## Notifications
 
@@ -259,7 +292,7 @@ enabling it does not replay old mail or events. Later runs surface:
 
 - newly actionable or urgent unread email;
 - explicit sent-mail promises such as “I'll send the packet by Friday,” captured
-  once as an internal task with the stated deadline;
+  once in an `awaiting_approval` review queue with the stated deadline;
 - calendar cancellations and reschedules;
 - meeting briefs 8–20 minutes before timed events, including matching unread
   mail, open follow-ups, and verified CCC client phase/billing context when an
@@ -612,6 +645,9 @@ deletions retain their separate approval gate.
 - `server.js` — HTTP/WebSocket server, agent loop, tools, cron jobs
 - `agent_router.js` — Core/Client Operations/Finance routing and least-privilege enforcement
 - `agent_telemetry.js` — privacy-bounded specialist volume, latency, failure, and allowlist summaries
+- `audio_turn_telemetry.js` — privacy-bounded voice lifecycle diagnostics
+- `reliability_status.js` — combined owner-facing reliability status and digest
+- `client_watchlist.js` — deterministic CCC watchlist signals
 - `executive_loop.js` — proactive inbox/calendar/meeting/commitment monitoring
 - `entity_extraction.js` — canonical organization/domain/person extraction
 - `entity_graph.js` — links a signal to profile people and CCC client records

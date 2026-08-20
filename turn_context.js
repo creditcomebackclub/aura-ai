@@ -91,6 +91,9 @@ const PUBLIC_CONTACT_LOOKUP_PATTERN = /\b(?:find|verify|locate|confirm)\b.{0,100
 const PUBLIC_LOOKUP_FOLLOWUP_PATTERN = /\b(?:double[- ]check|check again|try again|look again|verify again)\b/i;
 const PUBLIC_LOOKUP_CONTEXT_PATTERN = /\b(?:official|public|website|contact page|partnership contact|email address|web search|online)\b/i;
 const PRIVATE_WEB_SEARCH_INPUT_PATTERN = /\b(?:client|ccc|credit comeback|blackboard)\b|\b(?:my|our)\s+(?:email|inbox|mail|calendar|schedule|goals?|finances?|transactions?|account)\b/i;
+const LIVE_DATA_REQUEST_PATTERN = /\b(?:check|search|browse|look\s+(?:it\s+)?up|find|verify|pull|show|list|get|tell\s+me|give\s+me|what(?:['’]s|\s+is|\s+are)|which|who|how\s+many|where|when|do\s+i|am\s+i|have\s+i)\b/i;
+const EXPLANATION_ONLY_PATTERN = /^\s*(?:explain|define|what\s+does\b[^?]{0,100}\bmean|how\s+(?:do|can|should|would)\b|help\s+me\s+(?:write|draft|think|understand))\b/i;
+const ACTION_REQUEST_PATTERN = /\b(?:send|schedule|book|create|add|update|change|reschedule|move|cancel|delete|remove|set|save|remember|log|approve|reject)\b/i;
 const SKILL_KEYWORD_PATTERN = /\b(skill|skills|workflow|procedure|playbook)\b/i;
 const PERSONAL_FINANCE_KEYWORD_PATTERN = /\b(expense|expenses|spent|spending|budget|log (?:a )?purchase)\b/i;
 const MEMORY_WRITE_KEYWORD_PATTERN = /\b(remember(?:\s+that|\s+this)?|save (?:this|that)|memorize)\b/i;
@@ -246,6 +249,17 @@ function shouldForceWebSearchForTurn(text, recentMessages = []) {
     PUBLIC_CONTACT_LOOKUP_PATTERN.test(recentText);
 }
 
+// If the fast schema router has already established that live read tools are
+// relevant, an explicit data question must make at least one call on round 0.
+// This keeps Luna as the low-latency chooser while removing its option to
+// answer with a fabricated "tool unavailable" denial.
+function shouldRequireLiveToolForTurn(text, readToolNames = []) {
+  const current = String(text || '').trim();
+  if (!current || !Array.isArray(readToolNames) || readToolNames.length === 0) return false;
+  if (EXPLANATION_ONLY_PATTERN.test(current) || ACTION_REQUEST_PATTERN.test(current)) return false;
+  return LIVE_DATA_REQUEST_PATTERN.test(current);
+}
+
 function selectToolsForTurn(tools, text, recentMessages = []) {
   const recentText = recentMessages
     .slice(-BUSINESS_INTEL_HISTORY_LOOKBACK)
@@ -351,6 +365,7 @@ module.exports = {
   shouldSkipHeavyMemory,
   formatFinancialMetricsPromptBlock,
   shouldForceWebSearchForTurn,
+  shouldRequireLiveToolForTurn,
   selectToolsForTurn,
   historyLimitForTurn,
   correctCommonSpeechTerms

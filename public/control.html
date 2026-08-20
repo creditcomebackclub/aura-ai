@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07090d">
+  <title>AURA Control Center</title>
+  <link rel="stylesheet" href="control.css?v=20260820-reliability1">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">AURA operations</p>
+        <h1>Control Center</h1>
+        <p id="generated-at" class="muted">Loading verified state…</p>
+      </div>
+      <button id="refresh" type="button">Refresh</button>
+    </header>
+
+    <div id="notice" role="status" aria-live="polite"></div>
+
+    <section aria-labelledby="reliability-title">
+      <h2 id="reliability-title">Reliability</h2>
+      <div id="reliability" class="grid"></div>
+    </section>
+
+    <section aria-labelledby="memory-title">
+      <h2 id="memory-title">Memory</h2>
+      <div class="split">
+        <div>
+          <h3>Pending preferences</h3>
+          <div id="preferences" class="stack"></div>
+        </div>
+        <div>
+          <h3>Failed extraction jobs</h3>
+          <div id="memory-jobs" class="stack"></div>
+        </div>
+      </div>
+      <details>
+        <summary>Stored profile facts</summary>
+        <div id="profile" class="stack profile-list"></div>
+      </details>
+    </section>
+
+    <section aria-labelledby="commitments-title">
+      <h2 id="commitments-title">Commitments awaiting review</h2>
+      <div id="commitments" class="stack"></div>
+    </section>
+
+    <section aria-labelledby="clients-title">
+      <h2 id="clients-title">Client watchlist</h2>
+      <p class="muted">Explainable signals only—no opaque risk score.</p>
+      <div id="clients" class="stack"></div>
+    </section>
+  </main>
+  <script src="control.js?v=20260820-reliability1"></script>
+</body>
+</html>

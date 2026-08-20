@@ -1,4 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
+const { buildClientWatchlist } = require('./client_watchlist');
 
 let supabase = null;
 
@@ -637,6 +638,19 @@ async function getClientSnapshot(name) {
   }
 }
 
+async function getClientWatchlist(options = {}) {
+  const db = initSupabase();
+  if (!db) throw new Error('Database connection not configured.');
+  const directory = await loadClientDirectory();
+  if (directory.error) throw new Error(directory.error);
+  const { data: letters, error } = await db.from('letters')
+    .select('client_id, client_name, phase, mailed_date, saved_at')
+    .order('saved_at', { ascending: false })
+    .limit(5000);
+  if (error) throw error;
+  return buildClientWatchlist(directory.data, letters || [], options);
+}
+
 async function calculateFinancialMetrics() {
   const db = initSupabase();
   if (!db) return "Error: Database connection not configured.";
@@ -969,6 +983,7 @@ module.exports = {
   calculateFinancialMetrics,
   getOverdueClients,
   getClientSnapshot,
+  getClientWatchlist,
   normalizeClientName,
   scoreClientName,
   rankClientMatches,

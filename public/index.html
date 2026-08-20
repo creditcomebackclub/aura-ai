@@ -33,7 +33,7 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 
-  <link rel="stylesheet" href="style.css?v=20260813-audio1">
+  <link rel="stylesheet" href="style.css?v=20260820-reliability1">
 </head>
 <body>
   <div id="aurora" aria-hidden="true">
@@ -67,13 +67,6 @@
       aria-pressed="true"
       title="After AURA finishes speaking, keep listening for your next reply"
     >Conversation on</button>
-    <button
-      type="button"
-      id="volume-toggle"
-      data-level="medium"
-      title="Playback volume: medium. Tap to cycle."
-      aria-label="Playback volume: medium. Tap to change."
-    >Volume med</button>
   </div>
   <section id="transcript-panel" aria-hidden="true" aria-label="Conversation transcript">
     <div id="transcript-label">Conversation</div>
@@ -86,8 +79,9 @@
   </section>
   
   <script src="/socket.io/socket.io.js"></script>
-  <script src="audio_vad.js?v=20260813-audio1"></script>
-  <script src="wake_word.js?v=20260813-audio1"></script>
-  <script src="app.js?v=20260813-audio1"></script>
+  <script src="audio_vad.js?v=20260820-reliability1"></script>
+  <script src="voice_turn_protocol.js?v=20260820-reliability1"></script>
+  <script src="wake_word.js?v=20260820-reliability1"></script>
+  <script src="app.js?v=20260820-reliability1"></script>
 </body>
 </html>

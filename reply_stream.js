@@ -77,6 +77,52 @@ function containsTextToolCallMarker(text) {
   return /"tool_call"\s*:\s*"[A-Za-z0-9_-]+"/.test(text);
 }
 
+// Any turn that can enter a tool/correction round must not speak provisional
+// prose. The caller buffers per-round deltas and publishes only the
+// authoritative final reply once the tool loop and receipt gates settle.
+function shouldBufferSpeechUntilFinal(toolNames = []) {
+  return Array.isArray(toolNames) && toolNames.some(name => typeof name === 'string' && name);
+}
+
+const SESSION_UNAVAILABLE_PATTERN = /\b(?:isn['’]?t|is\s+not|aren['’]?t|are\s+not|unavailable|not\s+available)\b[^.]{0,100}\b(?:session|chat|right\s+now|currently)\b/i;
+const CCC_READ_TOOLS = new Set([
+  'get_client_snapshot',
+  'get_client_current_phase',
+  'calculate_financial_metrics',
+  'get_outstanding_balances',
+  'query_database_table',
+  'count_database_rows'
+]);
+
+// A genuine provider/database failure must never be described as a missing
+// session capability. Preserve the failure, but name the actual condition so
+// the owner knows whether retrying would help.
+function normalizeUnavailableFailureReply(reply, evidence = []) {
+  const value = String(reply || '');
+  if (!SESSION_UNAVAILABLE_PATTERN.test(value)) return value;
+  const failures = (Array.isArray(evidence) ? evidence : []).filter(item => item?.ok === false);
+  const webFailure = [...failures].reverse().find(item => item?.tool === 'search_web');
+  if (webFailure) {
+    if (webFailure.error_code === 'WEB_SEARCH_DAILY_LIMIT') {
+      return "I couldn't run that web search because today's live-search limit has been reached.";
+    }
+    if (webFailure.error_code === 'WEB_SEARCH_PRIVATE_DATA_BOUNDARY') {
+      return "I can't combine public web search with private AURA data in one request. Ask for the public web lookup separately.";
+    }
+    return 'I attempted the live web search, but it failed this turn. Please try again.';
+  }
+  if (failures.some(item => CCC_READ_TOOLS.has(item?.tool))) {
+    return 'I attempted the CCC lookup, but it failed this turn. Please try again.';
+  }
+  if (failures.some(item => item?.tool === 'check_email')) {
+    return 'I attempted the live email lookup, but it failed this turn. Please try again.';
+  }
+  if (failures.some(item => item?.tool === 'check_calendar')) {
+    return 'I attempted the live calendar lookup, but it failed this turn. Please try again.';
+  }
+  return value;
+}
+
 // Stream sentences to the client immediately for fast first-audio, but hold
 // back (and stop emitting) as soon as the accumulating reply looks like a
 // false capability denial for tools that were actually offered this turn.
@@ -95,6 +141,7 @@ function createSentenceGate(onSentence, {
   let protocolLeak = null;
   const attemptedToolNames = new Set();
   const successfulToolNames = new Set();
+  const failedToolNames = new Set();
 
   const emit = typeof onSentence === 'function' ? onSentence : null;
 
@@ -128,7 +175,8 @@ function createSentenceGate(onSentence, {
             return;
           }
           const hit = findFalseCapabilityDenial(next, capabilityToolNames, {
-            attemptedToolNames: [...attemptedToolNames],
+            failedToolNames: [...failedToolNames],
+            successfulToolNames: [...successfulToolNames],
             genericToolNames: availableToolNames
           });
           if (hit) {
@@ -155,7 +203,13 @@ function createSentenceGate(onSentence, {
     markToolOutcome(name, ok) {
       if (typeof name !== 'string' || !name) return;
       attemptedToolNames.add(name);
-      if (ok === true) successfulToolNames.add(name);
+      if (ok === true) {
+        successfulToolNames.add(name);
+        failedToolNames.delete(name);
+      } else if (ok === false) {
+        failedToolNames.add(name);
+        successfulToolNames.delete(name);
+      }
     },
     wasSuppressed() {
       return suppressed;
@@ -189,5 +243,7 @@ function createSentenceGate(onSentence, {
 
 module.exports = {
   createSentenceGate,
-  extractTextToolCalls
+  extractTextToolCalls,
+  normalizeUnavailableFailureReply,
+  shouldBufferSpeechUntilFinal
 };

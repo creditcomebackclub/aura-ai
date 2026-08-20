@@ -267,7 +267,7 @@ test('first run baselines old data, then alerts once for new executive events', 
   assert.equal(repeated.sent, 0);
 });
 
-test('sent promises are baselined, then captured once as durable commitments', async () => {
+test('sent promises are baselined, then staged once for commitment review', async () => {
   const harness = createHarness();
   harness.setSentEmails([{
     id: 'old-sent',
@@ -293,7 +293,7 @@ test('sent promises are baselined, then captured once as durable commitments', a
   assert.equal(harness.commitments.length, 1);
   assert.equal(harness.commitments[0].title, 'Follow through: send the corrected packet');
   assert.equal(harness.commitments[0].source_thread_id, 'thread-1');
-  assert.equal(harness.alerts.at(-1).category, 'commitment_captured');
+  assert.equal(harness.alerts.at(-1).category, 'commitment_review');
 
   const repeated = await harness.run();
   assert.equal(repeated.sent, 0);

@@ -126,6 +126,23 @@ In local/no-Supabase mode (no `cloudState`) these two routes delete
 immediately instead of staging — there is no approval queue to stage into,
 and it's treated as lower-stakes single-user local dev.
 
+Owner-authenticated reliability routes are not model tools and never widen an
+agent allowlist:
+
+| Route | Behavior |
+|---|---|
+| `GET /api/memory/health` | Lists pending preference candidates and summarizes extraction jobs. |
+| `POST /api/memory/candidates/:id` | Approves or rejects exactly one durable preference candidate by id. |
+| `POST /api/memory/jobs/:messageId/replay` | CAS-requeues one job only when its current status is `failed`. |
+| `GET /api/reliability/status` | Aggregates memory, agent telemetry, commitment review, CCC watchlist, and integration failures. |
+| `GET /api/clients/watchlist` | Returns deterministic read-only client signals; accepts bounded `stalled_days`, `overdue_days`, and `limit` query values. |
+| `GET /api/commitments/review` | Lists sent-email promise candidates in `awaiting_approval`. |
+| `POST /api/commitments/review/:id` | Owner decision only: `approve` moves the candidate to `pending`; `reject` moves it to `cancelled`. |
+| `POST /api/audio/turn-events` | Accepts normalized voice lifecycle metadata; transcript/audio fields are discarded. |
+
+The same inspect/review operations are available to the owner at
+`/control.html`; the main PWA remains voice-first.
+
 `executeApprovedAction()` in `server.js` is the single dispatch point for
 every approved `aura_actions` row, keyed on `tool_name`. Any `tool_name` it
 doesn't recognize is returned unexecuted (`return action;`) rather than

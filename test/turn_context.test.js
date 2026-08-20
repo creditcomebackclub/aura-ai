@@ -11,6 +11,7 @@ const {
   isDirectFinancialMetricsAsk,
   reasoningEffortForTurn,
   shouldForceWebSearchForTurn,
+  shouldRequireLiveToolForTurn,
   selectToolsForTurn,
   historyLimitForTurn,
   LIGHTWEIGHT_HISTORY_LIMIT,
@@ -190,6 +191,30 @@ test('selectToolsForTurn keeps business tools when the turn mentions clients', (
   assert.equal(names.has('calculate_financial_metrics'), true);
   // No email wording → outbound tools still dropped.
   assert.equal(names.has('send_owner_email'), false);
+});
+
+test('explicit live-data questions require a first-round tool call', () => {
+  assert.equal(shouldRequireLiveToolForTurn(
+    'Tell me the latest information about client Mary.',
+    ['get_client_snapshot', 'get_client_current_phase']
+  ), true);
+  assert.equal(shouldRequireLiveToolForTurn(
+    'What is on my calendar today?',
+    ['check_calendar']
+  ), true);
+  assert.equal(shouldRequireLiveToolForTurn(
+    'Explain what a dispute phase means.',
+    ['get_client_current_phase']
+  ), false);
+  assert.equal(shouldRequireLiveToolForTurn(
+    'How should I write this email?',
+    ['check_email']
+  ), false);
+  assert.equal(shouldRequireLiveToolForTurn(
+    'Tell me to send that email now.',
+    ['check_email']
+  ), false);
+  assert.equal(shouldRequireLiveToolForTurn('Tell me a joke.', []), false);
 });
 
 test('selectToolsForTurn inherits business relevance from recent history', () => {

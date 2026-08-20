@@ -239,6 +239,30 @@ function recordVadDiagnostic(kind, phase, metrics = {}) {
   }).catch(() => {});
 }
 
+// Turn diagnostics are lifecycle metadata only. They intentionally exclude
+// text, PCM, device identity, and notification contents.
+function recordAudioTurnDiagnostic(kind, fields = {}) {
+  if (audioTurnDiagnosticCount >= 40) return;
+  audioTurnDiagnosticCount += 1;
+  const payload = {
+    kind,
+    turn_id: String(fields.turnId || '').slice(0, 100),
+    generation: Number(fields.generation) || 0,
+    sequence: Number(fields.sequence) || 0,
+    queue_depth: Math.max(0, Number(fields.queueDepth ?? voiceQueueDepth) || 0),
+    duration_ms: Math.max(0, Math.round(Number(fields.durationMs) || 0)),
+    reason: String(fields.reason || '').slice(0, 40),
+    occurred_at: new Date().toISOString()
+  };
+  console.info('[audio-turn]', payload);
+  authenticatedFetch('/api/audio/turn-events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    keepalive: true
+  }).catch(() => {});
+}
+
 function rememberVoiceFinal(reason) {
   lastVoiceFinalizedAt = Date.now();
   lastVoiceFinalReason = String(reason || 'unknown').slice(0, 40);
@@ -259,7 +283,6 @@ const socket = io({
 const orb = document.getElementById('orb');
 const statusText = document.getElementById('status-text');
 const conversationToggle = document.getElementById('conversation-toggle');
-const volumeToggle = document.getElementById('volume-toggle');
 const transcriptPanel = document.getElementById('transcript-panel');
 const transcriptContent = document.getElementById('transcript-content');
 const sourcePanel = document.getElementById('source-panel');
@@ -304,15 +327,6 @@ const audioPlayer = new Audio();
 // wake-word path — listening only arms for the next reply, which was the
 // reliable middle ground after always-on proved spotty.
 const CONVERSATION_MODE_KEY = 'aura_conversation_mode';
-// Phone volume alone often isn't enough — iOS routes <audio> through Web
-// Audio at unity gain, and Cartesia WAVs sit a bit quiet. A GainNode lets
-// playback go louder than the HTMLMediaElement 0..1 ceiling.
-const PLAYBACK_VOLUME_KEY = 'aura_playback_volume';
-const PLAYBACK_VOLUME_LEVELS = {
-  low: 1.15,
-  medium: 1.7,
-  high: 2.25
-};
 // Give natural pauses room before either local fallback path submits a turn.
 // Deepgram streaming uses the matching 700ms endpointing value server-side.
 const SILENCE_HANGOVER_MS = 700;
@@ -345,7 +359,6 @@ let discardNextRecording = false;
 let audioContext = null;
 let audioAnalyser = null;
 let audioSource = null;
-let playbackGainNode = null;
 let waveformSamples = null;
 let waveformFrame = null;
 // Advances every frame so the wave travels on its own. The analyser only
@@ -432,10 +445,13 @@ let activeChatTurnId = null;
 let currentStreamedReplyParts = [];
 let pendingInterruptedReply = '';
 let preserveBargeInOnNextCancel = false;
+const pendingProactiveAlerts = [];
 let lastVoiceFinalizedAt = 0;
 let lastVoiceFinalReason = '';
 let vadDiagnosticCount = 0;
 const vadDiagnosticLastAt = new Map();
+let audioTurnDiagnosticCount = 0;
+let voiceQueueDepth = 0;
 // Idle "hey Aura" wake listener (Web Speech). Created after startListening exists.
 let wakeListener = null;
 
@@ -444,6 +460,8 @@ let wakeListener = null;
 // overwritten by a stale reply that finishes later.
 function cancelActiveTurn() {
   const preserveBargeInMonitor = preserveBargeInOnNextCancel;
+  const cancelledQueueDepth = voiceQueueDepth;
+  const cancelledGeneration = voiceGeneration;
   preserveBargeInOnNextCancel = false;
   playbackCancelled = true;
   currentTurn += 1;
@@ -458,6 +476,12 @@ function cancelActiveTurn() {
   }
   currentStreamedReplyParts = [];
   activeChatTurnId = null;
+  recordAudioTurnDiagnostic('turn_cancelled', {
+    turnId: cancelledChatTurnId,
+    generation: cancelledGeneration,
+    queueDepth: cancelledQueueDepth,
+    reason: cancelledChatTurnId ? 'owner_interrupt' : 'local_reset'
+  });
   if (cancelledChatTurnId) {
     // Do not attach this to turnAbortController: the cancellation request has
     // to survive the local fetch abort long enough to stop server-side model
@@ -499,6 +523,19 @@ function stopSpeaking() {
 function createChatTurnId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `turn_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function acceptAuthoritativeStreamEvent(event, turnId, fence) {
+  const decision = fence.accept(event);
+  if (!decision.accepted) {
+    recordAudioTurnDiagnostic('stream_event_rejected', {
+      turnId,
+      generation: event?.generation,
+      sequence: event?.sequence,
+      reason: decision.reason
+    });
+  }
+  return decision.accepted;
 }
 
 // State Management
@@ -874,48 +911,6 @@ function animateVoiceWave() {
   waveformFrame = requestAnimationFrame(animateVoiceWave);
 }
 
-function playbackVolumeLevel() {
-  const stored = localStorage.getItem(PLAYBACK_VOLUME_KEY);
-  if (stored && Object.prototype.hasOwnProperty.call(PLAYBACK_VOLUME_LEVELS, stored)) {
-    return stored;
-  }
-  // Default a bit above unity — the usual complaint is "quiet on iPhone
-  // even at max ringer," not that she's too loud.
-  return 'medium';
-}
-
-function playbackGainValue() {
-  return PLAYBACK_VOLUME_LEVELS[playbackVolumeLevel()] || PLAYBACK_VOLUME_LEVELS.medium;
-}
-
-function syncVolumeToggle() {
-  if (!volumeToggle) return;
-  const level = playbackVolumeLevel();
-  volumeToggle.dataset.level = level;
-  volumeToggle.setAttribute('aria-label', `Playback volume: ${level}. Tap to change.`);
-  volumeToggle.title = `Playback volume: ${level}. Tap to cycle.`;
-  volumeToggle.textContent = level === 'low'
-    ? 'Volume low'
-    : level === 'high'
-      ? 'Volume high'
-      : 'Volume med';
-}
-
-function applyPlaybackGain() {
-  audioPlayer.volume = 1;
-  if (playbackGainNode) {
-    playbackGainNode.gain.value = playbackGainValue();
-  }
-}
-
-function cyclePlaybackVolume() {
-  const order = ['low', 'medium', 'high'];
-  const next = order[(order.indexOf(playbackVolumeLevel()) + 1) % order.length];
-  localStorage.setItem(PLAYBACK_VOLUME_KEY, next);
-  applyPlaybackGain();
-  syncVolumeToggle();
-}
-
 async function ensureAudioGraph() {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass) return false;
@@ -926,26 +921,16 @@ async function ensureAudioGraph() {
     audioAnalyser.smoothingTimeConstant = 0.82;
     waveformSamples = new Uint8Array(audioAnalyser.fftSize);
     audioSource = audioContext.createMediaElementSource(audioPlayer);
-    playbackGainNode = audioContext.createGain();
-    playbackGainNode.gain.value = playbackGainValue();
-    // Soft ceiling so High doesn't turn Cartesia peaks into harsh clipping
-    // on phone speakers.
-    const compressor = audioContext.createDynamicsCompressor();
-    compressor.threshold.value = -24;
-    compressor.knee.value = 18;
-    compressor.ratio.value = 3;
-    compressor.attack.value = 0.003;
-    compressor.release.value = 0.22;
-    audioSource.connect(playbackGainNode);
-    playbackGainNode.connect(audioAnalyser);
-    audioAnalyser.connect(compressor);
-    compressor.connect(audioContext.destination);
+    // Native device volume is the only playback level. Keeping both streamed
+    // PCM and fallback <audio> on this minimal graph avoids live gain changes
+    // and extra processing that can disrupt iOS audio scheduling.
+    audioSource.connect(audioAnalyser);
+    audioAnalyser.connect(audioContext.destination);
     audioPlayer.volume = 1;
   }
   if (audioContext.state === 'suspended') {
     await audioContext.resume();
   }
-  applyPlaybackGain();
   return true;
 }
 
@@ -1070,7 +1055,7 @@ function looksLikeReceipt(text) {
   return /\$\s?\d|\d+\s*%|\bMRR\b|\boutstanding\b|\bbalance\b|\brevenue\b|\b\d{1,3}(,\d{3})+(\.\d+)?\b|\b\d+\s+(clients?|letters?|accounts?|items?|goals?|people|furnishers?)\b|\b(clients?|letters?|accounts?|goals?)\b[^.]{0,40}\b\d+/i.test(t);
 }
 
-function showSearchEvidence(webResults = [], sources = [], replyText = '') {
+function showSearchEvidence(webResults = [], sources = [], replyText = '', evidence = []) {
   webAnswer.replaceChildren();
   sourceLinks.replaceChildren();
   const latestResult = webResults[webResults.length - 1];
@@ -1088,6 +1073,15 @@ function showSearchEvidence(webResults = [], sources = [], replyText = '') {
     const paragraph = document.createElement('p');
     paragraph.textContent = replyText.trim();
     webAnswer.appendChild(paragraph);
+  } else if (Array.isArray(evidence) && evidence.length) {
+    const paragraph = document.createElement('p');
+    const succeeded = evidence.filter(item => item?.ok === true).map(item => item.tool).filter(Boolean);
+    const failed = evidence.filter(item => item?.ok === false).map(item => item.tool).filter(Boolean);
+    paragraph.textContent = [
+      succeeded.length ? `Verified: ${succeeded.join(', ')}` : '',
+      failed.length ? `Failed: ${failed.join(', ')}` : ''
+    ].filter(Boolean).join(' · ');
+    if (paragraph.textContent) webAnswer.appendChild(paragraph);
   }
 
   for (const source of sources.slice(0, 6)) {
@@ -1322,6 +1316,7 @@ let pcmPlaybackSources = [];
 function resetVoiceQueue() {
   voiceGeneration += 1;
   voiceQueueTail = Promise.resolve();
+  voiceQueueDepth = 0;
 }
 
 function stopPcmPlayback() {
@@ -1384,7 +1379,7 @@ function playBlobAndWait(blob, { onPlayStart = null } = {}) {
 async function playPcmStreamAndWait(response, { onPlayStart = null, sampleRate = 24000 } = {}) {
   if (playbackCancelled) return;
   const ready = await ensureAudioGraph().catch(() => false);
-  if (!ready || !audioContext || !playbackGainNode || !response.body) {
+  if (!ready || !audioContext || !audioAnalyser || !response.body) {
     const blob = await response.blob();
     return playBlobAndWait(blob, { onPlayStart });
   }
@@ -1416,7 +1411,7 @@ async function playPcmStreamAndWait(response, { onPlayStart = null, sampleRate =
       }
       const source = audioContext.createBufferSource();
       source.buffer = buffer;
-      source.connect(playbackGainNode);
+      source.connect(audioAnalyser);
       const startAt = Math.max(audioContext.currentTime + 0.02, nextTime || audioContext.currentTime + 0.02);
       source.start(startAt);
       nextTime = startAt + buffer.duration;
@@ -1511,6 +1506,8 @@ function enqueueSpeechAudio(text, isFirst, timing = null, signal = null) {
   }
   const ttsStartedAt = timing ? performance.now() : 0;
   const generation = voiceGeneration;
+  const turnId = activeChatTurnId;
+  voiceQueueDepth += 1;
   const ttsPromise = authenticatedFetch('/api/tts?stream=1', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1537,6 +1534,11 @@ function enqueueSpeechAudio(text, isFirst, timing = null, signal = null) {
     const onPlayStart = isFirst
       ? () => {
           startBargeInMonitor();
+          recordAudioTurnDiagnostic('playback_started', {
+            turnId,
+            generation,
+            queueDepth: voiceQueueDepth
+          });
           if (!timing) return;
           timing.ttsMs = Math.round(performance.now() - ttsStartedAt);
           timing.ttfaMs = Math.round(performance.now() - timing.t0);
@@ -1564,21 +1566,34 @@ function enqueueSpeechAudio(text, isFirst, timing = null, signal = null) {
       if (error?.name === 'AbortError' || playbackCancelled) return;
       console.error('TTS playback error:', error);
     }
+  }).finally(() => {
+    if (generation === voiceGeneration) {
+      voiceQueueDepth = Math.max(0, voiceQueueDepth - 1);
+    }
   });
 }
 
 // Called once the whole reply is known to be fully queued (the stream's
 // 'done' event arrived) - the actual "return to idle" only happens once
 // every queued clip has finished playing, not the moment this is called.
-function finishVoiceQueue() {
+function finishVoiceQueue(turnId = '') {
   const generation = voiceGeneration;
   voiceQueueTail = voiceQueueTail.then(async () => {
     if (playbackCancelled || generation !== voiceGeneration) return;
     await stopBargeInMonitor();
     isSpeaking = false;
+    recordAudioTurnDiagnostic('playback_completed', {
+      turnId,
+      generation,
+      queueDepth: voiceQueueDepth
+    });
     stopVoiceWave();
     releaseAudioUrl();
     showSearchEvidence([], []);
+    if (pendingProactiveAlerts.length) {
+      queueMicrotask(maybeDeliverDeferredProactiveAlert);
+      return;
+    }
     // Hands-free follow-up: reopen the mic after she finishes speaking.
     // Silence auto-stop ends the utterance; tap still cancels anytime.
     if (isConversationMode() && !isProcessing && !isListening) {
@@ -1625,9 +1640,8 @@ socket.on('connect_error', async (err) => {
   }
 });
 
-socket.on('proactive-alert', async (data) => {
+async function deliverProactiveAlert(data) {
   console.log('Proactive alert received:', data.text);
-  if (isSpeaking || isListening) return;
   // A new alert is its own exchange, so a previous interrupt shouldn't mute it.
   playbackCancelled = false;
   setOrbState('thinking', 'AURA is notifying you...');
@@ -1644,6 +1658,40 @@ socket.on('proactive-alert', async (data) => {
     const blob = await ttsRes.blob();
     playAudioBlob(blob);
   } catch (err) { console.error(err); setOrbState('idle', idleStatusText()); }
+}
+
+function maybeDeliverDeferredProactiveAlert() {
+  if (isProcessing || isSpeaking || isListening || !pendingProactiveAlerts.length) return false;
+  const next = pendingProactiveAlerts.shift();
+  recordAudioTurnDiagnostic('alert_delivered', {
+    queueDepth: pendingProactiveAlerts.length,
+    reason: 'deferred_queue'
+  });
+  deliverProactiveAlert(next).catch(error => {
+    console.error('Deferred proactive alert failed:', error);
+  });
+  return true;
+}
+
+socket.on('proactive-alert', data => {
+  if (window.AuraVoiceTurnProtocol.shouldDeferProactiveAlert({ isProcessing, isSpeaking, isListening })) {
+    // Bound the queue and coalesce duplicate notification ids. Telegram still
+    // mirrors the durable alert, so dropping an ancient browser item loses no
+    // durable notification.
+    if (!pendingProactiveAlerts.some(item => item?.id && item.id === data?.id)) {
+      pendingProactiveAlerts.push(data);
+      if (pendingProactiveAlerts.length > 10) pendingProactiveAlerts.shift();
+    }
+    recordAudioTurnDiagnostic('alert_deferred', {
+      turnId: activeChatTurnId,
+      queueDepth: pendingProactiveAlerts.length,
+      reason: isSpeaking ? 'speaking' : isListening ? 'listening' : 'processing'
+    });
+    return;
+  }
+  deliverProactiveAlert(data).catch(error => {
+    console.error('Proactive alert failed:', error);
+  });
 });
 
 if (conversationToggle) {
@@ -1651,15 +1699,6 @@ if (conversationToggle) {
   conversationToggle.addEventListener('click', event => {
     event.stopPropagation();
     setConversationMode(!isConversationMode());
-  });
-}
-
-if (volumeToggle) {
-  syncVolumeToggle();
-  applyPlaybackGain();
-  volumeToggle.addEventListener('click', event => {
-    event.stopPropagation();
-    cyclePlaybackVolume();
   });
 }
 
@@ -2315,6 +2354,7 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
     let buffer = '';
     let speechChunkCount = 0;
     let finalResult = null;
+    const streamState = window.AuraVoiceTurnProtocol.createStreamFence(chatTurnId, 1);
 
     while (true) {
       if (stale()) {
@@ -2330,6 +2370,7 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
         buffer = buffer.slice(newlineIndex + 1);
         if (!line.trim()) continue;
         const event = JSON.parse(line);
+        if (!acceptAuthoritativeStreamEvent(event, chatTurnId, streamState)) continue;
         if (event.type === 'sentence') {
           if (stale()) continue;
           currentStreamedReplyParts.push(event.text);
@@ -2361,14 +2402,14 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
 
     if (stale()) return;
     if (!finalResult) throw new Error('Chat stream ended without a result.');
-    const { reply, sources = [], web_results: webResults = [] } = finalResult;
+    const { reply, sources = [], web_results: webResults = [], evidence = [] } = finalResult;
     console.log('AURA:', reply);
     if (speechChunkCount === 0 && reply) {
       timing.firstSentenceMs = Math.round(performance.now() - chatStartedAt);
       enqueueSpeechAudio(reply, true, timing, signal);
     }
-    showSearchEvidence(webResults, sources, reply);
-    finishVoiceQueue();
+    showSearchEvidence(webResults, sources, reply, evidence);
+    finishVoiceQueue(chatTurnId);
   } catch (err) {
     if (err?.name === 'AbortError' || stale()) return;
     console.error(err);
@@ -2390,6 +2431,7 @@ async function processTranscript(transcript, { sttMs = 0, streamed = false } = {
     if (myTurn === currentTurn) {
       isProcessing = false;
       turnAbortController = null;
+      queueMicrotask(maybeDeliverDeferredProactiveAlert);
     }
   }
 }
@@ -2475,6 +2517,7 @@ async function processAudio(audioBlob) {
     let buffer = '';
     let speechChunkCount = 0;
     let finalResult = null;
+    const streamState = window.AuraVoiceTurnProtocol.createStreamFence(chatTurnId, 1);
 
     while (true) {
       if (stale()) {
@@ -2494,6 +2537,7 @@ async function processAudio(audioBlob) {
         buffer = buffer.slice(newlineIndex + 1);
         if (!line.trim()) continue;
         const event = JSON.parse(line);
+        if (!acceptAuthoritativeStreamEvent(event, chatTurnId, streamState)) continue;
         if (event.type === 'sentence') {
           if (stale()) continue;
           currentStreamedReplyParts.push(event.text);
@@ -2527,7 +2571,7 @@ async function processAudio(audioBlob) {
 
     if (stale()) return;
     if (!finalResult) throw new Error('Chat stream ended without a result.');
-    const { reply, sources = [], web_results: webResults = [] } = finalResult;
+    const { reply, sources = [], web_results: webResults = [], evidence = [] } = finalResult;
     console.log('AURA:', reply);
 
     // Fallback for the rare case nothing streamed as sentences (e.g. an
@@ -2542,8 +2586,8 @@ async function processAudio(audioBlob) {
     // when the last sentence starts playing rather than the first - sources
     // and evidence are only fully resolved once the whole tool loop
     // finishes, so this is the earliest point they can be shown accurately.
-    showSearchEvidence(webResults, sources, reply);
-    finishVoiceQueue();
+    showSearchEvidence(webResults, sources, reply, evidence);
+    finishVoiceQueue(chatTurnId);
   } catch (err) {
     if (err?.name === 'AbortError' || stale()) return;
     console.error(err);
@@ -2570,6 +2614,7 @@ async function processAudio(audioBlob) {
     if (myTurn === currentTurn) {
       isProcessing = false;
       turnAbortController = null;
+      queueMicrotask(maybeDeliverDeferredProactiveAlert);
     }
   }
 }

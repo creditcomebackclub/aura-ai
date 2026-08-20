@@ -61,11 +61,17 @@ const {
   reasoningEffortForTurn,
   formatFinancialMetricsPromptBlock,
   shouldForceWebSearchForTurn,
+  shouldRequireLiveToolForTurn,
   BUSINESS_INTEL_TOOL_NAMES
 } = require('./turn_context');
-const { createSentenceGate, extractTextToolCalls } = require('./reply_stream');
+const {
+  createSentenceGate,
+  extractTextToolCalls,
+  normalizeUnavailableFailureReply,
+  shouldBufferSpeechUntilFinal
+} = require('./reply_stream');
 const { CompanionClient } = require('./companion_client');
-const { SupabaseStateStore } = require('./supabase_state_store');
+const { SupabaseStateStore, summarizeMemoryExtractionJobs } = require('./supabase_state_store');
 const { DurableMemoryExtractionQueue } = require('./memory_extraction_queue');
 const { SkillsStore } = require('./skills_store');
 const { DurableSkillsStore } = require('./durable_skills_store');
@@ -83,6 +89,7 @@ const {
 } = require('./goal_plans');
 const { normalizeAgentTelemetryMessage, summarizeAgentTelemetry } = require('./agent_telemetry');
 const { normalizeVadDiagnostic } = require('./audio_vad_telemetry');
+const { normalizeAudioTurnDiagnostic } = require('./audio_turn_telemetry');
 const { resolveSignalMatches } = require('./goal_signal_matcher');
 const { linkSignal } = require('./entity_graph');
 const { buildSchedulingReply } = require('./reply_draft');
@@ -138,6 +145,7 @@ const {
 } = require('./linkedin_relationship');
 const { resolveExecutivePreferences } = require('./proactive_preferences');
 const { findBusinessSummaryPreference, formatBusinessSummary } = require('./business_summary');
+const { buildReliabilityStatus, formatReliabilityDigest } = require('./reliability_status');
 const {
   DEFAULT_AGENTS,
   assertAgentCanUseTool,
@@ -466,6 +474,13 @@ async function recentConversationMessages(limit = 15) {
   `).all(limit);
 }
 
+async function recentConversationMessagesWithMetadata(limit = 15) {
+  if (cloudState?.recentMessagesWithMetadata) {
+    return cloudState.recentMessagesWithMetadata(limit);
+  }
+  return recentConversationMessages(limit);
+}
+
 async function markConversationMessageCancelled(messageId, turnId) {
   if (!messageId) return null;
   if (cloudState) {
@@ -645,6 +660,24 @@ const localProfileStore = {
         version: 1,
         entries: { ...(profile.entries || {}) },
         memory_candidates: Array.isArray(candidates) ? candidates.slice(0, 5) : [],
+        updated_at: new Date().toISOString()
+      };
+      await setAlertState('owner_profile_v1', next);
+      return next;
+    });
+    return localProfileWrite;
+  },
+  async mutateOwnerMemoryCandidates(mutator) {
+    localProfileWrite = localProfileWrite.catch(() => {}).then(async () => {
+      const profile = await this.getOwnerProfile();
+      const current = Array.isArray(profile.memory_candidates)
+        ? structuredClone(profile.memory_candidates)
+        : [];
+      const next = {
+        ...profile,
+        version: 1,
+        entries: { ...(profile.entries || {}) },
+        memory_candidates: (mutator(current) || []).slice(0, 5),
         updated_at: new Date().toISOString()
       };
       await setAlertState('owner_profile_v1', next);
@@ -1637,6 +1670,7 @@ const runExecutiveLoop = createExecutiveLoop({
       assignedAgent: 'aura_core',
       dueAt: commitment.due_at,
       priority: 'normal',
+      status: 'awaiting_approval',
       input: {
         source: 'sent_email',
         source_message_id: commitment.source_message_id,
@@ -2567,9 +2601,26 @@ function capabilityCorrectionToolsForAgent(agent, offeredTools = []) {
   return [...byName.values()];
 }
 
+function capabilityDetectionToolsForAgent(agent, offeredTools = []) {
+  const byName = new Map(
+    capabilityCorrectionToolsForAgent(agent, offeredTools)
+      .map(tool => [tool?.function?.name, tool])
+      .filter(([name]) => Boolean(name))
+  );
+  // search_web participates in denial detection, but correction never invokes
+  // it because quota and private-input screening live in the main tool loop.
+  for (const tool of filterToolsForAgent(offeredTools, agent)) {
+    if (tool?.function?.name === 'search_web') byName.set('search_web', tool);
+  }
+  return [...byName.values()];
+}
+
 function buildToolEvidence(toolCall, parsedToolResult, { durationMs, round } = {}) {
   const tool = toolCall?.function?.name || 'unknown';
   const evidence = { tool, ok: parsedToolResult?.ok === true };
+  if (typeof parsedToolResult?.code === 'string' && parsedToolResult.code) {
+    evidence.error_code = parsedToolResult.code.slice(0, 80);
+  }
   if (Number.isFinite(durationMs) && durationMs >= 0) {
     evidence.duration_ms = Math.round(durationMs);
   }
@@ -2624,11 +2675,17 @@ async function correctFalseCapabilityDenial({
   const capabilityToolNames = (capabilityTools || [])
     .map(tool => tool?.function?.name)
     .filter(Boolean);
-  const attemptedToolNames = (Array.isArray(evidence) ? evidence : [])
+  const successfulToolNames = (Array.isArray(evidence) ? evidence : [])
+    .filter(item => item?.ok === true)
+    .map(item => item?.tool)
+    .filter(Boolean);
+  const failedToolNames = (Array.isArray(evidence) ? evidence : [])
+    .filter(item => item?.ok === false)
     .map(item => item?.tool)
     .filter(Boolean);
   const denial = findFalseCapabilityDenial(reply, capabilityToolNames, {
-    attemptedToolNames,
+    failedToolNames,
+    successfulToolNames,
     genericToolNames: (turnTools || []).map(tool => tool?.function?.name).filter(Boolean)
   }) ||
     sentenceGate?.getDenial?.() ||
@@ -2657,10 +2714,16 @@ async function correctFalseCapabilityDenial({
   // appear only if the normal router already offered them, and search_web is
   // excluded because its quota/privacy lifecycle belongs to the main loop.
   const relevant = new Set(denial.tools);
+  const successful = new Set(successfulToolNames);
+  const failed = new Set(failedToolNames.filter(name => !successful.has(name)));
+  const successfulRelevant = [...relevant].filter(name => successful.has(name));
   const correctionTools = (capabilityTools || []).filter(tool =>
-    relevant.has(tool?.function?.name)
+    relevant.has(tool?.function?.name) &&
+    tool?.function?.name !== 'search_web' &&
+    !successful.has(tool?.function?.name) &&
+    !failed.has(tool?.function?.name)
   );
-  if (!correctionTools.length) {
+  if (!correctionTools.length && !successfulRelevant.length) {
     sentenceGate?.release();
     return reply;
   }
@@ -2674,24 +2737,33 @@ async function correctFalseCapabilityDenial({
     content: [
       'INTERNAL CORRECTION: Your previous reply falsely claimed you lack a capability that is available this turn.',
       `Relevant tools offered right now: ${denial.tools.join(', ')}.`,
-      'Call every relevant tool needed for the owner request. If an action lacks authorization or required details, state that exact requirement without denying the capability.',
+      successfulRelevant.length
+        ? `Successful current-turn receipts already exist for: ${successfulRelevant.join(', ')}. Use those results from the conversation; do not call them again.`
+        : '',
+      correctionTools.length
+        ? 'Call every still-needed relevant tool. If an action lacks authorization or required details, state that exact requirement without denying the capability.'
+        : 'Answer directly from the successful current-turn tool results already in the conversation.',
       'Never claim these tools are unavailable.'
-    ].join(' ')
+    ].filter(Boolean).join(' ')
   });
 
   let response = await createBrainCompletionStreamed({
     messages: chatHistory,
-    tools: correctionTools,
-    tool_choice: correctionTools.every(tool =>
-      getToolPolicy(tool?.function?.name) === 'read'
-    ) ? 'required' : 'auto',
+    ...(correctionTools.length ? {
+      tools: correctionTools,
+      tool_choice: correctionTools.every(tool =>
+        getToolPolicy(tool?.function?.name) === 'read'
+      ) ? 'required' : 'auto'
+    } : {}),
     onSentence: streamSentence,
     _signal: signal,
     ...(turnReasoningEffort ? { _reasoningEffort: turnReasoningEffort } : {}),
     _traceLabel: 'capability correction'
   });
   appendModelRoundTiming(modelRounds, response, { phase: 'capability_correction', round: 0 });
-  response = recoverTextToolCalls(response, correctionTools, sentenceGate);
+  if (correctionTools.length) {
+    response = recoverTextToolCalls(response, correctionTools, sentenceGate);
+  }
 
   // Let the correction finish a bounded multi-step lookup instead of merely
   // apologizing or stopping after the first of several required reads.
@@ -2720,7 +2792,8 @@ async function correctFalseCapabilityDenial({
         functionResult = JSON.stringify({
           tool: toolCall?.function?.name || 'unknown',
           ok: false,
-          error: toolError.message
+          error: toolError.message,
+          code: toolError.code || 'TOOL_ERROR'
         });
       }
       let parsedToolResult;
@@ -3888,8 +3961,10 @@ async function processOwnerText(text, {
         }) + buildAgentPrompt(activeAgent)
       }, { role: 'user', content: text }];
       const turnTools = filterToolsForAgent(selectToolsForTurn(text), activeAgent);
-      const capabilityTools = capabilityCorrectionToolsForAgent(activeAgent, turnTools);
+      const capabilityTools = capabilityDetectionToolsForAgent(activeAgent, turnTools);
       const availableToolNames = turnTools.map(tool => tool.function.name);
+      const readToolNames = availableToolNames.filter(name => getToolPolicy(name) === 'read');
+      const bufferSpeechUntilFinal = shouldBufferSpeechUntilFinal(availableToolNames);
       const turnReasoningEffort = reasoningEffortForTurn(text, {
         baseEffort: reasoningEffort,
         toolNames: availableToolNames
@@ -3898,27 +3973,31 @@ async function processOwnerText(text, {
         turnReasoningEffort,
         availableToolNames
       );
-      const sentenceGate = createSentenceGate(onSentence, {
+      const sentenceGate = createSentenceGate(bufferSpeechUntilFinal ? () => {} : onSentence, {
         availableToolNames,
         capabilityToolNames: capabilityTools.map(tool => tool.function.name)
       });
       const streamSentence = sentenceGate.onSentence;
       const forceWebSearch = turnTools.some(tool => tool?.function?.name === 'search_web') &&
         shouldForceWebSearchForTurn(text);
+      const requireLiveTool = shouldRequireLiveToolForTurn(text, readToolNames);
+      const roundZeroTools = requireLiveTool
+        ? turnTools.filter(tool => getToolPolicy(tool?.function?.name) === 'read')
+        : turnTools;
       onPhase('model-round-0');
       let response = await createBrainCompletionStreamed({
         messages: chatHistory,
-        tools: turnTools,
+        tools: roundZeroTools,
         tool_choice: forceWebSearch
           ? { type: 'function', function: { name: 'search_web' } }
-          : 'auto',
+          : requireLiveTool ? 'required' : 'auto',
         onSentence: streamSentence,
         _signal: signal,
         _reasoningEffort: turnReasoningEffort,
         ...(!usePrimaryModel && modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
         _traceLabel: 'isolated round 0'
       });
-      response = recoverTextToolCalls(response, turnTools, sentenceGate);
+      response = recoverTextToolCalls(response, roundZeroTools, sentenceGate);
       const evidence = [];
       const webSources = [];
       const webResults = [];
@@ -3961,7 +4040,8 @@ async function processOwnerText(text, {
             functionResult = JSON.stringify({
               tool: toolCall?.function?.name || 'unknown',
               ok: false,
-              error: toolError.message
+              error: toolError.message,
+              code: toolError.code || 'TOOL_ERROR'
             });
           }
           let parsedToolResult;
@@ -4060,6 +4140,7 @@ async function processOwnerText(text, {
         agent: activeAgent,
         reasoningEffort: turnReasoningEffort
       });
+      reply = normalizeUnavailableFailureReply(reply, evidence);
       const isolatedProtocolLeak = sentenceGate.getProtocolLeak?.() ||
         extractTextToolCalls(reply, { allowedToolNames: availableToolNames })[0];
       if (isolatedProtocolLeak) {
@@ -4067,6 +4148,7 @@ async function processOwnerText(text, {
         sentenceGate.resetAfterToolRecovery?.();
         streamSentence?.(reply);
       }
+      if (bufferSpeechUntilFinal) onSentence?.(reply);
       throwIfAborted(signal);
       return {
         reply,
@@ -4193,10 +4275,12 @@ async function processOwnerText(text, {
       // saved reply asked this exact question. This prevents a stale memory
       // candidate from stealing approval intended for email, calendar, or a
       // staged destructive action.
-      const recent = await recentConversationMessages(3);
+      const recent = await recentConversationMessagesWithMetadata(3);
       const previousAssistant = [...recent].reverse()
         .find(message => message.role === 'assistant');
-      if (String(previousAssistant?.content || '').includes(pendingMemoryConfirmation.question)) {
+      const matchesCandidate = previousAssistant?.metadata?.memory_confirmation_candidate_id ===
+        pendingMemoryConfirmation.id;
+      if (matchesCandidate || String(previousAssistant?.content || '').includes(pendingMemoryConfirmation.question)) {
         throwIfAborted(signal);
         await userMessagePromise;
         const approved = memoryConfirmationDecision === 'approved';
@@ -4357,8 +4441,11 @@ async function processOwnerText(text, {
       turnTools = turnTools.filter(tool => !BUSINESS_INTEL_TOOL_NAMES.has(tool.function.name));
     }
     turnTools = filterToolsForAgent(turnTools, activeAgent);
-    const capabilityTools = capabilityCorrectionToolsForAgent(activeAgent, turnTools);
+    const capabilityTools = capabilityDetectionToolsForAgent(activeAgent, turnTools);
     const availableToolNames = turnTools.map(tool => tool.function.name);
+    const readToolNames = availableToolNames.filter(name => getToolPolicy(name) === 'read');
+    const bufferSpeechUntilFinal = shouldBufferSpeechUntilFinal(availableToolNames) ||
+      Boolean(pendingMemoryConfirmation);
     const turnReasoningEffort = reasoningEffortForTurn(text, {
       baseEffort: reasoningEffort,
       toolNames: availableToolNames
@@ -4367,7 +4454,7 @@ async function processOwnerText(text, {
       turnReasoningEffort,
       availableToolNames
     );
-    const sentenceGate = createSentenceGate(onSentence, {
+    const sentenceGate = createSentenceGate(bufferSpeechUntilFinal ? () => {} : onSentence, {
       availableToolNames,
       capabilityToolNames: capabilityTools.map(tool => tool.function.name)
     });
@@ -4375,17 +4462,21 @@ async function processOwnerText(text, {
     if (metricsPrefetched) sentenceGate.markToolAttempted?.('calculate_financial_metrics');
     const forceWebSearch = turnTools.some(tool => tool?.function?.name === 'search_web') &&
       shouldForceWebSearchForTurn(text, messages);
+    const requireLiveTool = shouldRequireLiveToolForTurn(text, readToolNames);
+    const roundZeroTools = requireLiveTool
+      ? turnTools.filter(tool => getToolPolicy(tool?.function?.name) === 'read')
+      : turnTools;
 
     const preModelMs = Date.now() - requestStartedAtMs;
     onPhase('model-round-0');
     const modelRounds = [];
     let response = await createBrainCompletionStreamed({
       messages: chatHistory,
-      ...(turnTools.length ? {
-        tools: turnTools,
+      ...(roundZeroTools.length ? {
+        tools: roundZeroTools,
         tool_choice: forceWebSearch
           ? { type: 'function', function: { name: 'search_web' } }
-          : 'auto'
+          : requireLiveTool ? 'required' : 'auto'
       } : {}),
       onSentence: streamSentence,
       _signal: signal,
@@ -4394,7 +4485,7 @@ async function processOwnerText(text, {
       _traceLabel: 'round 0'
     });
     appendModelRoundTiming(modelRounds, response, { phase: 'initial', round: 0 });
-    response = recoverTextToolCalls(response, turnTools, sentenceGate);
+    response = recoverTextToolCalls(response, roundZeroTools, sentenceGate);
     // Prefer the first content delta across rounds (tool-only round 0 has none).
     let firstDeltaMs = response._timing?.first_delta_ms ?? null;
 
@@ -4521,7 +4612,8 @@ async function processOwnerText(text, {
           functionResult = JSON.stringify({
             tool: toolCall?.function?.name || 'unknown',
             ok: false,
-            error: toolError.message
+            error: toolError.message,
+            code: toolError.code || 'TOOL_ERROR'
           });
         }
         let parsedToolResult;
@@ -4670,6 +4762,10 @@ async function processOwnerText(text, {
       reasoningEffort: turnReasoningEffort,
       modelRounds
     });
+    reply = normalizeUnavailableFailureReply(reply, evidence);
+    if (pendingMemoryConfirmation && !reply.includes(pendingMemoryConfirmation.question)) {
+      reply = `${reply.trim()}\n\n${pendingMemoryConfirmation.question}`;
+    }
     throwIfAborted(signal);
     const leakedFinalCalls = extractTextToolCalls(reply, { allowedToolNames: availableToolNames });
     if (leakedFinalCalls.length || sentenceGate.getProtocolLeak?.()) {
@@ -4678,6 +4774,7 @@ async function processOwnerText(text, {
       sentenceGate.resetAfterToolRecovery?.();
       streamSentence?.(reply);
     }
+    if (bufferSpeechUntilFinal) onSentence?.(reply);
     const responseReadyMs = Date.now() - requestStartedAtMs;
     onPhase('persist-assistant');
     const memoryJob = memoryExtractionQueue
@@ -4704,7 +4801,10 @@ async function processOwnerText(text, {
       },
       memory_extraction: memoryJob
         ? { status: memoryJob.status, job_id: memoryJob.id }
-        : { status: 'scheduled_local' }
+        : { status: 'scheduled_local' },
+      ...(pendingMemoryConfirmation && reply.includes(pendingMemoryConfirmation.question)
+        ? { memory_confirmation_candidate_id: pendingMemoryConfirmation.id }
+        : {})
     });
     if (skillOutcomeStore) {
       skillOutcomeStore.recordTurn({
@@ -4807,6 +4907,14 @@ app.post('/api/audio/vad-events', (req, res) => {
   return res.status(204).end();
 });
 
+app.post('/api/audio/turn-events', (req, res) => {
+  const diagnostic = normalizeAudioTurnDiagnostic(req.body);
+  if (!diagnostic) return res.status(400).json({ error: 'Invalid audio turn diagnostic.' });
+  // Lifecycle metadata only. The normalizer discards transcript and audio fields.
+  console.info('[audio-turn]', JSON.stringify(diagnostic));
+  return res.status(204).end();
+});
+
 app.post('/api/chat', async (req, res) => {
   let streamStarted = false;
   const suppliedTurnId = typeof req.body?.turn_id === 'string' ? req.body.turn_id.trim() : '';
@@ -4852,6 +4960,8 @@ app.post('/api/chat', async (req, res) => {
     });
   }, slowTurnMs);
   let firstSentenceLogged = false;
+  let streamSequence = 0;
+  const streamGeneration = 1;
   const startStream = () => {
     if (streamStarted) return;
     streamStarted = true;
@@ -4884,11 +4994,25 @@ app.post('/api/chat', async (req, res) => {
           firstSentenceLogged = true;
           console.log(`[timing] first sentence: ${Date.now() - routeStartedAtMs}ms`);
         }
-        res.write(JSON.stringify({ type: 'sentence', text: sentence }) + '\n');
+        streamSequence += 1;
+        res.write(JSON.stringify({
+          type: 'sentence',
+          text: sentence,
+          turn_id: turnId,
+          generation: streamGeneration,
+          sequence: streamSequence
+        }) + '\n');
       }
     });
     startStream();
-    res.write(JSON.stringify({ type: 'done', ...result }) + '\n');
+    streamSequence += 1;
+    res.write(JSON.stringify({
+      type: 'done',
+      ...result,
+      turn_id: turnId,
+      generation: streamGeneration,
+      sequence: streamSequence
+    }) + '\n');
     res.end();
   } catch (error) {
     if (turnController.signal.aborted || error?.name === 'AbortError') {
@@ -5091,6 +5215,123 @@ app.get('/api/memory/retrievals', async (req, res) => {
     traces: await retrievalTraceStore.list(limit),
     summary: await retrievalTraceStore.summary()
   });
+});
+
+app.get('/api/memory/health', async (req, res) => {
+  const profile = await (cloudState || localProfileStore).getOwnerProfile();
+  if (!cloudState) {
+    return res.json({
+      durable_queue: false,
+      pending_preferences: profile.memory_candidates || [],
+      jobs: { total: 0, queued: 0, processing: 0, retry_wait: 0, succeeded: 0, failed: 0, latest_failure: null }
+    });
+  }
+  const jobs = await cloudState.listMemoryExtractionJobs(Number(req.query.limit) || 500);
+  res.json({
+    durable_queue: true,
+    pending_preferences: profile.memory_candidates || [],
+    jobs: summarizeMemoryExtractionJobs(jobs),
+    recent_failed_jobs: jobs.filter(job => job.status === 'failed').slice(0, 20).map(job => ({
+      job_id: job.id,
+      message_id: job.message_id,
+      attempts: job.attempts,
+      completed_at: job.completed_at,
+      error: job.last_error
+    }))
+  });
+});
+
+app.post('/api/memory/candidates/:id', async (req, res) => {
+  const candidateId = String(req.params.id || '');
+  const decision = String(req.body?.decision || '').toLowerCase();
+  if (!/^[A-Za-z0-9_-]{8,120}$/.test(candidateId)) {
+    return res.status(400).json({ error: 'Invalid memory candidate id.' });
+  }
+  if (!['approve', 'reject'].includes(decision)) {
+    return res.status(400).json({ error: 'Decision must be approve or reject.' });
+  }
+  const result = await memoryV2.resolvePendingConfirmation(candidateId, decision === 'approve');
+  if (!result.resolved) return res.status(404).json({ error: 'Memory candidate not found.' });
+  res.json({ decision, result });
+});
+
+async function loadReliabilityStatus() {
+  const profilePromise = (cloudState || localProfileStore).getOwnerProfile();
+  const jobsPromise = cloudState ? cloudState.listMemoryExtractionJobs(500) : Promise.resolve([]);
+  const telemetryPromise = cloudState ? cloudState.listAgentTelemetryMessages(500) : Promise.resolve([]);
+  const tasksPromise = cloudState ? cloudState.listTasks() : Promise.resolve([]);
+  const watchlistPromise = ccc.getClientWatchlist({ limit: 100 })
+    .then(value => ({ value, error: null }))
+    .catch(error => ({ value: [], error: error.message || String(error) }));
+  const [profile, jobs, telemetry, tasks, watchlist] = await Promise.all([
+    profilePromise, jobsPromise, telemetryPromise, tasksPromise, watchlistPromise
+  ]);
+  const commitments = tasks.filter(task =>
+    task.status === 'awaiting_approval' && task.input?.source === 'sent_email'
+  );
+  return buildReliabilityStatus({
+    memory: summarizeMemoryExtractionJobs(jobs),
+    agent: summarizeAgentTelemetry(telemetry),
+    pendingPreferences: profile.memory_candidates || [],
+    commitmentCandidates: commitments,
+    clientWatchlist: watchlist.value,
+    integrationErrors: watchlist.error ? [{ integration: 'ccc', error: watchlist.error }] : []
+  });
+}
+
+app.get('/api/reliability/status', async (_req, res) => {
+  res.json(await loadReliabilityStatus());
+});
+
+app.get('/api/clients/watchlist', async (req, res) => {
+  const rows = await ccc.getClientWatchlist({
+    stalledDays: Number(req.query.stalled_days) || 45,
+    overdueDays: Number(req.query.overdue_days) || 3,
+    limit: Number(req.query.limit) || 100
+  });
+  res.json({ generated_at: new Date().toISOString(), clients: rows });
+});
+
+app.get('/api/commitments/review', async (_req, res) => {
+  if (!cloudState) return res.status(503).json({ error: 'Durable commitment review is not enabled.' });
+  const tasks = await cloudState.listTasks();
+  res.json({ candidates: tasks.filter(task =>
+    task.status === 'awaiting_approval' && task.input?.source === 'sent_email'
+  ) });
+});
+
+app.post('/api/commitments/review/:id', async (req, res) => {
+  if (!cloudState) return res.status(503).json({ error: 'Durable commitment review is not enabled.' });
+  const decision = String(req.body?.decision || '').toLowerCase();
+  if (!['approve', 'reject'].includes(decision)) {
+    return res.status(400).json({ error: 'Decision must be approve or reject.' });
+  }
+  const task = await cloudState.getTask(req.params.id);
+  if (!task || task.input?.source !== 'sent_email') return res.status(404).json({ error: 'Commitment candidate not found.' });
+  if (task.status !== 'awaiting_approval') return res.status(409).json({ error: 'Commitment candidate is already resolved.' });
+  const updated = await cloudState.updateTask(task.id, {
+    status: decision === 'approve' ? 'pending' : 'cancelled',
+    expectedStatus: 'awaiting_approval',
+    input: {
+      ...(task.input || {}),
+      review: { decision, decided_at: new Date().toISOString(), source: 'owner_api' }
+    }
+  });
+  if (!updated) return res.status(409).json({ error: 'Commitment candidate was resolved concurrently.' });
+  res.json({ decision, task: updated });
+});
+
+app.post('/api/memory/jobs/:messageId/replay', async (req, res) => {
+  if (!cloudState || !memoryExtractionQueue) {
+    return res.status(503).json({ error: 'Durable memory replay is not enabled.' });
+  }
+  if (!/^\d+$/.test(String(req.params.messageId || ''))) {
+    return res.status(400).json({ error: 'Invalid memory extraction message id.' });
+  }
+  const result = await cloudState.requeueFailedMemoryExtraction(req.params.messageId);
+  if (!result.requeued) return res.status(result.reason === 'not_found' ? 404 : 409).json(result);
+  memoryExtractionQueue.kick();
+  res.json(result);
 });
 
 app.get('/api/learning/outcomes', async (req, res) => {
@@ -5891,6 +6132,20 @@ if (schedulerEnabled) cron.schedule('0 8,16 * * *', async () => {
     }
   } catch (error) {
     console.error('Error in scheduled business check:', error);
+  }
+}, schedulerOptions);
+
+// One quiet operational summary, only when something needs attention.
+if (schedulerEnabled) cron.schedule('15 8 * * *', async () => {
+  try {
+    const status = await loadReliabilityStatus();
+    const text = formatReliabilityDigest(status);
+    if (!text) return;
+    await sendProactiveAlert(text, 'reliability', status.status === 'needs_attention' ? 'high' : 'normal', {
+      dedupeKey: `reliability:${phoenixDateKey(process.env.AURA_TIMEZONE || 'America/Phoenix', new Date())}`
+    });
+  } catch (error) {
+    console.error('[Reliability digest] Failed:', error.message || error);
   }
 }, schedulerOptions);
 

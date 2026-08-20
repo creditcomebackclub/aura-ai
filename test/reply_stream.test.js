@@ -1,6 +1,27 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createSentenceGate, extractTextToolCalls } = require('../reply_stream');
+const {
+  createSentenceGate,
+  extractTextToolCalls,
+  normalizeUnavailableFailureReply,
+  shouldBufferSpeechUntilFinal
+} = require('../reply_stream');
+
+test('tool-capable turns buffer speech until the authoritative final answer', () => {
+  assert.equal(shouldBufferSpeechUntilFinal([]), false);
+  assert.equal(shouldBufferSpeechUntilFinal(['check_calendar']), true);
+});
+
+test('real web quota and CCC failures are described precisely, not as missing session tools', () => {
+  assert.equal(normalizeUnavailableFailureReply(
+    "The web-search tool isn't available in this session.",
+    [{ tool: 'search_web', ok: false, error_code: 'WEB_SEARCH_DAILY_LIMIT' }]
+  ), "I couldn't run that web search because today's live-search limit has been reached.");
+  assert.equal(normalizeUnavailableFailureReply(
+    "The CCC records aren't available in this session.",
+    [{ tool: 'get_client_snapshot', ok: false, error_code: 'DATABASE_TIMEOUT' }]
+  ), 'I attempted the CCC lookup, but it failed this turn. Please try again.');
+});
 
 test('sentence gate streams clean replies immediately', () => {
   const spoken = [];
@@ -59,13 +80,13 @@ test('sentence gate suppresses denials for safe capabilities omitted by the fast
   assert.deepEqual(gate.getDenial().tools, ['check_email']);
 });
 
-test('sentence gate permits an honest limitation after that tool was attempted', () => {
+test('sentence gate permits an honest limitation after that tool failed', () => {
   const spoken = [];
   const gate = createSentenceGate(s => spoken.push(s), {
     availableToolNames: ['check_calendar'],
     capabilityToolNames: ['check_calendar']
   });
-  gate.markToolAttempted('check_calendar');
+  gate.markToolOutcome('check_calendar', false);
 
   gate.onSentence("I don’t have your live calendar loaded in this chat.");
   assert.deepEqual(spoken, ["I don’t have your live calendar loaded in this chat."]);

@@ -48,6 +48,35 @@ function nextRowTimestamp(previousTimestamp, nowMs = Date.now()) {
   )).toISOString();
 }
 
+function summarizeMemoryExtractionJobs(jobs = []) {
+  const summary = {
+    total: 0,
+    queued: 0,
+    processing: 0,
+    retry_wait: 0,
+    succeeded: 0,
+    failed: 0,
+    latest_failure: null
+  };
+  for (const job of Array.isArray(jobs) ? jobs : []) {
+    if (!job?.status || !Object.prototype.hasOwnProperty.call(summary, job.status)) continue;
+    summary.total += 1;
+    summary[job.status] += 1;
+    if (job.status === 'failed' && (!summary.latest_failure ||
+        Date.parse(job.completed_at || job._row_updated_at || 0) >
+        Date.parse(summary.latest_failure.completed_at || summary.latest_failure._row_updated_at || 0))) {
+      summary.latest_failure = {
+        job_id: job.id,
+        message_id: job.message_id,
+        attempts: job.attempts,
+        completed_at: job.completed_at || null,
+        error: job.last_error || null
+      };
+    }
+  }
+  return summary;
+}
+
 class SupabaseStateStore {
   constructor({ url, serviceKey, ownerId, embeddingProvider = null, client = null }) {
     if (!ownerId) throw new Error('AURA_OWNER_ID is required for Supabase state.');
@@ -128,6 +157,11 @@ class SupabaseStateStore {
   }
 
   async recentMessages(limit = 15) {
+    const rows = await this.recentMessagesWithMetadata(limit);
+    return rows.map(({ role, content }) => ({ role, content }));
+  }
+
+  async recentMessagesWithMetadata(limit = 15) {
     const conversationId = await this.ensureConversation();
     const bounded = Math.max(1, Math.min(200, Number(limit) || 15));
     const { data, error } = await this.client
@@ -139,7 +173,12 @@ class SupabaseStateStore {
       .limit(Math.min(200, bounded * 4));
     if (error) throw error;
     return visibleConversationMessages((data || []).reverse(), bounded)
-      .map(({ role, content }) => ({ role, content }));
+      .map(({ role, content, metadata, created_at }) => ({
+        role,
+        content,
+        metadata: metadata || {},
+        created_at
+      }));
   }
 
   async getConversationContext(limit = 30) {
@@ -585,8 +624,10 @@ class SupabaseStateStore {
     if (changes.priority !== undefined) patch.priority = changes.priority;
     if (changes.dueAt !== undefined) patch.due_at = changes.dueAt;
     if (changes.input !== undefined) patch.input = changes.input;
-    const { data, error } = await this.client.from('aura_tasks').update(patch)
-      .eq('owner_id', this.ownerId).eq('id', id).select('*').maybeSingle();
+    let query = this.client.from('aura_tasks').update(patch)
+      .eq('owner_id', this.ownerId).eq('id', id);
+    if (changes.expectedStatus !== undefined) query = query.eq('status', changes.expectedStatus);
+    const { data, error } = await query.select('*').maybeSingle();
     if (error) throw error;
     return data;
   }
@@ -1147,6 +1188,47 @@ class SupabaseStateStore {
     });
   }
 
+  async listMemoryExtractionJobs(limit = 500) {
+    const bounded = Math.max(1, Math.min(1000, Number(limit) || 500));
+    const { data, error } = await this.client.from('aura_state')
+      .select('key, value, updated_at')
+      .eq('owner_id', this.ownerId)
+      .like('key', `${MEMORY_EXTRACTION_JOB_PREFIX}%`)
+      .order('updated_at', { ascending: false })
+      .limit(bounded);
+    if (error) throw error;
+    return (data || []).map(memoryExtractionJobFromRow).filter(Boolean);
+  }
+
+  async requeueFailedMemoryExtraction(messageId) {
+    const job = await this.getMemoryExtractionJob(messageId);
+    if (!job) return { requeued: false, reason: 'not_found' };
+    if (job.status !== 'failed') return { requeued: false, reason: 'not_failed', job };
+    const now = new Date().toISOString();
+    const requeued = await this.transitionMemoryExtractionJob(job, {
+      version: job.version || 1,
+      type: 'memory_extraction',
+      message_id: job.message_id,
+      idempotency_key: job.idempotency_key,
+      status: 'queued',
+      attempts: 0,
+      max_attempts: job.max_attempts,
+      available_at: now,
+      lease_token: null,
+      lease_expires_at: null,
+      created_at: job.created_at,
+      completed_at: null,
+      learned_count: null,
+      confirmation_count: null,
+      skipped: null,
+      last_error: null,
+      replayed_at: now
+    });
+    return requeued
+      ? { requeued: true, job: requeued }
+      : { requeued: false, reason: 'conflict' };
+  }
+
   async getOwnerProfile() {
     const value = await this.getState('owner_profile_v1');
     return value && typeof value === 'object'
@@ -1154,9 +1236,33 @@ class SupabaseStateStore {
       : { version: 1, entries: {}, updated_at: null };
   }
 
-  async upsertOwnerProfileEntries(entries) {
+  async mutateOwnerProfile(mutator, { maxRetries = 8 } = {}) {
+    if (typeof mutator !== 'function') throw new Error('Owner profile mutator is required.');
+    const retryLimit = Math.max(1, Math.min(20, Number(maxRetries) || 8));
     this.profileWrite = this.profileWrite.catch(() => {}).then(async () => {
-      const profile = await this.getOwnerProfile();
+      for (let attempt = 0; attempt < retryLimit; attempt += 1) {
+        const row = await this.getStateRow('owner_profile_v1');
+        const current = row?.value && typeof row.value === 'object'
+          ? structuredClone(row.value)
+          : { version: 1, entries: {}, updated_at: null };
+        const changed = await mutator(current);
+        const next = changed && typeof changed === 'object' ? changed : current;
+        next.version = 1;
+        next.entries = { ...(next.entries || {}) };
+        next.updated_at = new Date().toISOString();
+        if (await this.compareAndSetState('owner_profile_v1', row?.updated_at || null, next)) {
+          return next;
+        }
+      }
+      const error = new Error('Owner profile update conflicted too many times.');
+      error.code = 'OWNER_PROFILE_CONFLICT';
+      throw error;
+    });
+    return this.profileWrite;
+  }
+
+  async upsertOwnerProfileEntries(entries) {
+    return this.mutateOwnerProfile(profile => {
       const nextEntries = { ...(profile.entries || {}) };
       for (const entry of entries) {
         nextEntries[entry.key] = {
@@ -1170,15 +1276,12 @@ class SupabaseStateStore {
         entries: nextEntries,
         updated_at: new Date().toISOString()
       };
-      await this.setState('owner_profile_v1', next);
       return next;
     });
-    return this.profileWrite;
   }
 
   async removeOwnerProfileEntries(keys) {
-    this.profileWrite = this.profileWrite.catch(() => {}).then(async () => {
-      const profile = await this.getOwnerProfile();
+    return this.mutateOwnerProfile(profile => {
       const nextEntries = { ...(profile.entries || {}) };
       for (const key of keys) delete nextEntries[key];
       const next = {
@@ -1187,15 +1290,12 @@ class SupabaseStateStore {
         entries: nextEntries,
         updated_at: new Date().toISOString()
       };
-      await this.setState('owner_profile_v1', next);
       return next;
     });
-    return this.profileWrite;
   }
 
   async setOwnerMemoryCandidates(candidates) {
-    this.profileWrite = this.profileWrite.catch(() => {}).then(async () => {
-      const profile = await this.getOwnerProfile();
+    return this.mutateOwnerProfile(profile => {
       const next = {
         ...profile,
         version: 1,
@@ -1203,10 +1303,18 @@ class SupabaseStateStore {
         memory_candidates: Array.isArray(candidates) ? candidates.slice(0, 5) : [],
         updated_at: new Date().toISOString()
       };
-      await this.setState('owner_profile_v1', next);
       return next;
     });
-    return this.profileWrite;
+  }
+
+  async mutateOwnerMemoryCandidates(mutator) {
+    if (typeof mutator !== 'function') throw new Error('Memory candidate mutator is required.');
+    return this.mutateOwnerProfile(profile => ({
+      ...profile,
+      memory_candidates: (mutator(Array.isArray(profile.memory_candidates)
+        ? structuredClone(profile.memory_candidates)
+        : []) || []).slice(0, 5)
+    }));
   }
 
   async getState(key) {
@@ -1231,7 +1339,9 @@ class SupabaseStateStore {
   // "insert only if missing"; a concurrent insert returns false so the caller
   // can retry. Used by the daily web-search limiter across processes.
   async compareAndSetState(key, expectedUpdatedAt, value) {
-    const updatedAt = new Date().toISOString();
+    const updatedAt = expectedUpdatedAt == null
+      ? new Date().toISOString()
+      : nextRowTimestamp(expectedUpdatedAt);
     if (expectedUpdatedAt == null) {
       const { error } = await this.client.from('aura_state').insert({
         owner_id: this.ownerId,
@@ -1275,5 +1385,6 @@ module.exports = {
   isMemoryExtractionJobDue,
   memoryExtractionJobFromRow,
   nextRowTimestamp,
+  summarizeMemoryExtractionJobs,
   visibleConversationMessages
 };

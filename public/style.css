@@ -543,8 +543,7 @@ body[data-aura-state="error"] #aura-mesh {
   align-items: center;
 }
 
-#conversation-toggle,
-#volume-toggle {
+#conversation-toggle {
   border: 1px solid rgba(255, 255, 255, 0.18);
   background: rgba(8, 12, 20, 0.55);
   color: rgba(220, 230, 245, 0.78);
@@ -562,13 +561,7 @@ body[data-aura-state="error"] #aura-mesh {
   color: rgba(180, 255, 210, 0.92);
 }
 
-#volume-toggle[data-level="high"] {
-  border-color: rgba(255, 180, 90, 0.5);
-  color: rgba(255, 220, 180, 0.95);
-}
-
-#conversation-toggle:focus-visible,
-#volume-toggle:focus-visible {
+#conversation-toggle:focus-visible {
   outline: 2px solid rgba(0, 180, 255, 0.7);
   outline-offset: 3px;
 }
@@ -820,8 +813,8 @@ body[data-aura-state="error"] #aura-mesh {
 }
 
 /* On a phone the side rails are unreadably narrow. Transcript docks as a
-   top sheet; search/receipt panel docks as a bottom sheet ABOVE #orb-controls
-   (conversation + volume toggles), so the two never sit on the same pixels.
+   top sheet; search/receipt panel docks as a bottom sheet ABOVE #orb-controls,
+   so the two never sit on the same pixels.
    Same 700px breakpoint as --wave-width's mobile adjustment. */
 @media (max-width: 700px) {
   #transcript-panel {

@@ -17,6 +17,14 @@ test('voice surface shows only the wordmark and an accessible reactive wave', ()
   assert.match(css, /#status-text\s*\{[^}]*clip-path:\s*inset\(50%\)/s);
 });
 
+test('playback uses native device volume without an in-app gain control', () => {
+  assert.doesNotMatch(html, /id="volume-toggle"/);
+  assert.doesNotMatch(app, /PLAYBACK_VOLUME_KEY|playbackGainNode|cyclePlaybackVolume/);
+  assert.doesNotMatch(css, /#volume-toggle/);
+  assert.match(app, /audioSource\.connect\(audioAnalyser\)/);
+  assert.match(app, /audioAnalyser\.connect\(audioContext\.destination\)/);
+});
+
 test('the search-results panel is non-persistent and appears only with content', () => {
   // Deliberately reactivated (was fully display:none, permanently, for a
   // stretch): hidden by default via opacity/pointer-events so it can animate,
@@ -43,7 +51,7 @@ test('the search-results panel is non-persistent and appears only with content',
   assert.match(cancelActiveTurnFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
   assert.match(cancelActiveTurnFn, /playbackCancelled = true/);
   assert.match(cancelActiveTurnFn, /resetVoiceQueue\(\)/);
-  const finishVoiceQueueFn = app.slice(app.indexOf('function finishVoiceQueue()'), app.indexOf('function finishVoiceQueue()') + 400);
+  const finishVoiceQueueFn = app.slice(app.indexOf('function finishVoiceQueue('), app.indexOf('function finishVoiceQueue(') + 600);
   assert.match(finishVoiceQueueFn, /showSearchEvidence\(\[\],\s*\[\]\)/);
   const stopSpeakingFn = app.slice(app.indexOf('function stopSpeaking()'), app.indexOf('function setOrbState'));
   assert.match(stopSpeakingFn, /cancelActiveTurn\(\)/);
@@ -52,7 +60,7 @@ test('the search-results panel is non-persistent and appears only with content',
 test('the panel shows receipts only — search evidence or number-heavy replies', () => {
   // Voice stays primary for chit-chat; the side panel is for receipts
   // (live search citations/sources, or replies that look like money/counts).
-  assert.match(app, /function showSearchEvidence\(webResults = \[\], sources = \[\], replyText = ''\)/);
+  assert.match(app, /function showSearchEvidence\(webResults = \[\], sources = \[\], replyText = '', evidence = \[\]\)/);
   assert.match(app, /function looksLikeReceipt\(/);
   assert.match(app, /else if \(looksLikeReceipt\(replyText\)\)/);
   assert.match(app, /sourceLabel\.textContent = isSearchResult \? 'Live web result' : 'Receipt'/);
@@ -88,8 +96,8 @@ test('the search panel sits right of the wave, never over it, and syncs to speec
   // the queue is told no more sentences are coming (finishVoiceQueue).
   const processAudio = app.slice(app.indexOf('async function processAudio'));
   const streamLoopIndex = processAudio.indexOf('reader.read()');
-  const evidenceIndex = processAudio.indexOf('showSearchEvidence(webResults, sources, reply)');
-  const finishIndex = processAudio.indexOf('finishVoiceQueue()');
+  const evidenceIndex = processAudio.indexOf('showSearchEvidence(webResults, sources, reply, evidence)');
+  const finishIndex = processAudio.indexOf('finishVoiceQueue(chatTurnId)');
   assert.ok(streamLoopIndex > -1 && evidenceIndex > -1 && finishIndex > -1, 'expected all three to be present');
   assert.ok(evidenceIndex > streamLoopIndex, 'evidence must show after the stream is fully read');
   assert.ok(evidenceIndex < finishIndex, 'evidence must show before the queue is marked finished');
@@ -100,7 +108,7 @@ test('on a phone the panel docks below the orb/wave instead of beside them', () 
   // breakpoint override, not just a smaller version of the same rail.
   const mobileBlock = css.slice(css.indexOf('@media (max-width: 700px)'));
   assert.match(mobileBlock, /#source-panel\s*\{[^}]*top:\s*auto/s);
-  // Lifted above #orb-controls so conversation/volume toggles stay tappable.
+  // Lifted above #orb-controls so the conversation toggle stays tappable.
   assert.match(mobileBlock, /#source-panel\s*\{[^}]*bottom:\s*max\(72px/s);
   assert.match(mobileBlock, /#source-panel\s*\{[^}]*max-width:\s*none/s);
   assert.match(mobileBlock, /#source-panel\s*\{[^}]*transform:\s*translateY\(/s);
@@ -206,9 +214,11 @@ test('mobile cache-busting versions the waveform assets together', () => {
   const styleVersion = html.match(/style\.css\?v=([^"']+)/)?.[1];
   const appVersion = html.match(/app\.js\?v=([^"']+)/)?.[1];
   const wakeVersion = html.match(/wake_word\.js\?v=([^"']+)/)?.[1];
+  const protocolVersion = html.match(/voice_turn_protocol\.js\?v=([^"']+)/)?.[1];
   assert.ok(styleVersion);
   assert.equal(appVersion, styleVersion);
   assert.equal(wakeVersion, styleVersion);
+  assert.equal(protocolVersion, styleVersion);
 });
 
 test('voice path logs wall-clock TTFA marks in the browser console', () => {
@@ -237,6 +247,10 @@ test('uncertain durable preferences require a scoped natural confirmation', () =
   assert.match(server, /PENDING OWNER MEMORY CONFIRMATION/);
   assert.match(server, /Answer the owner’s current request first/);
   assert.match(server, /memoryContext\.pendingConfirmation/);
+  assert.match(server, /memory_confirmation_candidate_id/);
+  assert.match(server, /\/api\/memory\/health/);
+  assert.match(server, /\/api\/memory\/candidates\/:id/);
+  assert.match(server, /\/api\/memory\/jobs\/:messageId\/replay/);
 });
 
 test('streamed voice uses connected TTS groups instead of resetting every sentence', () => {
@@ -253,6 +267,16 @@ test('streamed voice uses connected TTS groups instead of resetting every senten
   assert.match(app, /STREAM_MAX_UTTERANCE_MS = 60000/);
   assert.match(app, /NO_SPEECH_IDLE_MS = 8000/);
   assert.match(app, /!heardSpeech && elapsed >= NO_SPEECH_IDLE_MS/);
+});
+
+test('voice accepts only the active authoritative stream and defers alerts during turns', () => {
+  assert.match(app, /function acceptAuthoritativeStreamEvent/);
+  assert.match(app, /AuraVoiceTurnProtocol\.createStreamFence/);
+  assert.match(app, /AuraVoiceTurnProtocol\.shouldDeferProactiveAlert/);
+  assert.match(app, /stream_event_rejected/);
+  assert.match(app, /\/api\/audio\/turn-events/);
+  assert.match(app, /pendingProactiveAlerts/);
+  assert.match(server, /turn_id: turnId[\s\S]*generation: streamGeneration[\s\S]*sequence: streamSequence/);
 });
 
 test('tap interrupt copy and hey Aura wake wiring are present', () => {
@@ -310,6 +334,11 @@ test('conversation mode supports voice barge-in with preroll and server cancella
 test('server blocks text tool protocol from speech and promotes only safe reads', () => {
   assert.match(server, /recoverTextToolCalls/);
   assert.match(server, /isCapabilityCorrectionToolAllowed/);
+  assert.match(server, /capabilityDetectionToolsForAgent/);
+  assert.match(server, /shouldRequireLiveToolForTurn/);
+  assert.match(server, /roundZeroTools = requireLiveTool[\s\S]*getToolPolicy/);
+  assert.match(server, /requireLiveTool \? 'required' : 'auto'/);
+  assert.match(server, /normalizeUnavailableFailureReply/);
   assert.match(server, /blocked unrecovered text tool reply/);
   assert.match(server, /_signal \? \{ signal: _signal \}/);
 });
