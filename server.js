@@ -469,6 +469,25 @@ async function addConversationMessage(role, content, metadata = {}) {
 // swallow approval meant for something else.
 const MEMORY_CONFIRMATION_RECENT_ASK_MS = 10 * 60 * 1000;
 
+// The prompt lets AURA defer the memory question when the turn needs a
+// different clarification, and it rewrites the wording for the ear either way.
+// So neither "a question was available" nor an exact string match tells us
+// whether she asked - check for a question that actually concerns this
+// preference instead, before spending the ask budget on it.
+function replyRaisedMemoryQuestion(reply, candidate) {
+  const text = String(reply || '');
+  if (!text.includes('?')) return false;
+  if (text.includes(String(candidate?.question || ''))) return true;
+  const normalize = value => String(value || '')
+    .toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+  const spoken = new Set(normalize(text));
+  if (!spoken.has('remember') && !spoken.has('save') && !spoken.has('remembered')) return false;
+  const wanted = normalize(candidate?.entry?.value).filter(token => token.length > 3);
+  if (!wanted.length) return true;
+  const hits = wanted.filter(token => spoken.has(token)).length;
+  return hits / wanted.length >= 0.5;
+}
+
 function memoryConfirmationAskedId(message) {
   const metadata = message?.metadata;
   if (!metadata || typeof metadata !== 'object') return '';
@@ -912,14 +931,29 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, _signal,
   // Held only on the opening round, which is where narration-before-a-tool
   // happens. Post-tool rounds stream live, so the answer on a tool turn keeps
   // its time-to-first-audio; so do tool-less turns (greetings, chit-chat).
-  const mayCallTools = _holdSpeechUntilFinal === true
+  const holdEligible = _holdSpeechUntilFinal === true
     && Array.isArray(requestOptions.tools)
     && requestOptions.tools.length > 0;
+  let mayCallTools = holdEligible;
   const heldChunks = [];
+  // Narration before a tool call is short ("Let me pull that up."). A real
+  // answer is not. Holding every tool-eligible round to completion would cost
+  // first-audio on every non-lightweight turn, including the many that answer
+  // directly without calling anything - so hold only until the content is
+  // clearly too long to be a preamble, then release and stream live.
+  const PREAMBLE_RELEASE_CHARS = 180;
   const emitChunk = onSentence
     ? (chunk) => {
-        if (mayCallTools) heldChunks.push(chunk);
-        else onSentence(chunk);
+        if (!mayCallTools) {
+          onSentence(chunk);
+          return;
+        }
+        heldChunks.push(chunk);
+        if (heldChunks.join(' ').length >= PREAMBLE_RELEASE_CHARS) {
+          mayCallTools = false;
+          for (const held of heldChunks) onSentence(held);
+          heldChunks.length = 0;
+        }
       }
     : undefined;
   const speechChunks = createSpeechChunkAccumulator(emitChunk);
@@ -986,10 +1020,10 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, _signal,
   }
   // Release held speech only once this round is known to be an answer. If it
   // turned into a tool call, the narration is discarded unspoken.
-  if (onSentence && mayCallTools) {
+  if (onSentence && holdEligible && heldChunks.length) {
     if (toolCallsByIndex.size === 0) {
       for (const chunk of heldChunks) onSentence(chunk);
-    } else if (heldChunks.length) {
+    } else {
       console.log(`[speech] discarded ${heldChunks.length} pre-tool-call chunk(s) unspoken`);
     }
     heldChunks.length = 0;
@@ -3949,6 +3983,14 @@ async function processOwnerText(text, {
       console.warn('Client-name transcript correction skipped:', error.message || error);
     }
     const nameCorrectionApplied = text !== ownerTextRaw;
+    if (nameCorrectionApplied && !cloudState) {
+      // The SQLite dev path stores no message metadata, so the
+      // name_corrected_text audit record below cannot be written there.
+      console.warn(
+        `[name correction] rewrote owner text and cannot record it locally: ` +
+        `${JSON.stringify(ownerTextRaw)} -> ${JSON.stringify(text)}`
+      );
+    }
     if (process.env.AURA_TIMING_TRACE) {
       console.log(`[timing] name correction: ${Date.now() - nameCorrectionStartedAtMs}ms`);
     }
@@ -4303,13 +4345,17 @@ async function processOwnerText(text, {
         askedThisCandidate = askedId === pendingMemoryConfirmation.id;
       } else if (String(previousAssistant?.content || '').includes(pendingMemoryConfirmation.question)) {
         askedThisCandidate = true;
+      } else if (previousAssistant) {
+        // A reply exists but did not raise this candidate. Whatever the owner
+        // is agreeing to, it is not this preference - do not let the recency
+        // window below steal an approval meant for an email, a calendar
+        // change, or a staged deletion.
+        askedThisCandidate = false;
       } else {
-        // No marker at all: either the SQLite dev path (which stores no
-        // metadata) or - the case that actually bit the owner - a turn he
-        // barged in on, whose assistant reply was therefore never persisted
-        // even though he heard the question and answered it. The candidate's
-        // own last_asked_at survives that, so use it, bounded tightly so a
-        // stale candidate cannot claim an unrelated approval.
+        // No stored assistant reply at all: the turn was interrupted before
+        // it could be persisted, even though the owner heard the question and
+        // answered it. The candidate's own last_asked_at survives that, so use
+        // it, bounded tightly.
         const askedAtMs = Date.parse(pendingMemoryConfirmation.last_asked_at || '');
         askedThisCandidate = Number.isFinite(askedAtMs)
           && Date.now() - askedAtMs <= MEMORY_CONFIRMATION_RECENT_ASK_MS;
@@ -4814,9 +4860,19 @@ async function processOwnerText(text, {
     // because a barge-in cancels persistence but does NOT unsay the question
     // the owner already heard. This record is what lets his "yes" land on the
     // next turn even though the interrupted reply was never stored.
-    if (pendingMemoryConfirmation) {
-      memoryV2.markConfirmationAsked(pendingMemoryConfirmation.id).catch(error => {
+    let confirmationAsked = null;
+    if (pendingMemoryConfirmation &&
+        replyRaisedMemoryQuestion(reply, pendingMemoryConfirmation)) {
+      // Await it: the returned candidate carries the id as it exists in the
+      // store right now. pendingMemoryConfirmation may have come from the
+      // 15s profile cache, and stamping a stale id onto the reply would make
+      // next turn's exact-id check fail and silently drop the owner's "yes".
+      confirmationAsked = await memoryV2.markConfirmationAsked(
+        pendingMemoryConfirmation.id,
+        { entryKey: pendingMemoryConfirmation.entry?.key || '' }
+      ).catch(error => {
         console.warn('[Memory v2] Recording confirmation ask failed:', error.message);
+        return null;
       });
     }
     const responseReadyMs = Date.now() - requestStartedAtMs;
@@ -4848,9 +4904,7 @@ async function processOwnerText(text, {
         : { status: 'scheduled_local' },
       // Stamp the candidate this reply was asked to raise. The next turn's
       // "yes" is matched against this id, not against the question's wording.
-      ...(pendingMemoryConfirmation
-        ? { memory_confirmation_asked: pendingMemoryConfirmation.id }
-        : {})
+      ...(confirmationAsked ? { memory_confirmation_asked: confirmationAsked.id } : {})
     });
     if (skillOutcomeStore) {
       skillOutcomeStore.recordTurn({

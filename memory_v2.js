@@ -399,12 +399,9 @@ function relationshipEntriesDescribeSamePerson(existing, incoming) {
     String(existing.subject || '').trim().toLowerCase() === String(incoming.subject || '').trim().toLowerCase();
   if (fullName) return true;
 
-  // Identical explicit relationship on both sides is weak but consistent
-  // evidence - and crucially never crosses the business/personal boundary.
-  if (existing.relationship && incoming.relationship &&
-      existing.relationship === incoming.relationship) {
-    return true;
-  }
+  // A shared relationship label is NOT identity evidence. Two clients are both
+  // "client"; two of the owner's daughters are both "daughter". Merging on it
+  // would fuse exactly the people this function exists to keep apart.
   return false;
 }
 
@@ -615,6 +612,7 @@ function buildProfileContext(profile) {
 
   const facts = [];
   const businessContacts = [];
+  const dualRoleContacts = [];
   const instructions = [];
   for (const entry of pinned) {
     if (entry.kind === 'relationship') {
@@ -642,10 +640,26 @@ function buildProfileContext(profile) {
       // makes the business framing below a lie about them.
       const personalRole = roles.some(role => !isBusinessRelationship(role)) ||
         (!roles.length && entry.relationship && !isBusinessRelationship(entry.relationship));
-      if (!personalRole && (roles.some(isBusinessRelationship) || isBusinessRelationship(entry.relationship))) {
+      const businessRole = roles.some(isBusinessRelationship) ||
+        isBusinessRelationship(entry.relationship);
+      if (!personalRole && businessRole) {
         businessContacts.push(line);
       } else {
         facts.push(line);
+        // Someone who is both - the owner's ex who is also a client - stays in
+        // owner context so nothing denies the personal tie, but the business
+        // discretion rule lives only in the CCC block below and would never
+        // reach them. Name them separately so a business question about this
+        // person cannot pull their personal history into the answer.
+        if (personalRole && businessRole) {
+          dualRoleContacts.push(
+            `- ${entry.subject || entry.value}: business role ${
+              roles.filter(isBusinessRelationship).join(', ') || entry.relationship
+            }; personal role ${
+              roles.filter(role => !isBusinessRelationship(role)).join(', ') || entry.relationship
+            }`
+          );
+        }
       }
     } else if (entry.kind !== 'communication' && entry.instruction) {
       facts.push(`- ${entry.key}: ${entry.value}`);
@@ -660,6 +674,13 @@ function buildProfileContext(profile) {
   let context = '';
   if (facts.length) {
     context += `\nOWNER PROFILE FACTS (direct owner-provided data; use when relevant):\n${facts.join('\n')}`;
+  }
+  if (dualRoleContacts.length) {
+    context += `\nDUAL-ROLE CONTACTS (both roles below are true). When the current request concerns ` +
+      `this person's BUSINESS role - phase, balance, letters, billing, scheduling - answer from the ` +
+      `business record only and leave their personal history out of the reply, including any last ` +
+      `context. Do not volunteer the personal role in a business answer. If the owner asks about the ` +
+      `personal relationship directly, answer honestly - never deny it:\n${dualRoleContacts.join('\n')}`;
   }
   if (businessContacts.length) {
     context += `\nCCC BUSINESS CONTACTS (business records. Do not assume any personal tie to the owner ` +
@@ -1331,20 +1352,29 @@ class MemoryV2 {
   // Records that the owner has actually been asked about a candidate, so the
   // ask budget is spent on asks that happened rather than on turns where the
   // question was merely available.
-  async markConfirmationAsked(id) {
+  async markConfirmationAsked(id, { entryKey = '' } = {}) {
     if (!id || typeof this.profileStore.setOwnerMemoryCandidates !== 'function') return null;
     return this._withMutationLock(async () => {
       const profile = await this.profileStore.getOwnerProfile();
       const pending = (Array.isArray(profile?.memory_candidates) ? profile.memory_candidates : [])
         .map(candidate => normalizeMemoryCandidate(candidate))
         .filter(Boolean);
-      const candidate = pending.find(item => item.id === id);
+      // The caller's id can be a beat stale - a detached extraction may have
+      // re-staged the same preference under a new record between the context
+      // build and this write. Fall back to the entry key so the ask is
+      // charged to the preference the owner was actually asked about.
+      const candidate = pending.find(item => item.id === id)
+        || (entryKey ? pending.find(item => item.entry.key === entryKey) : null);
       if (!candidate) return null;
       candidate.ask_count += 1;
       candidate.last_asked_at = new Date().toISOString();
-      await this.profileStore.setOwnerMemoryCandidates(
-        pending.filter(item => !memoryCandidateExhausted(item))
-      );
+      // Persist the incremented candidate - do NOT drop exhausted ones here.
+      // The question has just been put to the owner and he has not answered
+      // it yet; retiring it now destroys the very candidate his next "yes"
+      // is meant to resolve. selectPendingConfirmation already refuses to
+      // ASK an exhausted candidate again, which is the only thing the budget
+      // needs to bound.
+      await this.profileStore.setOwnerMemoryCandidates(pending);
       return candidate;
     });
   }

@@ -75,6 +75,7 @@ const CLIENT_NAME_MATCH_MIN = 0.9;
 
 const FABRICATED_RELATION_PATTERN = /\bis the owner's known person\b/i;
 
+const MEMORY_SCAN_LIMIT = 500;
 const MAX_CANDIDATE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 // Owner-authored content that --delete-flagged must never remove.
@@ -131,7 +132,7 @@ async function main() {
 
   const [profile, memories, directory] = await Promise.all([
     state.getOwnerProfile(),
-    state.listMemories(500),
+    state.listMemories(MEMORY_SCAN_LIMIT),
     loadClientDirectory().catch(error => ({ error: error.message }))
   ]);
 
@@ -145,6 +146,12 @@ async function main() {
 
   console.log(`\nProfile: ${entries.length} entries, ${candidates.length} pending confirmations`);
   console.log(`Memories scanned: ${memories.length}`);
+  if (memories.length >= MEMORY_SCAN_LIMIT) {
+    console.warn(
+      `! Hit the ${MEMORY_SCAN_LIMIT}-row scan limit; older memories were not examined. ` +
+      `Findings below are therefore incomplete.`
+    );
+  }
   console.log(`Client directory: ${clients.length} records`);
 
   const clientFirstNamesEarly = new Set(
@@ -307,7 +314,10 @@ async function main() {
     const saved = await state.saveMemory(rewritten, {
       kind: row.kind,
       source: row.source,
-      confidence: row.confidence
+      confidence: row.confidence,
+      // Carry the privacy classification across the rewrite - a repaired row
+      // must not silently become less protected than the one it replaces.
+      sensitivity: row.sensitivity
     });
     await state.supersedeMemory(row.id, saved.id);
     console.log(`Rewrote memory #${row.id} -> #${saved.id}`);

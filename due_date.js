@@ -96,6 +96,13 @@ function parseDueAt(input, { timeZone = 'America/Phoenix', now = new Date() } = 
     const year = Number(isoDateOnly[1]);
     const month = Number(isoDateOnly[2]);
     const day = Number(isoDateOnly[3]);
+    // Date.UTC rolls impossible values over rather than rejecting them, so
+    // "2026-13-45" would silently become a real date next year. Before this
+    // branch existed, new Date() returned NaN and the caller reported a parse
+    // failure; keep that behaviour rather than storing a wrong due date.
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const probe = new Date(Date.UTC(year, month - 1, day));
+    if (probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) return null;
     const end = endOfLocalDay(year, month, day, timeZone);
     if (Number.isFinite(end.getTime())) return end.toISOString();
   }

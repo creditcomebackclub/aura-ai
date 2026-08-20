@@ -1865,3 +1865,82 @@ test('the business-contacts block never denies a stated personal role', () => {
   assert.match(context, /may legitimately hold more than one role/);
   assert.match(context, /never deny it if he asks directly/);
 });
+
+test('a dual-role contact gets an explicit business-privacy instruction', () => {
+  const entries = {
+    'people.melissa': {
+      key: 'people.melissa',
+      kind: 'relationship',
+      subject: 'Melissa D. Gordon',
+      value: 'Melissa',
+      relationship: 'client',
+      roles: ['ex-girlfriend', 'client'],
+      organization: 'CCC',
+      last_context: 'AZCEND program',
+      aliases: [], emails: [], phones: [], preferences: [], commitments: [], role: '',
+      pinned: true
+    }
+  };
+  const context = buildProfileContext({ entries });
+  // Stays in owner context so nothing can deny the personal tie...
+  assert.match(context, /OWNER PROFILE FACTS/);
+  // ...but the business discretion rule now reaches her, which it did not when
+  // it lived only in the CCC block she is deliberately not filed under.
+  assert.match(context, /DUAL-ROLE CONTACTS/);
+  assert.match(context, /business role client; personal role ex-girlfriend/);
+  assert.match(context, /leave their personal history out of the reply/);
+  assert.match(context, /never deny it/);
+
+  // A purely personal contact gets no such block.
+  const personalOnly = buildProfileContext({
+    entries: {
+      'people.taylor': {
+        ...entries['people.melissa'],
+        key: 'people.taylor', subject: 'Taylor', relationship: 'daughter',
+        roles: ['daughter'], organization: '', last_context: ''
+      }
+    }
+  });
+  assert.doesNotMatch(personalOnly, /DUAL-ROLE CONTACTS/);
+});
+
+test('two people sharing only a generic label are never merged', () => {
+  const client = (subject, email) => ({
+    kind: 'relationship', key: 'people.chris', subject, value: subject,
+    relationship: 'client', roles: ['client'], emails: [email],
+    aliases: [], phones: [], preferences: [], commitments: [],
+    organization: '', role: '', last_context: ''
+  });
+  // Both are "client"; that shared label must not count as identity evidence.
+  const merged = mergeRelationshipEntry(client('Chris', 'a@example.com'), client('Chris', 'b@example.com'));
+  assert.deepEqual(merged.emails, ['b@example.com']);
+
+  // Same for two daughters - a shared personal label is no better as proof.
+  const daughter = (subject) => ({ ...client(subject, `${subject}@example.com`), relationship: 'daughter', roles: ['daughter'] });
+  const kids = mergeRelationshipEntry(daughter('Taylor'), daughter('Madison'));
+  assert.equal(kids.emails.includes('Taylor@example.com'), false);
+});
+
+test('an asked candidate survives long enough to be answered', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  const client = extractionClient([{
+    key: 'preference.spark', kind: 'preference', value: 'daily sparks',
+    subject: '', relationship: '', instruction: 'Send a daily spark.',
+    replaces_key: '', pinned: true, confidence: 0.7
+  }]);
+  const memory = new MemoryV2({ profileStore, semanticMemory, client });
+  await memory.learnFromUserMessage('I like daily sparks.', { source: 'conversation' });
+
+  const first = await memory.getPendingConfirmation();
+  await memory.markConfirmationAsked(first.id, { entryKey: first.entry.key });
+  await memory.markConfirmationAsked(first.id, { entryKey: first.entry.key });
+
+  // The budget stops her ASKING again...
+  assert.equal(await memory.getPendingConfirmation(), null);
+  // ...but the candidate itself must still be resolvable, or the "yes" the
+  // owner is about to give for the question he just heard resolves nothing.
+  const resolution = await memory.resolvePendingConfirmation(first.id, true, { entryKey: first.entry.key });
+  assert.equal(resolution.resolved, true);
+  assert.equal(resolution.learned.length, 1);
+});

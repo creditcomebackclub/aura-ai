@@ -244,7 +244,10 @@ test('streamed voice uses connected TTS groups instead of resetting every senten
   assert.match(server, /createSpeechChunkAccumulator\(emitChunk\)/);
   // Narration emitted before a tool call is held and discarded rather than
   // spoken, so a preamble and the post-tool answer cannot overlap.
-  assert.match(server, /const mayCallTools =/);
+  assert.match(server, /const holdEligible =/);
+  // Held narration is released once it is too long to be a preamble, so a
+  // direct answer on a tool-eligible turn keeps its first-audio latency.
+  assert.match(server, /PREAMBLE_RELEASE_CHARS/);
   assert.match(server, /discarded \$\{heldChunks\.length\} pre-tool-call chunk/);
   assert.match(server, /extractEarlySpeakable/);
   assert.match(server, /await synthesizeSpeechChunk\(text\.trim\(\)\)/);
@@ -342,7 +345,9 @@ test('spoken proactive alerts are mirrored into the conversation', () => {
 
 test('memory confirmation is anchored on the candidate id, not its wording', () => {
   assert.match(server, /function memoryConfirmationAskedId\(message\)/);
-  assert.match(server, /memory_confirmation_asked: pendingMemoryConfirmation\.id/);
+  assert.match(server, /memory_confirmation_asked: confirmationAsked\.id/);
+  // The ask budget is only spent when the reply actually asked.
+  assert.match(server, /replyRaisedMemoryQuestion\(reply, pendingMemoryConfirmation\)/);
   assert.match(server, /askedId === pendingMemoryConfirmation\.id/);
   // A barge-in never persists the reply, so the candidate's own ask record is
   // the fallback that still lets the owner's "yes" land.
