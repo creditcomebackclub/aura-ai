@@ -241,7 +241,11 @@ test('uncertain durable preferences require a scoped natural confirmation', () =
 
 test('streamed voice uses connected TTS groups instead of resetting every sentence', () => {
   assert.match(app, /function enqueueSpeechAudio/);
-  assert.match(server, /createSpeechChunkAccumulator\(onSentence\)/);
+  assert.match(server, /createSpeechChunkAccumulator\(emitChunk\)/);
+  // Narration emitted before a tool call is held and discarded rather than
+  // spoken, so a preamble and the post-tool answer cannot overlap.
+  assert.match(server, /const mayCallTools =/);
+  assert.match(server, /discarded \$\{heldChunks\.length\} pre-tool-call chunk/);
   assert.match(server, /extractEarlySpeakable/);
   assert.match(server, /await synthesizeSpeechChunk\(text\.trim\(\)\)/);
   assert.doesNotMatch(server, /Promise\.all\(sentences\.map\(synthesizeSpeechChunk\)\)/);
@@ -312,4 +316,37 @@ test('server blocks text tool protocol from speech and promotes only safe reads'
   assert.match(server, /isCapabilityCorrectionToolAllowed/);
   assert.match(server, /blocked unrecovered text tool reply/);
   assert.match(server, /_signal \? \{ signal: _signal \}/);
+});
+
+test('every playback path silences the other audio path first', () => {
+  // Two independent outputs exist: the <audio> element for whole clips and Web
+  // Audio BufferSources for streamed PCM. A proactive alert used to reset the
+  // queue without stopping already-scheduled PCM, so the alert and the reply
+  // still coming out of the PCM path played at the same time.
+  assert.match(app, /function silenceAllPlayback\(\)/);
+  assert.match(app, /function playAudioBlob\(blob\) \{\s*\n\s*silenceAllPlayback\(\);/);
+  assert.match(app, /stopPcmPlayback\(\);\s*\n\s*audioPlayer\.pause\(\);/);
+  // An alert must not start while a turn is still being answered.
+  assert.match(app, /if \(isSpeaking \|\| isListening \|\| isProcessing\) return;/);
+  // ...and must not silently un-cancel a barge-in the owner just performed.
+  assert.match(app, /if \(!turnAbortController && !activeChatTurnId\) playbackCancelled = false;/);
+});
+
+test('spoken proactive alerts are mirrored into the conversation', () => {
+  // Alerts used to live only in the notifications table, so AURA had no record
+  // of having said them and would raise the same thing again minutes later.
+  assert.match(server, /addConversationMessage\('assistant', text, \{\s*\n\s*proactive: true/);
+  // The confirmation gate must skip them so they cannot shadow her question.
+  assert.match(server, /message\.metadata\?\.proactive !== true/);
+});
+
+test('memory confirmation is anchored on the candidate id, not its wording', () => {
+  assert.match(server, /function memoryConfirmationAskedId\(message\)/);
+  assert.match(server, /memory_confirmation_asked: pendingMemoryConfirmation\.id/);
+  assert.match(server, /askedId === pendingMemoryConfirmation\.id/);
+  // A barge-in never persists the reply, so the candidate's own ask record is
+  // the fallback that still lets the owner's "yes" land.
+  assert.match(server, /MEMORY_CONFIRMATION_RECENT_ASK_MS/);
+  // The owner's verbatim text is what gets stored, never the rewritten form.
+  assert.match(server, /addConversationMessage\('user', ownerTextRaw/);
 });

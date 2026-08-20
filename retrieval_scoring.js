@@ -20,7 +20,14 @@ function tokenize(value) {
 }
 
 function entityMatchScore(query, candidate) {
-  const named = (String(query || '').match(/\b[A-Z][a-z0-9]{2,}\b/g) || [])
+  const raw = String(query || '');
+  // Capitalization is not evidence of a proper noun in a transcript: Deepgram
+  // smart-formatting capitalizes the first word of every utterance, so the
+  // leading word of every spoken turn was being treated as a named entity.
+  // Ignore the sentence-initial capital and only trust capitals that appear
+  // mid-sentence, where the speaker/writer actually chose them.
+  const withoutLeadingCapital = raw.replace(/^\s*[A-Z]/, character => character.toLowerCase());
+  const named = (withoutLeadingCapital.match(/\b[A-Z][a-z0-9]{2,}\b/g) || [])
     .map(value => value.toLowerCase())
     .filter(token => !ENTITY_STOP_WORDS.has(token));
   const entities = (named.length ? named : tokenize(query))
@@ -30,7 +37,10 @@ function entityMatchScore(query, candidate) {
   const matches = entities.filter(token => candidateTokens.has(token)).length;
   if (!matches) return 0;
   // A direct match on one named entity is meaningful even when the rest of the
-  // question contains verbs that do not appear in the stored memory.
+  // question contains verbs that do not appear in the stored memory. This
+  // saturates deliberately: a real proper noun is strong evidence. What made
+  // it leak was the capitalization heuristic above treating the first word of
+  // every spoken sentence as a name, not the weighting.
   return Math.min(1, matches / Math.min(2, entities.length));
 }
 

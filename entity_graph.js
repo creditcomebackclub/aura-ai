@@ -30,7 +30,10 @@ const PERSON_EVIDENCE_WEIGHTS = {
   email: 0.99,
   name: 0.84,
   organization: 0.72,
-  domain: 0.68
+  domain: 0.68,
+  // A lone first/last name token. Deliberately below MIN_PERSON_CONFIDENCE so
+  // it can corroborate a stronger signal but can never carry a match alone.
+  name_fragment: 0.55
 };
 const MIN_PERSON_CONFIDENCE = 0.68;
 const MAX_PEOPLE = 2;
@@ -58,7 +61,14 @@ function personEntities(entry) {
   }
   for (const name of [entry.subject, ...(entry.aliases || [])].filter(Boolean)) {
     for (const candidate of phraseCandidates(name)) {
-      entities.push({ ...candidate, type: 'name' });
+      // A bare first name is not identifying. phraseCandidates explodes
+      // "Jack Rivera" down to the unigram "jack", and typing that as a full
+      // `name` match let any unrelated text containing the word "jack"
+      // positively identify the person - which is how one client's name
+      // attached itself to messages that had nothing to do with them.
+      // Single tokens are kept as weaker corroborating evidence only.
+      const multiToken = String(candidate.value || '').trim().split(/\s+/).length > 1;
+      entities.push({ ...candidate, type: multiToken ? 'name' : 'name_fragment' });
     }
   }
   if (entry.organization) {
@@ -121,7 +131,13 @@ function matchPeople(signalEntities = [], people = []) {
         role: person.role,
         confidence: Number(best.weight.toFixed(4)),
         // A shared domain places someone at the company; it does not name them.
-        identified: best.matched_on === 'email' || best.matched_on === 'name',
+        // A single name token never identifies anybody, and a full name only
+        // does so when it came from the sender rather than from loose prose.
+        identified: best.matched_on === 'email'
+          || (best.matched_on === 'name'
+              && (best.signal_type === 'person'
+                  || best.signal_source === 'sender_name'
+                  || best.signal_source === 'sender_address')),
         evidence: best
       });
     }

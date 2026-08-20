@@ -14,3 +14,6 @@ uploads/
 scraped_ccc.txt
 scraped_blackboard.txt
 semantic_memory.json
+
+# Memory repair backups - full owner profile + memory dump, contains PII
+aura-memory-backup-*.json

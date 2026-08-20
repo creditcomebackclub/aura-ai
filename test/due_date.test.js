@@ -59,3 +59,24 @@ test('due labels distinguish today, overdue, and future', () => {
   const friday = parseDueAt('Friday', { timeZone: TZ, now: NOW });
   assert.match(formatDueLabel(friday, { timeZone: TZ, now: NOW }), /due Fri/i);
 });
+
+test('a date-only due date means end of the local day, not UTC midnight', () => {
+  // new Date('2026-08-25') is UTC midnight = 5pm Aug 24 in Phoenix, which made
+  // every date-only goal read as overdue on the morning it was actually due.
+  assert.equal(parseDueAt('2026-08-25', { timeZone: TZ, now: NOW }), '2026-08-26T00:00:00.000Z');
+  assert.equal(parseDueAt('2026-08-05', { timeZone: TZ, now: NOW }), '2026-08-06T00:00:00.000Z');
+  // A timestamp that carries its own offset is still taken as given.
+  assert.equal(
+    parseDueAt('2026-08-12T18:00:00Z', { timeZone: TZ, now: NOW }),
+    '2026-08-12T18:00:00.000Z'
+  );
+});
+
+test('"next <weekday>" lands in the following week', () => {
+  // NOW is Wednesday 2026-08-05.
+  assert.equal(parseDueAt('Friday', { timeZone: TZ, now: NOW }), '2026-08-08T00:00:00.000Z');
+  // Previously this returned this week's Friday, so the goal came due a week early.
+  assert.equal(parseDueAt('next Friday', { timeZone: TZ, now: NOW }), '2026-08-15T00:00:00.000Z');
+  assert.equal(parseDueAt('next Monday', { timeZone: TZ, now: NOW }), '2026-08-11T00:00:00.000Z');
+  assert.equal(parseDueAt('next Wednesday', { timeZone: TZ, now: NOW }), '2026-08-13T00:00:00.000Z');
+});

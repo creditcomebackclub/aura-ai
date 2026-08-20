@@ -11,8 +11,11 @@ const {
   findFalseCapabilityDenial,
   findProfileMatches,
   findSelfCapabilityNegation,
+  mergeRelationshipEntry,
   parseMemoryCommand,
-  renderMemoryDocument
+  renderMemoryDocument,
+  selectPendingConfirmation,
+  selectPinnedProfileEntries
 } = require('../memory_v2');
 const {
   brainRequestOptions,
@@ -1576,5 +1579,193 @@ test('separate schedulers deduplicate Blackboard source errors', async () => {
   assert.deepEqual(
     [...notificationKeys],
     ['blackboard-error:BLACKBOARD_CALENDAR_ERROR:2026-07-29']
+  );
+});
+
+// Regression: correctTranscriptClientNames used to rewrite any 4+ letter word
+// within one edit of a client name, so "call him back" became "call him Jack"
+// and "I love you back" became "I love you Jack" - which the model then read
+// as a statement about a personal relationship.
+test('transcript correction leaves ordinary English alone', () => {
+  const clients = [
+    { id: 1, name: 'Jack Miller' },
+    { id: 2, name: 'Mark Stein' },
+    { id: 3, name: 'Dawn Reilly' },
+    { id: 4, name: 'Grant Hughes' },
+    { id: 5, name: 'Wade Harris' },
+    { id: 6, name: 'Bill Turner' }
+  ];
+  const untouched = [
+    'call him back tomorrow',
+    'I want my money back',
+    'let me get back to you',
+    'I love you back',
+    'take the back way',
+    'push it back a week',
+    'park the car',
+    'grant me access',
+    'we made a deal',
+    'at the dawn of the project',
+    'mark it as done',
+    'I will be right back'
+  ];
+  for (const phrase of untouched) {
+    assert.equal(correctTranscriptClientNames(phrase, clients), phrase);
+  }
+});
+
+test('client lookup refuses to resolve a common word to a client', () => {
+  const clients = [{ id: 1, name: 'Jack Miller' }, { id: 2, name: 'Mark Stein' }];
+  assert.deepEqual(rankClientMatches('back', clients), []);
+  assert.deepEqual(rankClientMatches('mark', clients), []);
+  // A real name still resolves.
+  assert.equal(rankClientMatches('Jack Miller', clients).length, 1);
+});
+
+test('spoken affirmations resolve a pending preference confirmation', () => {
+  const approvals = [
+    'yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'yes please', 'yes go ahead',
+    'yes do it', 'sure thing', 'mhm', 'uh huh', 'of course', 'correct',
+    'absolutely', 'please do', 'save that', 'sounds good', 'yes thanks'
+  ];
+  for (const reply of approvals) {
+    assert.equal(classifyMemoryConfirmationReply(reply), 'approved', reply);
+  }
+  const rejections = [
+    'no', 'nope', 'nah', 'not yet', 'skip it', 'forget it', 'never mind',
+    'no thanks', 'please dont', 'not really', 'dont save that'
+  ];
+  for (const reply of rejections) {
+    assert.equal(classifyMemoryConfirmationReply(reply), 'rejected', reply);
+  }
+  // A second clause means this is a request, not an answer.
+  for (const reply of ['yes and email him about it', 'Do it', 'go ahead', 'remind me tomorrow']) {
+    assert.equal(classifyMemoryConfirmationReply(reply), null, reply);
+  }
+});
+
+test('pinned preferences are never crowded out by people entries', () => {
+  const entries = {};
+  for (let index = 0; index < 80; index += 1) {
+    const key = `people.client${String(index).padStart(2, '0')}`;
+    entries[key] = {
+      key,
+      kind: 'relationship',
+      value: `Client ${index}`,
+      subject: `Client ${index}`,
+      relationship: 'client',
+      pinned: true,
+      updated_at: '2026-08-01T00:00:00Z'
+    };
+  }
+  entries['preference.coffee'] = {
+    key: 'preference.coffee',
+    kind: 'preference',
+    value: 'black coffee, no sugar',
+    instruction: 'Assume black coffee.',
+    subject: '',
+    relationship: '',
+    pinned: true,
+    updated_at: '2026-08-19T00:00:00Z'
+  };
+  entries['pronunciation.pesavage'] = {
+    key: 'pronunciation.pesavage',
+    kind: 'pronunciation',
+    value: 'Pesavage -> PESS-uh-vidge',
+    instruction: 'Pronounce "Pesavage" as "PESS-uh-vidge".',
+    subject: 'Pesavage',
+    relationship: '',
+    pinned: true,
+    updated_at: '2026-08-19T00:00:00Z'
+  };
+
+  const selected = selectPinnedProfileEntries(Object.values(entries));
+  const keys = selected.map(entry => entry.key);
+  assert.equal(keys.includes('preference.coffee'), true);
+  assert.equal(keys.includes('pronunciation.pesavage'), true);
+
+  const context = buildProfileContext({ entries });
+  assert.match(context, /black coffee/);
+  assert.match(context, /PESS-uh-vidge/);
+  // Clients are filed as business records, not as the owner's own relations.
+  assert.match(context, /CCC BUSINESS CONTACTS/);
+  const ownerSection = context.slice(
+    context.indexOf('OWNER PROFILE FACTS'),
+    context.indexOf('CCC BUSINESS CONTACTS')
+  );
+  assert.doesNotMatch(ownerSection, /Client \d/);
+});
+
+test('two different people sharing a name are not fused into one record', () => {
+  const existing = {
+    kind: 'relationship',
+    key: 'people.sarah',
+    subject: 'Sarah',
+    relationship: 'wife',
+    value: 'Sarah',
+    emails: ['sarah@home.example'],
+    organization: '',
+    aliases: [],
+    phones: [],
+    preferences: [],
+    commitments: []
+  };
+  const incoming = {
+    kind: 'relationship',
+    key: 'people.sarah',
+    subject: 'Sarah',
+    relationship: 'client',
+    value: 'Sarah',
+    emails: ['sarah@acme.example'],
+    organization: 'Acme',
+    aliases: [],
+    phones: [],
+    preferences: [],
+    commitments: []
+  };
+  const merged = mergeRelationshipEntry(existing, incoming);
+  // The client must not inherit the personal label or the personal address.
+  assert.equal(merged.relationship, 'client');
+  assert.equal(merged.emails.includes('sarah@home.example'), false);
+});
+
+test('a memory candidate is retired after the ask budget is spent', () => {
+  const candidate = (id, askCount, updatedAt) => ({
+    id,
+    entry: {
+      key: `preference.${id}`,
+      kind: 'preference',
+      value: `value ${id}`,
+      subject: '',
+      relationship: '',
+      instruction: `Prefer ${id}.`,
+      aliases: [],
+      emails: [],
+      phones: [],
+      preferences: [],
+      commitments: [],
+      confidence: 0.7,
+      source: 'conversation'
+    },
+    created_at: '2026-08-18T00:00:00.000Z',
+    updated_at: updatedAt,
+    ask_count: askCount,
+    occurrences: 1
+  });
+  const profile = {
+    memory_candidates: [
+      candidate('exhausted-candidate', 2, '2026-08-19T00:00:00.000Z'),
+      candidate('fresh-candidate', 0, '2026-08-18T00:00:00.000Z')
+    ]
+  };
+  // The exhausted candidate is skipped even though it is the most recent, and
+  // the older un-asked one is offered instead - previously the first element
+  // in array order won and could block every candidate behind it.
+  assert.equal(selectPendingConfirmation(profile).id, 'fresh-candidate');
+  assert.equal(
+    selectPendingConfirmation({
+      memory_candidates: [candidate('spent-candidate', 2, '2026-08-19T00:00:00.000Z')]
+    }),
+    null
   );
 });

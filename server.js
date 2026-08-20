@@ -457,6 +457,25 @@ async function addConversationMessage(role, content, metadata = {}) {
   return { id: Number(result.lastInsertRowid), role, created_at: new Date().toISOString() };
 }
 
+// The candidate id AURA recorded when she last put a memory question to the
+// owner. Anchoring approval on this instead of the question's wording is what
+// makes a spoken "yes" actually resolve: the persona rewrites the sentence,
+// but the id is exact. Returns '' when the message carries no such marker
+// (including the SQLite dev path, which stores no metadata) so callers can
+// fall back to the older text comparison.
+// How long after AURA actually asked a memory question a bare "yes" may still
+// be read as its answer when no message-level marker survived (an interrupted
+// turn never persists its reply). Short enough that a stale candidate cannot
+// swallow approval meant for something else.
+const MEMORY_CONFIRMATION_RECENT_ASK_MS = 10 * 60 * 1000;
+
+function memoryConfirmationAskedId(message) {
+  const metadata = message?.metadata;
+  if (!metadata || typeof metadata !== 'object') return '';
+  const id = metadata.memory_confirmation_asked;
+  return typeof id === 'string' ? id : '';
+}
+
 async function recentConversationMessages(limit = 15) {
   if (cloudState) return cloudState.recentMessages(limit);
   return db.prepare(`
@@ -869,7 +888,7 @@ function createBrainCompletion({ _traceLabel, ...requestOptions } = {}) {
 // a new performance at every comma or sentence boundary. If the model calls
 // tools instead, no sentence fires - tool-call content is not conversational
 // text.
-async function createBrainCompletionStreamed({ _traceLabel, onSentence, _signal, ...requestOptions } = {}) {
+async function createBrainCompletionStreamed({ _traceLabel, onSentence, _signal, _holdSpeechUntilFinal, ...requestOptions } = {}) {
   const startedAtMs = Date.now();
   const options = brainRequestOptions(modelConfig, requestOptions);
   const stream = await resolveBrainClient(options.model).chat.completions.create(
@@ -882,7 +901,28 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, _signal,
   let firstDeltaAtMs = null;
   const toolCallsByIndex = new Map();
   let finishReason = null;
-  const speechChunks = createSpeechChunkAccumulator(onSentence);
+
+  // A model that is about to call a tool often narrates first ("Let me pull
+  // that up..."). That narration was being spoken immediately, and then the
+  // post-tool round spoke the real answer - which usually restates it. That
+  // is the "talking over herself" the owner reported, and the preamble was
+  // not even in the saved reply, because content is nulled once tool calls
+  // exist. Only the FINAL flush was guarded, which was too late.
+  //
+  // Held only on the opening round, which is where narration-before-a-tool
+  // happens. Post-tool rounds stream live, so the answer on a tool turn keeps
+  // its time-to-first-audio; so do tool-less turns (greetings, chit-chat).
+  const mayCallTools = _holdSpeechUntilFinal === true
+    && Array.isArray(requestOptions.tools)
+    && requestOptions.tools.length > 0;
+  const heldChunks = [];
+  const emitChunk = onSentence
+    ? (chunk) => {
+        if (mayCallTools) heldChunks.push(chunk);
+        else onSentence(chunk);
+      }
+    : undefined;
+  const speechChunks = createSpeechChunkAccumulator(emitChunk);
 
   const drainSpeakable = ({ final = false } = {}) => {
     if (!onSentence) return;
@@ -943,6 +983,16 @@ async function createBrainCompletionStreamed({ _traceLabel, onSentence, _signal,
   // model didn't call a tool (tool-call rounds carry no reply text).
   if (onSentence && toolCallsByIndex.size === 0) {
     drainSpeakable({ final: true });
+  }
+  // Release held speech only once this round is known to be an answer. If it
+  // turned into a tool call, the narration is discarded unspoken.
+  if (onSentence && mayCallTools) {
+    if (toolCallsByIndex.size === 0) {
+      for (const chunk of heldChunks) onSentence(chunk);
+    } else if (heldChunks.length) {
+      console.log(`[speech] discarded ${heldChunks.length} pre-tool-call chunk(s) unspoken`);
+    }
+    heldChunks.length = 0;
   }
 
   const streamMs = Date.now() - startedAtMs;
@@ -1075,6 +1125,19 @@ async function sendProactiveAlert(text, category = 'general', urgency = 'normal'
     voice: Boolean(options.telegramVoice && notification.spoken)
   });
   io.emit('proactive-alert', notification);
+  // Anything AURA says out loud belongs in the history she reads on the next
+  // turn. Alerts used to live only in the notifications table, so she had no
+  // record of having said them - and would raise the same thing again in
+  // conversation minutes later. Best-effort: a failure here must never stop
+  // an alert being delivered.
+  addConversationMessage('assistant', text, {
+    proactive: true,
+    category,
+    urgency,
+    notification_id: notification.id ?? null
+  }).catch(error => {
+    console.warn('[Proactive Alert] Conversation mirror failed:', error.message || error);
+  });
   // Phone push: mirror every proactive alert to Telegram when configured so
   // Chris still gets it if the orb UI isn't open. Morning brief also attaches
   // a tap-to-play voice note (spoken prose, not the bullet layout).
@@ -2383,9 +2446,13 @@ const tools = [
       description: 'Update the status of an existing goal (pending, active, paused, completed, dropped).',
       parameters: {
         type: 'object',
-        properties: { 
+        properties: {
           id: { type: 'string', description: 'The goal ID as shown by get_goals' },
-          status: { type: 'string', description: 'The new status (e.g., completed, pending, dropped)' }
+          status: {
+            type: 'string',
+            enum: ['pending', 'active', 'paused', 'completed', 'dropped'],
+            description: 'The new status. Must be exactly one of the listed values.'
+          }
         },
         required: ['id', 'status']
       }
@@ -3280,6 +3347,17 @@ async function handleToolCall(toolCall, options = {}) {
           completed: 'completed',
           dropped: 'cancelled'
         }[args.status];
+        // An unmapped status used to reach Supabase as `undefined`, which the
+        // client drops from the patch body: only updated_at was written, the
+        // row came back unchanged, and the tool reported success. The goal
+        // stayed open and AURA kept raising work she had said was finished.
+        if (!taskStatus) {
+          result = {
+            updated: false,
+            error: `Unsupported goal status "${args.status}". Use one of: pending, active, paused, completed, dropped.`
+          };
+          break;
+        }
         result = await cloudState.updateTaskStatus(args.id, taskStatus);
       } else {
         const update = db.prepare('UPDATE goals SET status = ? WHERE id = ?').run(args.status, args.id);
@@ -3857,12 +3935,20 @@ async function processOwnerText(text, {
     // is TTL-cached inside ccc_database so this is cheap after the first hit.
     onPhase('name-correction');
     const nameCorrectionStartedAtMs = process.env.AURA_TIMING_TRACE ? Date.now() : 0;
+    // What the owner actually said, kept verbatim. The corrected variant is
+    // fine for the model and the tool layer, but it must never be what gets
+    // stored: a bad rewrite persisted into the conversation row and durable
+    // memory is permanent and unauditable, and there was no way to tell one
+    // had happened. Persistence uses ownerTextRaw; the turn continues on the
+    // corrected `text`.
+    const ownerTextRaw = text;
     try {
       text = correctCommonSpeechTerms(text);
       text = await ccc.correctOwnerTextClientNames(text);
     } catch (error) {
       console.warn('Client-name transcript correction skipped:', error.message || error);
     }
+    const nameCorrectionApplied = text !== ownerTextRaw;
     if (process.env.AURA_TIMING_TRACE) {
       console.log(`[timing] name correction: ${Date.now() - nameCorrectionStartedAtMs}ms`);
     }
@@ -3915,6 +4001,7 @@ async function processOwnerText(text, {
         onSentence: streamSentence,
         _signal: signal,
         _reasoningEffort: turnReasoningEffort,
+        _holdSpeechUntilFinal: true,
         ...(!usePrimaryModel && modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
         _traceLabel: 'isolated round 0'
       });
@@ -4110,9 +4197,11 @@ async function processOwnerText(text, {
     // awaited directly right here (memoryCommand path) - either way it's
     // guaranteed to have landed before the matching assistant reply is
     // written, which is the only ordering guarantee that actually matters.
-    const userMessagePromise = addConversationMessage('user', text, {
+    const userMessagePromise = addConversationMessage('user', ownerTextRaw, {
       memory_mode: memoryCommand ? 'explicit_sync' : 'automatic',
       memory_command: memoryCommand?.type || null,
+      // Auditable record of any client-name rewrite applied for this turn.
+      ...(nameCorrectionApplied ? { name_corrected_text: text } : {}),
       ...(turnId ? { turn_id: turnId } : {})
     }).then(message => {
       try {
@@ -4190,23 +4279,61 @@ async function processOwnerText(text, {
     let pendingMemoryConfirmation = await pendingMemoryConfirmationPromise;
     if (memoryConfirmationDecision && pendingMemoryConfirmation) {
       // Bare "yes" is only about memory when AURA's immediately preceding
-      // saved reply asked this exact question. This prevents a stale memory
-      // candidate from stealing approval intended for email, calendar, or a
-      // staged destructive action.
-      const recent = await recentConversationMessages(3);
+      // saved reply actually asked about this candidate. This prevents a
+      // stale memory candidate from stealing approval intended for email,
+      // calendar, or a staged destructive action.
+      //
+      // The anchor is the candidate id recorded in the assistant message's
+      // metadata when the question was emitted - NOT the question text. The
+      // old check required the saved reply to literally contain the question
+      // string while SOUL.md instructs her to rewrite everything into spoken
+      // prose, so the match essentially never succeeded: the owner said yes,
+      // nothing resolved, and the same question came back next turn.
+      const recent = await recentConversationMessages(5);
+      // Skip proactive alerts: they are mirrored into the conversation so she
+      // remembers saying them, but they are not a reply to the owner and must
+      // not shadow the question he is actually answering.
       const previousAssistant = [...recent].reverse()
-        .find(message => message.role === 'assistant');
-      if (String(previousAssistant?.content || '').includes(pendingMemoryConfirmation.question)) {
+        .find(message => message.role === 'assistant' && message.metadata?.proactive !== true);
+      const askedId = memoryConfirmationAskedId(previousAssistant);
+      let askedThisCandidate;
+      if (askedId) {
+        // An explicit marker is authoritative in both directions: if the last
+        // reply raised a different candidate, this "yes" is not for this one.
+        askedThisCandidate = askedId === pendingMemoryConfirmation.id;
+      } else if (String(previousAssistant?.content || '').includes(pendingMemoryConfirmation.question)) {
+        askedThisCandidate = true;
+      } else {
+        // No marker at all: either the SQLite dev path (which stores no
+        // metadata) or - the case that actually bit the owner - a turn he
+        // barged in on, whose assistant reply was therefore never persisted
+        // even though he heard the question and answered it. The candidate's
+        // own last_asked_at survives that, so use it, bounded tightly so a
+        // stale candidate cannot claim an unrelated approval.
+        const askedAtMs = Date.parse(pendingMemoryConfirmation.last_asked_at || '');
+        askedThisCandidate = Number.isFinite(askedAtMs)
+          && Date.now() - askedAtMs <= MEMORY_CONFIRMATION_RECENT_ASK_MS;
+      }
+      if (askedThisCandidate) {
         throwIfAborted(signal);
         await userMessagePromise;
         const approved = memoryConfirmationDecision === 'approved';
         const resolution = await memoryV2.resolvePendingConfirmation(
           pendingMemoryConfirmation.id,
-          approved
+          approved,
+          { entryKey: pendingMemoryConfirmation.entry?.key || '' }
         );
-        const reply = approved
-          ? `Got it. I’ll remember that preference: ${pendingMemoryConfirmation.entry.value}.`
-          : 'Got it. I won’t save that preference.';
+        // Never claim a save that did not happen. resolvePendingConfirmation
+        // returns { resolved: false } whenever the candidate id is already
+        // gone - a stale cached read, or a concurrent background extraction
+        // that rewrote memory_candidates. Asserting success there is what
+        // made the same preference come back one turn after AURA said she
+        // had saved it.
+        const reply = resolution.resolved !== true
+          ? 'I lost track of that one before I could save it. Say it again and I’ll store it.'
+          : approved
+            ? `Got it. I’ll remember that preference: ${pendingMemoryConfirmation.entry.value}.`
+            : 'Got it. I won’t save that preference.';
         const evidence = [{
           tool: approved ? 'memory_confirm' : 'memory_reject',
           ok: resolution.resolved === true
@@ -4320,7 +4447,10 @@ async function processOwnerText(text, {
       ? [...conversationContext.messages]
       : [];
     const lastMessage = messages[messages.length - 1];
-    const currentUserAlreadyPresent = lastMessage?.role === 'user' && lastMessage?.content === text;
+    // History stores the owner's verbatim text, so compare against both forms
+    // - otherwise a name-corrected turn looks absent and gets appended twice.
+    const currentUserAlreadyPresent = lastMessage?.role === 'user'
+      && (lastMessage?.content === text || lastMessage?.content === ownerTextRaw);
     if (interruptedContext) {
       if (currentUserAlreadyPresent) messages.pop();
       messages.push({
@@ -4390,6 +4520,7 @@ async function processOwnerText(text, {
       onSentence: streamSentence,
       _signal: signal,
       _reasoningEffort: turnReasoningEffort,
+      _holdSpeechUntilFinal: true,
       ...(!usePrimaryModel && modelConfig.routerModel ? { model: modelConfig.routerModel } : {}),
       _traceLabel: 'round 0'
     });
@@ -4678,6 +4809,16 @@ async function processOwnerText(text, {
       sentenceGate.resetAfterToolRecovery?.();
       streamSentence?.(reply);
     }
+    // Spend one ask from the candidate's budget as soon as the reply carrying
+    // the question exists - deliberately ahead of the remaining abort check,
+    // because a barge-in cancels persistence but does NOT unsay the question
+    // the owner already heard. This record is what lets his "yes" land on the
+    // next turn even though the interrupted reply was never stored.
+    if (pendingMemoryConfirmation) {
+      memoryV2.markConfirmationAsked(pendingMemoryConfirmation.id).catch(error => {
+        console.warn('[Memory v2] Recording confirmation ask failed:', error.message);
+      });
+    }
     const responseReadyMs = Date.now() - requestStartedAtMs;
     onPhase('persist-assistant');
     const memoryJob = memoryExtractionQueue
@@ -4704,7 +4845,12 @@ async function processOwnerText(text, {
       },
       memory_extraction: memoryJob
         ? { status: memoryJob.status, job_id: memoryJob.id }
-        : { status: 'scheduled_local' }
+        : { status: 'scheduled_local' },
+      // Stamp the candidate this reply was asked to raise. The next turn's
+      // "yes" is matched against this id, not against the question's wording.
+      ...(pendingMemoryConfirmation
+        ? { memory_confirmation_asked: pendingMemoryConfirmation.id }
+        : {})
     });
     if (skillOutcomeStore) {
       skillOutcomeStore.recordTurn({
@@ -4727,7 +4873,8 @@ async function processOwnerText(text, {
       memoryExtractionQueue.kick();
     } else {
       setImmediate(() => {
-        memoryV2.learnFromUserMessage(text, { source: 'conversation' }).catch(error => {
+        // Learn from what he said, not from what the name corrector made of it.
+        memoryV2.learnFromUserMessage(ownerTextRaw, { source: 'conversation' }).catch(error => {
           console.warn('[Memory v2] Automatic learning failed:', error.message);
         });
       });
@@ -5268,6 +5415,9 @@ app.delete('/api/profile/:key', async (req, res) => {
   if (!cloudState) {
     if (entry.memory_id) await activeMemory.forget(entry.memory_id);
     await profileStore.removeOwnerProfileEntries([key]);
+    // These routes bypass MemoryV2._withMutationLock, so nothing else clears
+    // its TTL caches - without this the deleted entry keeps answering.
+    memoryV2.invalidateContextCache();
     return res.json({ forgotten: true });
   }
   const action = await cloudState.proposeAction(null, 'aura_core', 'delete_profile_entry', { profile_key: key }, 'destructive_write');
@@ -5301,6 +5451,7 @@ async function executeApprovedAction(action) {
       const entry = profile.entries?.[args.profile_key];
       if (entry?.memory_id) await activeMemory.forget(entry.memory_id);
       await profileStore.removeOwnerProfileEntries([args.profile_key]);
+      memoryV2.invalidateContextCache();
       result = { forgotten: Boolean(entry) };
     } else if (action.tool_name === 'send_owner_email') {
       if (!AURA_OWNER_EMAIL) throw new Error('AURA_OWNER_EMAIL is not configured.');

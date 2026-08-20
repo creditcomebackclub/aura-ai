@@ -80,9 +80,24 @@ function parseDueAt(input, { timeZone = 'America/Phoenix', now = new Date() } = 
   const raw = String(input).trim();
   if (!raw) return null;
 
-  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+  // A full timestamp already carries its own offset - take it as given.
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(raw)) {
     const parsed = new Date(raw);
     if (Number.isFinite(parsed.getTime())) return parsed.toISOString();
+  }
+
+  // A bare YYYY-MM-DD has no time and no zone. `new Date('2026-08-25')` is
+  // UTC midnight, which in Phoenix is 5pm on the 24th - so a date-only due
+  // date landed on the PREVIOUS local day and every such goal read as
+  // overdue on the morning it was actually due. Route it through the same
+  // end-of-local-day rule the relative phrases already use.
+  const isoDateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateOnly) {
+    const year = Number(isoDateOnly[1]);
+    const month = Number(isoDateOnly[2]);
+    const day = Number(isoDateOnly[3]);
+    const end = endOfLocalDay(year, month, day, timeZone);
+    if (Number.isFinite(end.getTime())) return end.toISOString();
   }
 
   const lower = raw.toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
@@ -141,8 +156,20 @@ function parseDueAt(input, { timeZone = 'America/Phoenix', now = new Date() } = 
   if (weekdayHit) {
     const want = WEEKDAYS[weekdayHit[2]];
     const weekdayIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday);
-    let delta = (want - weekdayIndex + 7) % 7;
-    if (delta === 0 || weekdayHit[1]) delta = delta === 0 ? 7 : delta;
+    // A bare weekday means the next one to come round. "next <weekday>" means
+    // that weekday in the FOLLOWING calendar week, which is not the same
+    // thing: said on a Wednesday, "next Friday" is nine days out, not two.
+    // The old form (`delta === 0 || weekdayHit[1]`) only changed anything
+    // when delta was already 0, so the "next " prefix was silently ignored on
+    // every other day of the week and those goals came due a week early.
+    let delta;
+    if (weekdayHit[1]) {
+      // Days to the start (Sunday) of next week, then out to the weekday.
+      delta = (7 - weekdayIndex) + want;
+    } else {
+      delta = (want - weekdayIndex + 7) % 7;
+      if (delta === 0) delta = 7;
+    }
     return addLocalDays(parts, delta, timeZone).toISOString();
   }
 

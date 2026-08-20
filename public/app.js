@@ -480,10 +480,7 @@ function cancelActiveTurn() {
     }
     turnAbortController = null;
   }
-  stopPcmPlayback();
-  audioPlayer.pause();
-  audioPlayer.currentTime = 0;
-  releaseAudioUrl();
+  silenceAllPlayback();
   isSpeaking = false;
   stopVoiceWave();
   hideTranscript();
@@ -949,11 +946,26 @@ async function ensureAudioGraph() {
   return true;
 }
 
+// Single owner of AURA's voice. Every playback path - streamed replies,
+// proactive alerts, the morning brief - takes the queue through here or
+// through enqueueSpeechAudio, and both stop whatever is already sounding
+// first. Two independent output paths exist (the <audio> element for whole
+// clips, Web Audio BufferSources for streamed PCM); silencing only one of
+// them is what let two AURA voices overlap.
+function silenceAllPlayback() {
+  stopPcmPlayback();
+  audioPlayer.pause();
+  audioPlayer.currentTime = 0;
+  releaseAudioUrl();
+}
+
 function playAudioBlob(blob) {
+  silenceAllPlayback();
   playbackCancelled = false;
   resetVoiceQueue();
+  const generation = voiceGeneration;
   voiceQueueTail = voiceQueueTail.then(async () => {
-    if (playbackCancelled) return;
+    if (playbackCancelled || generation !== voiceGeneration) return;
     setOrbState('speaking', 'Speaking... tap to interrupt');
     isSpeaking = true;
     audioPlayer.onplay = startVoiceWave;
@@ -1627,9 +1639,15 @@ socket.on('connect_error', async (err) => {
 
 socket.on('proactive-alert', async (data) => {
   console.log('Proactive alert received:', data.text);
-  if (isSpeaking || isListening) return;
-  // A new alert is its own exchange, so a previous interrupt shouldn't mute it.
-  playbackCancelled = false;
+  // isProcessing covers the window this guard used to miss: while a turn is
+  // still being answered, isSpeaking is false because no sentence has been
+  // enqueued yet - so an alert would start its own TTS and land on top of the
+  // reply the moment that reply's first chunk began playing.
+  if (isSpeaking || isListening || isProcessing) return;
+  // A new alert is its own exchange, so a previous interrupt shouldn't mute
+  // it - but only clear the interrupt flag when no turn is actually live,
+  // otherwise this un-cancels a barge-in the owner just performed.
+  if (!turnAbortController && !activeChatTurnId) playbackCancelled = false;
   setOrbState('thinking', 'AURA is notifying you...');
   try {
     // Prefer the prose `spoken` field when present (morning brief) so TTS

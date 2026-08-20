@@ -237,6 +237,85 @@ const NAME_NOISE_WORDS = new Set([
   'client', 'customer'
 ]);
 
+// Ordinary English words that must never be rewritten into a client name.
+// Transcript correction used to treat any 4+ letter token as a candidate
+// surname, so "call him back" became "call him Jack", "park the car" became
+// "Mark the car", and "I love you back" became "I love you Jack" - which the
+// model then reasonably read as a statement about a personal relationship.
+// A score threshold cannot catch these: a client genuinely named Mark, Dawn,
+// or Grant scores a perfect 1.0 against the identical English word, so the
+// word itself has to be disqualified up front.
+const COMMON_WORD_STOPLIST = new Set([
+  'able', 'about', 'above', 'after', 'again', 'against', 'ahead', 'align',
+  'alike', 'alone', 'along', 'already', 'also', 'always', 'among', 'another',
+  'answer', 'anyone', 'anything', 'apart', 'around', 'aside', 'asked', 'away',
+  'back', 'bank', 'base', 'because', 'become', 'been', 'before', 'begin',
+  'behind', 'being', 'believe', 'below', 'best', 'better', 'between', 'beyond',
+  'bill', 'blank', 'block', 'board', 'both', 'bring', 'brought', 'build',
+  'business', 'call', 'called', 'came', 'cancel', 'cannot', 'card', 'care',
+  'carry', 'case', 'cash', 'catch', 'chance', 'change', 'charge', 'check',
+  'city', 'claim', 'class', 'clean', 'clear', 'close', 'come', 'coming',
+  'common', 'company', 'complete', 'confirm', 'could', 'count', 'course',
+  'cover', 'credit', 'current', 'dark', 'date', 'dawn', 'deal', 'dear',
+  'decide', 'deep', 'detail', 'different', 'does', 'doing', 'done', 'down',
+  'draft', 'drive', 'drop', 'during', 'each', 'earlier', 'early', 'easy',
+  'either', 'else', 'email', 'enough', 'enter', 'even', 'evening', 'ever',
+  'every', 'everything', 'exact', 'expect', 'fact', 'fair', 'fall', 'family',
+  'fast', 'feel', 'fell', 'file', 'fill', 'final', 'find', 'fine', 'finish',
+  'first', 'follow', 'forget', 'form', 'forward', 'found', 'frank', 'free',
+  'friend', 'from', 'front', 'full', 'game', 'gave', 'general', 'gets',
+  'give', 'given', 'goes', 'going', 'gone', 'good', 'grace', 'grand', 'grant',
+  'great', 'green', 'group', 'grow', 'guess', 'half', 'hand', 'happen',
+  'hard', 'hart', 'have', 'having', 'head', 'hear', 'heard', 'held', 'help',
+  'here', 'high', 'hold', 'home', 'hope', 'hour', 'house', 'however', 'hunt',
+  'idea', 'important', 'inside', 'instead', 'issue', 'item', 'jack', 'jump',
+  'just', 'keep', 'kind', 'knew', 'know', 'known', 'land', 'large',
+  'last', 'late', 'later', 'lead', 'learn', 'least', 'leave', 'left', 'less',
+  'letter', 'level', 'life', 'light', 'like', 'line', 'list', 'little',
+  'live', 'long', 'look', 'lost', 'love', 'made', 'mail', 'main', 'make',
+  'many', 'mark', 'match', 'matter', 'maybe', 'mean', 'meet', 'might',
+  'mind', 'minute', 'miss', 'money', 'month', 'more', 'morning', 'most',
+  'move', 'much', 'must', 'name', 'near', 'need', 'never', 'next', 'nice',
+  'night', 'none', 'noon', 'north', 'note', 'nothing', 'notice', 'number',
+  'offer', 'office', 'often', 'once', 'only', 'open', 'order', 'other',
+  'over', 'page', 'paid', 'park', 'part', 'party', 'pass', 'past', 'pay',
+  'people', 'perhaps', 'phone', 'pick', 'place', 'plan', 'play', 'please',
+  'point', 'poor', 'post', 'power', 'price', 'probably', 'problem', 'pull',
+  'push', 'quick', 'quite', 'rate', 'rather', 'reach', 'read', 'ready',
+  'real', 'really', 'reason', 'recent', 'record', 'reed', 'rest', 'return',
+  'review', 'rich', 'ride', 'right', 'ring', 'rise', 'road', 'rock', 'room',
+  'round', 'rule', 'same', 'save', 'schedule', 'second', 'seem', 'seen',
+  'sell', 'send', 'sent', 'service', 'seven', 'several', 'shall', 'share',
+  'shop', 'short', 'should', 'show', 'side', 'sign', 'since', 'single',
+  'sitting', 'small', 'some', 'someone', 'something', 'soon', 'sort',
+  'sound', 'south', 'speak', 'spend', 'stand', 'star', 'start', 'state',
+  'stay', 'step', 'still', 'stone', 'stop', 'story', 'street', 'strong',
+  'such', 'sure', 'take', 'talk', 'tell', 'than', 'thank', 'that', 'their',
+  'them', 'then', 'there', 'these', 'they', 'thing', 'think', 'this',
+  'those', 'though', 'thought', 'three', 'through', 'time', 'today',
+  'together', 'told', 'tomorrow', 'took', 'total', 'town', 'track', 'trade',
+  'true', 'trust', 'turn', 'under', 'until', 'upon', 'used', 'very', 'view',
+  'wait', 'wade', 'walk', 'want', 'ward', 'warm', 'wash', 'watch', 'water',
+  'week', 'well', 'went', 'were', 'west', 'what', 'when', 'where', 'which',
+  'while', 'white', 'whole', 'will', 'wish', 'with', 'within', 'without',
+  'wood', 'word', 'work', 'world', 'worth', 'would', 'write', 'wrong',
+  'year', 'your'
+]);
+
+// Single-token rewrites are the dangerous case: a lone word has no
+// surrounding name evidence, and one wrong letter in a short token already
+// clears the similarity bar (normalized edit distance puts "back" vs "Jack"
+// at exactly 0.75). Real mangled surnames that need correction are long -
+// "pissavage" is nine characters and scores 0.7778 against "Pesavage" - so
+// requiring six characters keeps every case this feature exists for while
+// removing the entire class of four- and five-letter English words.
+const MIN_SINGLE_TOKEN_REWRITE_LENGTH = 6;
+const MIN_SINGLE_TOKEN_REWRITE_SCORE = 0.76;
+
+function isCommonEnglishWord(value) {
+  return COMMON_WORD_STOPLIST.has(String(value || '').toLowerCase());
+}
+
 function normalizeClientName(name) {
   return String(name || '')
     .normalize('NFKD')
@@ -347,7 +426,18 @@ function rankScoredClients(scored, { minScore = 0.68, clearWinnerGap = 0.1, ambi
   return ranked.filter(client => ranked[0]._match_score - client._match_score <= ambiguityWindow);
 }
 
+// A lookup whose whole query is one ordinary English word is not a name.
+// Without this, "back" resolved to a client called Jack as a CONFIDENT match
+// (0.75 against a 0.68 admit threshold), so the tool layer reproduced the
+// same misidentification the transcript rewriter used to make.
+function isUnnameableQuery(name) {
+  const tokens = normalizeClientName(name);
+  if (!tokens.length) return true;
+  return tokens.every(token => isCommonEnglishWord(token));
+}
+
 function rankClientMatches(name, clients) {
+  if (isUnnameableQuery(name)) return [];
   const scored = (clients || []).map(client => ({
     ...client,
     _match_score: scoreClientName(name, client.name)
@@ -420,16 +510,25 @@ function correctTranscriptClientNames(text, clients, { minScore = 0.72 } = {}) {
       const indexes = wordIndexes.slice(cursor, cursor + len);
       const rawPhrase = indexes.map(index => parts[index]).join(' ');
       const cleaned = rawPhrase.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
-      if (!normalizeClientName(cleaned).length) continue;
-      // Skip tiny single tokens ("a", "to") — real surnames are longer.
-      if (len === 1 && cleaned.length < 4) continue;
+      const cleanedTokens = normalizeClientName(cleaned);
+      if (!cleanedTokens.length) continue;
+      // A window made entirely of ordinary English words is speech, not a
+      // name, however closely it resembles one.
+      if (cleanedTokens.every(isCommonEnglishWord)) continue;
+      if (len === 1) {
+        // Real surnames worth correcting are long; short tokens are where
+        // English words collide with client names.
+        if (cleaned.length < MIN_SINGLE_TOKEN_REWRITE_LENGTH) continue;
+        if (isCommonEnglishWord(cleaned)) continue;
+      }
 
+      const singleTokenMinScore = Math.max(minScore, MIN_SINGLE_TOKEN_REWRITE_SCORE);
       const ranked = rankScoredClients(
         clients.map(client => ({
           ...client,
           _match_score: scoreClientName(cleaned, client.name)
         })),
-        { minScore }
+        { minScore: len === 1 ? singleTokenMinScore : minScore }
       ).filter(client => windowAnchoredToClientName(cleaned, client.name));
       if (ranked.length !== 1) continue;
       // Single-token hits correct only that token's spelling (pissavage→
@@ -975,6 +1074,8 @@ module.exports = {
   suggestClientMatches,
   correctTranscriptClientNames,
   correctOwnerTextClientNames,
+  isCommonEnglishWord,
+  loadClientDirectory,
   clearClientDirectoryCache,
   getClientCurrentPhase,
   normalizePhaseLabel,

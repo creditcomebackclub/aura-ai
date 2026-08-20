@@ -21,6 +21,12 @@ const PINNED_KINDS = new Set([
 
 const MEMORY_CONFIRMATION_MAX_PENDING = 5;
 const MEMORY_CONFIRMATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// A preference AURA has already asked about twice is not going to be resolved
+// by asking a third time - the owner either answered in prose she could not
+// classify, or does not care. Without this cap a candidate she can never
+// clear is re-proposed on every turn for the full 30-day TTL, which is what
+// "she keeps asking me the same question" actually was.
+const MEMORY_CONFIRMATION_MAX_ASKS = 2;
 
 const SECRET_PATTERNS = [
   /\b(?:sk|rk|pk)-[a-z0-9_-]{20,}\b/i,
@@ -246,8 +252,30 @@ function normalizeMemoryCandidate(raw, nowMs = Date.now()) {
       : new Date(nowMs).toISOString(),
     updated_at: String(raw.updated_at || raw.created_at || new Date(nowMs).toISOString()),
     occurrences: Math.max(1, Number(raw.occurrences) || 1),
+    ask_count: Math.max(0, Number(raw.ask_count) || 0),
+    last_asked_at: raw.last_asked_at ? String(raw.last_asked_at) : null,
     question: memoryConfirmationQuestion(entry)
   };
+}
+
+// A candidate that has already been put to the owner the maximum number of
+// times is retired rather than asked again.
+function memoryCandidateExhausted(candidate) {
+  return Number(candidate?.ask_count || 0) >= MEMORY_CONFIRMATION_MAX_ASKS;
+}
+
+// The candidate to put to the owner next. Previously this took the first
+// element in array order, which is the OLDEST - so a single candidate that
+// could not be resolved blocked every newer preference behind it for the
+// full TTL. Prefer the least-asked, then the most recent.
+function selectPendingConfirmation(profile) {
+  return (Array.isArray(profile?.memory_candidates) ? profile.memory_candidates : [])
+    .map(candidate => normalizeMemoryCandidate(candidate))
+    .filter(candidate => candidate && !memoryCandidateExhausted(candidate))
+    .sort((a, b) =>
+      a.ask_count - b.ask_count ||
+      (Date.parse(b.updated_at || '') || 0) - (Date.parse(a.updated_at || '') || 0)
+    )[0] || null;
 }
 
 function classifyMemoryConfirmationReply(text) {
@@ -259,24 +287,124 @@ function classifyMemoryConfirmationReply(text) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!normalized || normalized.length > 80) return null;
-  if (/^(?:no|nope|nah|don't|do not|not yet|skip it|forget it|never mind)(?:\s+(?:thanks|thank you|please))?$/.test(normalized)) {
-    return 'rejected';
-  }
-  if (/^(?:yes|yeah|yep|yup|sure|okay|ok|absolutely|definitely|please do)(?:\s+(?:please\s+)?(?:remember|save)(?:\s+(?:that|it|the preference))?)?(?:\s+(?:thanks|thank you))?$/.test(normalized)) {
-    return 'approved';
-  }
+
+  // Spoken replies are not clipped to a fixed grammar. The old fully-anchored
+  // regexes returned null - meaning "no decision", so the candidate was never
+  // resolved and came back next turn - for ordinary answers like "yes go
+  // ahead", "yes please", "sure thing", "mhm", "of course" and "correct".
+  // Match on a leading affirmative/negative head plus permissive filler
+  // instead, and only decline to classify when the reply carries a second
+  // clause that might be a real request rather than an answer.
+  const NEGATIVE_HEAD = /^(?:(?:please\s+)?(?:don'?t|do not)|no|nope|nah|negative|not yet|not now|not really|skip(?: it| that)?|forget(?: it| that)?|never mind|leave it|drop it|no thanks|no thank you)\b/;
+  // Note what is deliberately absent: bare imperatives ("do it", "go ahead").
+  // On their own those are as likely to authorize a pending action as to
+  // answer a memory question, so they stay unclassified. They are still
+  // accepted as trailing filler, so "yes go ahead" and "yes do it" resolve.
+  const AFFIRMATIVE_HEAD = /^(?:yes|yeah|yep|yup|yah|ya|sure|okay|ok|alright|all right|absolutely|definitely|certainly|of course|correct|affirmative|please do|sounds good|that'?s right|mhm|mhmm|mm hmm|uh huh|uhhuh|mmhmm|save it|save that|remember it|remember that|keep it|keep that)\b/;
+  // Filler that may trail an answer without changing it.
+  const TRAILING_FILLER = /^(?:please|thanks|thank|you|that|that'?s|it|the|preference|for|me|my|too|as|well|now|then|yeah|yes|sure|and|do|go|ahead|on|save|saving|store|remember|remembering|keep|is|fine|good|great|cool|perfect|sounds|right|thing|ok|okay|man|buddy|dear|aura)$/;
+
+  const decide = (head) => {
+    const remainder = normalized.slice(head.length).trim();
+    if (!remainder) return true;
+    // Anything left over must be pure filler. A leftover verb phrase like
+    // "yes and email him about it" is a request, not an answer, and must not
+    // silently consume the memory confirmation.
+    return remainder.split(' ').every(token => TRAILING_FILLER.test(token));
+  };
+
+  const negative = normalized.match(NEGATIVE_HEAD);
+  if (negative && decide(negative[0])) return 'rejected';
+  const affirmative = normalized.match(AFFIRMATIVE_HEAD);
+  if (affirmative && decide(affirmative[0])) return 'approved';
   return null;
 }
 
-function shouldConfirmMemoryEntry(entry, { source = 'conversation', explicit = false } = {}) {
+// True when this profile already holds an equivalent entry, so there is
+// nothing left to ask about.
+function profileAlreadyHasEntry(profile, entry) {
+  if (!profile || !entry) return false;
+  const entries = profile.entries || {};
+  const existing = entries[entry.replaces_key] || entries[entry.key];
+  if (!existing) return false;
+  return canonicalMemory(existing) === canonicalMemory(entry);
+}
+
+function shouldConfirmMemoryEntry(entry, {
+  source = 'conversation',
+  explicit = false,
+  profile = null
+} = {}) {
   if (!entry || entry.kind !== 'preference') return false;
   if (source === 'explicit_command' || source === 'explicit_correction') return false;
+  // Asking about something already saved is the loop the owner kept hitting:
+  // the learning review re-derives a preference every ten turns, and without
+  // this check it was re-proposed even after being confirmed and stored.
+  // This is checked BEFORE the learning_review rule below - that rule is a
+  // real safety property (a preference AURA inferred in the background must
+  // never be persisted without the owner agreeing to it), so it stays.
+  if (profileAlreadyHasEntry(profile, entry)) return false;
   if (source === 'learning_review') return true;
   return !explicit && Number(entry.confidence) < 0.9;
 }
 
+// Business relationships. A client is not a personal relation of the owner,
+// and the two must never be blended into one record.
+const BUSINESS_RELATIONSHIPS = new Set([
+  'client', 'customer', 'vendor', 'supplier', 'contractor', 'employee',
+  'colleague', 'coworker', 'co-worker', 'partner org', 'professional contact',
+  'business contact', 'lead', 'prospect', 'referral'
+]);
+
+function isBusinessRelationship(value) {
+  return BUSINESS_RELATIONSHIPS.has(String(value || '').trim().toLowerCase());
+}
+
+// Two person entries describe the same human only when something other than a
+// bare first name says so. Without this, `people.<slug(subject)>` collided any
+// two people sharing a name and set-unioned their emails, organizations and
+// commitments - and because the merge kept the OLD relationship label
+// whenever the new entry omitted one, a mislabel became permanent. That is
+// how a client ended up carrying a personal relationship.
+function relationshipEntriesDescribeSamePerson(existing, incoming) {
+  const overlaps = (left, right) => {
+    const set = new Set((left || []).map(value => String(value).toLowerCase()));
+    return (right || []).some(value => set.has(String(value).toLowerCase()));
+  };
+  if (overlaps(existing.emails, incoming.emails)) return true;
+  if (overlaps(existing.phones, incoming.phones)) return true;
+
+  const sameOrganization = existing.organization && incoming.organization &&
+    existing.organization.toLowerCase() === incoming.organization.toLowerCase();
+  if (sameOrganization) return true;
+
+  // A full name is specific enough to merge on; a single token is not.
+  const subjectTokens = String(incoming.subject || '').trim().split(/\s+/).filter(Boolean);
+  const fullName = subjectTokens.length >= 2 &&
+    String(existing.subject || '').trim().toLowerCase() === String(incoming.subject || '').trim().toLowerCase();
+  if (fullName) return true;
+
+  // Identical explicit relationship on both sides is weak but consistent
+  // evidence - and crucially never crosses the business/personal boundary.
+  if (existing.relationship && incoming.relationship &&
+      existing.relationship === incoming.relationship) {
+    return true;
+  }
+  return false;
+}
+
 function mergeRelationshipEntry(existing, incoming) {
   if (incoming?.kind !== 'relationship' || !existing || existing.kind !== 'relationship') {
+    return incoming;
+  }
+  // Never let a business contact inherit a personal label, or the reverse.
+  if (existing.relationship && incoming.relationship &&
+      isBusinessRelationship(existing.relationship) !== isBusinessRelationship(incoming.relationship)) {
+    return incoming;
+  }
+  if (!relationshipEntriesDescribeSamePerson(existing, incoming)) {
+    // Same name, different person: keep the incoming entry whole rather than
+    // fusing two humans' details together.
     return incoming;
   }
   const union = (left, right, limit) => [...new Set([...(left || []), ...(right || [])])].slice(0, limit);
@@ -415,19 +543,64 @@ function findProfileMatches(profile, query, { limit = 6, threshold = 0.34 } = {}
     .slice(0, limit);
 }
 
+// Owner-defining entries are never the ones to drop. The old single slice
+// sorted every pinned entry alphabetically by key and cut at 60 - and
+// "people." sorts before "preference." and "pronunciation.", so on a
+// client-heavy profile the owner's own preferences and pronunciations were
+// truncated out of the prompt entirely while every client survived. That is
+// simultaneously why AURA forgot preferences and why she would not stop
+// naming clients. Budget per kind instead: owner entries first, people fill
+// whatever is left, most recently updated first.
+const PROFILE_CONTEXT_MAX_ENTRIES = 60;
+const OWNER_DEFINING_KINDS = [
+  'identity',
+  'communication',
+  'preference',
+  'pronunciation',
+  'business_rule'
+];
+
+function selectPinnedProfileEntries(rows, limit = PROFILE_CONTEXT_MAX_ENTRIES) {
+  const pinned = rows.filter(entry => entry.pinned);
+  const byKey = (a, b) => String(a.key).localeCompare(String(b.key));
+  const byRecency = (a, b) =>
+    (Date.parse(b.updated_at || b.created_at || '') || 0) -
+    (Date.parse(a.updated_at || a.created_at || '') || 0) ||
+    byKey(a, b);
+
+  const ownerEntries = pinned
+    .filter(entry => OWNER_DEFINING_KINDS.includes(entry.kind))
+    .sort(byKey);
+  const otherEntries = pinned
+    .filter(entry => !OWNER_DEFINING_KINDS.includes(entry.kind))
+    .sort(byRecency);
+
+  const selected = ownerEntries.slice(0, limit);
+  const remaining = Math.max(0, limit - selected.length);
+  selected.push(...otherEntries.slice(0, remaining));
+
+  const dropped = pinned.length - selected.length;
+  if (dropped > 0) {
+    console.warn(
+      `[Memory v2] Profile context truncated: ${dropped} of ${pinned.length} pinned entries omitted ` +
+      `(${Math.max(0, ownerEntries.length - Math.min(ownerEntries.length, limit))} owner-defining, ` +
+      `${Math.max(0, otherEntries.length - remaining)} other).`
+    );
+  }
+  return selected.sort(byKey);
+}
+
 function buildProfileContext(profile) {
-  const pinned = profileRows(profile)
-    .filter(entry => entry.pinned)
-    .sort((a, b) => String(a.key).localeCompare(String(b.key)))
-    .slice(0, 60);
+  const pinned = selectPinnedProfileEntries(profileRows(profile));
   if (!pinned.length) return '';
 
   const facts = [];
+  const businessContacts = [];
   const instructions = [];
   for (const entry of pinned) {
     if (entry.kind === 'relationship') {
       const details = [
-        `relationship=${entry.relationship || 'known person'}`,
+        entry.relationship ? `relationship=${entry.relationship}` : 'relationship=unstated',
         entry.role ? `role=${entry.role}` : '',
         entry.organization ? `organization=${entry.organization}` : '',
         entry.aliases?.length ? `aliases=${entry.aliases.join(', ')}` : '',
@@ -437,7 +610,12 @@ function buildProfileContext(profile) {
         entry.commitments?.length ? `commitments=${entry.commitments.join('; ')}` : '',
         entry.last_context ? `last context=${entry.last_context}` : ''
       ].filter(Boolean);
-      facts.push(`- ${entry.subject || entry.value}: ${details.join(' | ')}`);
+      const line = `- ${entry.subject || entry.value}: ${details.join(' | ')}`;
+      // Business contacts are filed separately from the owner's personal
+      // relations. Mixing them under one "OWNER PROFILE FACTS" heading is
+      // what let a client read as somebody the owner is personally close to.
+      if (isBusinessRelationship(entry.relationship)) businessContacts.push(line);
+      else facts.push(line);
     } else if (entry.kind !== 'communication' && entry.instruction) {
       facts.push(`- ${entry.key}: ${entry.value}`);
       instructions.push(`- ${entry.instruction}`);
@@ -451,6 +629,12 @@ function buildProfileContext(profile) {
   let context = '';
   if (facts.length) {
     context += `\nOWNER PROFILE FACTS (direct owner-provided data; use when relevant):\n${facts.join('\n')}`;
+  }
+  if (businessContacts.length) {
+    context += `\nCCC BUSINESS CONTACTS (business records, not personal relations of the owner. ` +
+      `Never describe these people as the owner's friends, family, or romantic partners, and never ` +
+      `mention one unless the current request is about that person or about the business):\n` +
+      `${businessContacts.join('\n')}`;
   }
   if (instructions.length) {
     context += `\nOWNER COMMUNICATION AND OPERATING PREFERENCES (apply every turn unless the owner changes them):\n${instructions.join('\n')}`;
@@ -700,7 +884,7 @@ function renderProfileEntryLine(entry) {
   const provenance = `_(source: ${entry.source || 'unknown'}, confidence ${entry.confidence ?? '?'})_`;
   if (entry.kind === 'relationship') {
     const who = entry.subject || entry.value;
-    const relationship = entry.relationship || 'known person';
+    const relationship = entry.relationship || 'contact (relationship not stated)';
     const details = [entry.role, entry.organization, ...(entry.emails || []), ...(entry.phones || [])].filter(Boolean);
     return `- **${who}** — ${relationship}${details.length ? `; ${details.join('; ')}` : ''}${entry.pinned ? '' : ' (not pinned)'} ${provenance}`;
   }
@@ -789,7 +973,15 @@ function canonicalMemory(entry) {
       entry.commitments?.length && `commitments: ${entry.commitments.join('; ')}`,
       entry.last_context && `last context: ${entry.last_context}`
     ].filter(Boolean);
-    return `${entry.subject || entry.value} is the owner's ${entry.relationship || 'known person'}${details.length ? `. ${details.join('. ')}` : ''}.`;
+    // An unstated relationship is unknown, not personal. Defaulting to
+    // "the owner's known person" wrote a possessive personal framing into
+    // the DURABLE memory row itself, so a business contact was permanently
+    // stored as a relation of the owner.
+    const who = entry.subject || entry.value;
+    const head = entry.relationship
+      ? `${who} is the owner's ${entry.relationship}`
+      : `${who} is a known contact`;
+    return `${head}${details.length ? `. ${details.join('. ')}` : ''}.`;
   }
   if (entry.instruction) return `${entry.key}: ${entry.value}. Preference: ${entry.instruction}`;
   return entry.kind === 'durable_fact' ? entry.value : `${entry.key}: ${entry.value}`;
@@ -817,38 +1009,58 @@ class MemoryV2 {
     this.contextCacheTtlMs = Math.max(0, Number(contextCacheTtlMs) || 0);
     this._profileCache = { at: 0, value: null };
     this._alwaysOnCache = { at: 0, value: null };
+    // Bumped on every invalidation. A read that started before a write
+    // committed must not install its now-stale result afterwards.
+    this._cacheEpoch = 0;
   }
 
   _invalidateContextCache() {
+    this._cacheEpoch += 1;
     this._profileCache = { at: 0, value: null };
     this._alwaysOnCache = { at: 0, value: null };
   }
 
+  // Public counterpart: deletions performed directly against the store (the
+  // profile/memory HTTP routes and approved destructive actions) never run
+  // inside _withMutationLock, so nothing was clearing these caches and a
+  // deleted preference kept answering for the rest of the TTL.
+  invalidateContextCache() {
+    this._invalidateContextCache();
+  }
+
   async _cachedProfile() {
-    const now = Date.now();
     if (
       this.contextCacheTtlMs > 0
       && this._profileCache.value
-      && now - this._profileCache.at < this.contextCacheTtlMs
+      && Date.now() - this._profileCache.at < this.contextCacheTtlMs
     ) {
       return this._profileCache.value;
     }
+    const epoch = this._cacheEpoch;
     const value = await this.profileStore.getOwnerProfile();
-    this._profileCache = { at: now, value };
+    // Automatic learning runs detached after every reply, so a mutation
+    // landing during this read is routine. Installing the pre-write snapshot
+    // here is what made a just-confirmed preference invisible for 15s - and
+    // therefore what made AURA ask about it again on the very next turn.
+    if (epoch === this._cacheEpoch) {
+      this._profileCache = { at: Date.now(), value };
+    }
     return value;
   }
 
   async _cachedAlwaysOnList(limit) {
-    const now = Date.now();
     if (
       this.contextCacheTtlMs > 0
       && this._alwaysOnCache.value
-      && now - this._alwaysOnCache.at < this.contextCacheTtlMs
+      && Date.now() - this._alwaysOnCache.at < this.contextCacheTtlMs
     ) {
       return this._alwaysOnCache.value;
     }
+    const epoch = this._cacheEpoch;
     const value = await this.semanticMemory.list(limit);
-    this._alwaysOnCache = { at: now, value };
+    if (epoch === this._cacheEpoch) {
+      this._alwaysOnCache = { at: Date.now(), value };
+    }
     return value;
   }
 
@@ -960,8 +1172,11 @@ class MemoryV2 {
       const entriesToPersist = [];
       const entriesToConfirm = [];
       for (const entry of merged.values()) {
-        if (shouldConfirmMemoryEntry(entry, { source, explicit })) entriesToConfirm.push(entry);
-        else entriesToPersist.push(entry);
+        if (shouldConfirmMemoryEntry(entry, { source, explicit, profile: currentProfile })) {
+          entriesToConfirm.push(entry);
+        } else {
+          entriesToPersist.push(entry);
+        }
       }
       const candidates = entriesToConfirm.length
         ? await this._stageMemoryCandidates(entriesToConfirm, currentProfile)
@@ -1031,11 +1246,16 @@ class MemoryV2 {
         occurrences: 1
       });
       if (!candidate) continue;
+      // Already saved - there is nothing to confirm.
+      if (profileAlreadyHasEntry(currentProfile, candidate.entry)) continue;
       const existing = pending.find(item =>
         item.entry.key === candidate.entry.key &&
         canonicalMemory(item.entry) === canonicalMemory(candidate.entry)
       );
       if (existing) {
+        // Re-seeing the same preference is evidence, not a fresh question.
+        // created_at deliberately stays put so the TTL is a real deadline
+        // rather than a clock the extractor keeps resetting.
         existing.occurrences += 1;
         existing.updated_at = now;
         staged.push(existing);
@@ -1043,36 +1263,82 @@ class MemoryV2 {
       }
       // A newer interpretation of the same preference replaces an unconfirmed
       // older one; AURA should never ask two contradictory versions in a row.
+      // The replacement inherits the original's identity and ask history so a
+      // reworded restatement cannot reset the ask budget.
+      const superseded = pending.find(item => item.entry.key === candidate.entry.key);
+      if (superseded) {
+        candidate.id = superseded.id;
+        candidate.created_at = superseded.created_at;
+        candidate.ask_count = superseded.ask_count;
+        candidate.last_asked_at = superseded.last_asked_at;
+      }
       pending = pending.filter(item => item.entry.key !== candidate.entry.key);
       pending.push(candidate);
       staged.push(candidate);
     }
+    // Retire candidates the owner has already been asked about to the limit.
+    pending = pending.filter(candidate => !memoryCandidateExhausted(candidate));
     pending = pending.slice(-MEMORY_CONFIRMATION_MAX_PENDING);
     await this.profileStore.setOwnerMemoryCandidates(pending);
     return staged;
   }
 
   async getPendingConfirmation() {
-    const profile = await this._cachedProfile();
-    return (Array.isArray(profile?.memory_candidates) ? profile.memory_candidates : [])
-      .map(candidate => normalizeMemoryCandidate(candidate))
-      .find(Boolean) || null;
+    // Deliberately bypasses the TTL cache. This value decides whether an
+    // owner "yes" resolves anything, and a cached snapshot from before the
+    // last write makes resolvePendingConfirmation miss on an id that is
+    // already gone - AURA then claims a save that never happened.
+    const profile = await this.profileStore.getOwnerProfile();
+    return selectPendingConfirmation(profile);
   }
 
-  async resolvePendingConfirmation(id, approved) {
+  // Records that the owner has actually been asked about a candidate, so the
+  // ask budget is spent on asks that happened rather than on turns where the
+  // question was merely available.
+  async markConfirmationAsked(id) {
+    if (!id || typeof this.profileStore.setOwnerMemoryCandidates !== 'function') return null;
     return this._withMutationLock(async () => {
       const profile = await this.profileStore.getOwnerProfile();
       const pending = (Array.isArray(profile?.memory_candidates) ? profile.memory_candidates : [])
         .map(candidate => normalizeMemoryCandidate(candidate))
         .filter(Boolean);
-      const index = pending.findIndex(candidate => candidate.id === id);
+      const candidate = pending.find(item => item.id === id);
+      if (!candidate) return null;
+      candidate.ask_count += 1;
+      candidate.last_asked_at = new Date().toISOString();
+      await this.profileStore.setOwnerMemoryCandidates(
+        pending.filter(item => !memoryCandidateExhausted(item))
+      );
+      return candidate;
+    });
+  }
+
+  async resolvePendingConfirmation(id, approved, { entryKey = '' } = {}) {
+    return this._withMutationLock(async () => {
+      const profile = await this.profileStore.getOwnerProfile();
+      const pending = (Array.isArray(profile?.memory_candidates) ? profile.memory_candidates : [])
+        .map(candidate => normalizeMemoryCandidate(candidate))
+        .filter(Boolean);
+      let index = pending.findIndex(candidate => candidate.id === id);
+      // The id can legitimately be stale - a concurrent background extraction
+      // rewrites memory_candidates and re-stages the same preference under a
+      // new record. Falling back to the entry key means the owner's "yes"
+      // still lands on the preference they were actually asked about.
+      if (index === -1 && entryKey) {
+        index = pending.findIndex(candidate => candidate.entry.key === entryKey);
+      }
       if (index === -1) return { resolved: false, learned: [] };
       const [candidate] = pending.splice(index, 1);
+      // Store an owner-confirmed preference at full confidence. Persisting it
+      // at its extracted confidence left it below the 0.9 bar in
+      // shouldConfirmMemoryEntry, so the very next extraction of the same
+      // sentence queued it for confirmation all over again.
       const learned = approved
-        ? await this._persistEntries([candidate.entry], profile, {
-            source: 'confirmed_preference',
-            explicit: true
-          })
+        ? await this._persistEntries(
+            [{ ...candidate.entry, confidence: 1 }],
+            profile,
+            { source: 'confirmed_preference', explicit: true }
+          )
         : [];
       if (typeof this.profileStore.setOwnerMemoryCandidates === 'function') {
         await this.profileStore.setOwnerMemoryCandidates(pending);
@@ -1215,11 +1481,7 @@ class MemoryV2 {
     }
     return {
       profile,
-      pendingConfirmation: (Array.isArray(profile?.memory_candidates)
-        ? profile.memory_candidates
-        : [])
-        .map(candidate => normalizeMemoryCandidate(candidate))
-        .find(Boolean) || null,
+      pendingConfirmation: selectPendingConfirmation(profile),
       profileContext: buildProfileContext(profile),
       alwaysOnContext: includeAlwaysOn
         ? buildAlwaysOnMemorySlice(recent, {
@@ -1326,6 +1588,13 @@ module.exports = {
   buildAlwaysOnMemorySlice,
   buildProfileContext,
   classifyMemoryConfirmationReply,
+  memoryCandidateExhausted,
+  mergeRelationshipEntry,
+  isBusinessRelationship,
+  selectPendingConfirmation,
+  profileAlreadyHasEntry,
+  selectPinnedProfileEntries,
+  MEMORY_CONFIRMATION_MAX_ASKS,
   containsSecret,
   deterministicEntries,
   findFalseCapabilityDenial,

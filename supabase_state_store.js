@@ -138,8 +138,10 @@ class SupabaseStateStore {
       .order('created_at', { ascending: false })
       .limit(Math.min(200, bounded * 4));
     if (error) throw error;
+    // metadata rides along: the memory-confirmation gate anchors on the
+    // candidate id recorded when the question was asked, not on its wording.
     return visibleConversationMessages((data || []).reverse(), bounded)
-      .map(({ role, content }) => ({ role, content }));
+      .map(({ role, content, metadata }) => ({ role, content, metadata }));
   }
 
   async getConversationContext(limit = 30) {
