@@ -11,8 +11,11 @@ const {
   findFalseCapabilityDenial,
   findProfileMatches,
   findSelfCapabilityNegation,
+  mergeRelationshipEntry,
   parseMemoryCommand,
-  renderMemoryDocument
+  renderMemoryDocument,
+  selectPendingConfirmation,
+  selectPinnedProfileEntries
 } = require('../memory_v2');
 const {
   brainRequestOptions,
@@ -1577,4 +1580,377 @@ test('separate schedulers deduplicate Blackboard source errors', async () => {
     [...notificationKeys],
     ['blackboard-error:BLACKBOARD_CALENDAR_ERROR:2026-07-29']
   );
+});
+
+// Regression: correctTranscriptClientNames used to rewrite any 4+ letter word
+// within one edit of a client name, so "call him back" became "call him Jack"
+// and "I love you back" became "I love you Jack" - which the model then read
+// as a statement about a personal relationship.
+test('transcript correction leaves ordinary English alone', () => {
+  const clients = [
+    { id: 1, name: 'Jack Miller' },
+    { id: 2, name: 'Mark Stein' },
+    { id: 3, name: 'Dawn Reilly' },
+    { id: 4, name: 'Grant Hughes' },
+    { id: 5, name: 'Wade Harris' },
+    { id: 6, name: 'Bill Turner' },
+    { id: 7, name: 'Jack R. Privitello' }
+  ];
+  const untouched = [
+    'call him back tomorrow',
+    'I want my money back',
+    'let me get back to you',
+    'I love you back',
+    'take the back way',
+    'push it back a week',
+    'park the car',
+    'grant me access',
+    'we made a deal',
+    'at the dawn of the project',
+    'mark it as done',
+    'I will be right back',
+    // The reported incident: talking about an ex, with a client named Jack in
+    // the roster. "we got back together" became "we got Jack together", and
+    // AURA concluded the owner was romantically involved with that client.
+    'we got back together',
+    'I want her back',
+    'she never came back',
+    'I never got her back'
+  ];
+  for (const phrase of untouched) {
+    assert.equal(correctTranscriptClientNames(phrase, clients), phrase);
+  }
+});
+
+test('client lookup refuses to resolve a common word to a client', () => {
+  const clients = [{ id: 1, name: 'Jack Miller' }, { id: 2, name: 'Mark Stein' }];
+  assert.deepEqual(rankClientMatches('back', clients), []);
+  assert.deepEqual(rankClientMatches('mark', clients), []);
+  // A real name still resolves.
+  assert.equal(rankClientMatches('Jack Miller', clients).length, 1);
+});
+
+test('spoken affirmations resolve a pending preference confirmation', () => {
+  const approvals = [
+    'yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'yes please', 'yes go ahead',
+    'yes do it', 'sure thing', 'mhm', 'uh huh', 'of course', 'correct',
+    'absolutely', 'please do', 'save that', 'sounds good', 'yes thanks'
+  ];
+  for (const reply of approvals) {
+    assert.equal(classifyMemoryConfirmationReply(reply), 'approved', reply);
+  }
+  const rejections = [
+    'no', 'nope', 'nah', 'not yet', 'skip it', 'forget it', 'never mind',
+    'no thanks', 'please dont', 'not really', 'dont save that'
+  ];
+  for (const reply of rejections) {
+    assert.equal(classifyMemoryConfirmationReply(reply), 'rejected', reply);
+  }
+  // A second clause means this is a request, not an answer.
+  for (const reply of ['yes and email him about it', 'Do it', 'go ahead', 'remind me tomorrow']) {
+    assert.equal(classifyMemoryConfirmationReply(reply), null, reply);
+  }
+});
+
+test('pinned preferences are never crowded out by people entries', () => {
+  const entries = {};
+  for (let index = 0; index < 80; index += 1) {
+    const key = `people.client${String(index).padStart(2, '0')}`;
+    entries[key] = {
+      key,
+      kind: 'relationship',
+      value: `Client ${index}`,
+      subject: `Client ${index}`,
+      relationship: 'client',
+      pinned: true,
+      updated_at: '2026-08-01T00:00:00Z'
+    };
+  }
+  entries['preference.coffee'] = {
+    key: 'preference.coffee',
+    kind: 'preference',
+    value: 'black coffee, no sugar',
+    instruction: 'Assume black coffee.',
+    subject: '',
+    relationship: '',
+    pinned: true,
+    updated_at: '2026-08-19T00:00:00Z'
+  };
+  entries['pronunciation.pesavage'] = {
+    key: 'pronunciation.pesavage',
+    kind: 'pronunciation',
+    value: 'Pesavage -> PESS-uh-vidge',
+    instruction: 'Pronounce "Pesavage" as "PESS-uh-vidge".',
+    subject: 'Pesavage',
+    relationship: '',
+    pinned: true,
+    updated_at: '2026-08-19T00:00:00Z'
+  };
+
+  const selected = selectPinnedProfileEntries(Object.values(entries));
+  const keys = selected.map(entry => entry.key);
+  assert.equal(keys.includes('preference.coffee'), true);
+  assert.equal(keys.includes('pronunciation.pesavage'), true);
+
+  const context = buildProfileContext({ entries });
+  assert.match(context, /black coffee/);
+  assert.match(context, /PESS-uh-vidge/);
+  // Clients are filed as business records, not as the owner's own relations.
+  assert.match(context, /CCC BUSINESS CONTACTS/);
+  const ownerSection = context.slice(
+    context.indexOf('OWNER PROFILE FACTS'),
+    context.indexOf('CCC BUSINESS CONTACTS')
+  );
+  assert.doesNotMatch(ownerSection, /Client \d/);
+});
+
+test('two different people sharing a name are not fused into one record', () => {
+  const existing = {
+    kind: 'relationship',
+    key: 'people.sarah',
+    subject: 'Sarah',
+    relationship: 'wife',
+    value: 'Sarah',
+    emails: ['sarah@home.example'],
+    organization: '',
+    aliases: [],
+    phones: [],
+    preferences: [],
+    commitments: []
+  };
+  const incoming = {
+    kind: 'relationship',
+    key: 'people.sarah',
+    subject: 'Sarah',
+    relationship: 'client',
+    value: 'Sarah',
+    emails: ['sarah@acme.example'],
+    organization: 'Acme',
+    aliases: [],
+    phones: [],
+    preferences: [],
+    commitments: []
+  };
+  const merged = mergeRelationshipEntry(existing, incoming);
+  // The client must not inherit the personal label or the personal address.
+  assert.equal(merged.relationship, 'client');
+  assert.equal(merged.emails.includes('sarah@home.example'), false);
+});
+
+test('a memory candidate is retired after the ask budget is spent', () => {
+  const candidate = (id, askCount, updatedAt) => ({
+    id,
+    entry: {
+      key: `preference.${id}`,
+      kind: 'preference',
+      value: `value ${id}`,
+      subject: '',
+      relationship: '',
+      instruction: `Prefer ${id}.`,
+      aliases: [],
+      emails: [],
+      phones: [],
+      preferences: [],
+      commitments: [],
+      confidence: 0.7,
+      source: 'conversation'
+    },
+    created_at: '2026-08-18T00:00:00.000Z',
+    updated_at: updatedAt,
+    ask_count: askCount,
+    occurrences: 1
+  });
+  const profile = {
+    memory_candidates: [
+      candidate('exhausted-candidate', 2, '2026-08-19T00:00:00.000Z'),
+      candidate('fresh-candidate', 0, '2026-08-18T00:00:00.000Z')
+    ]
+  };
+  // The exhausted candidate is skipped even though it is the most recent, and
+  // the older un-asked one is offered instead - previously the first element
+  // in array order won and could block every candidate behind it.
+  assert.equal(selectPendingConfirmation(profile).id, 'fresh-candidate');
+  assert.equal(
+    selectPendingConfirmation({
+      memory_candidates: [candidate('spent-candidate', 2, '2026-08-19T00:00:00.000Z')]
+    }),
+    null
+  );
+});
+
+// The owner's ex-girlfriend is also a CCC client. That is one person holding
+// two true roles, not a data error - and an earlier version of this code
+// treated the business/personal boundary as exclusive, which discarded her
+// personal history every time the client record was re-extracted.
+test('a person who is both a client and a personal relation keeps both roles', () => {
+  const personal = {
+    kind: 'relationship',
+    key: 'people.melissa',
+    subject: 'Melissa',
+    value: 'Melissa',
+    relationship: 'ex-girlfriend',
+    roles: ['ex-girlfriend'],
+    emails: ['melissa@personal.example'],
+    aliases: ['Melissa D. Gordon'],
+    phones: [],
+    organization: '',
+    role: '',
+    preferences: [],
+    commitments: [],
+    last_context: 'AZCEND program'
+  };
+  const asClient = {
+    kind: 'relationship',
+    key: 'people.melissa',
+    subject: 'Melissa D. Gordon',
+    value: 'Melissa D. Gordon',
+    relationship: 'client',
+    roles: ['client'],
+    emails: ['mgordon@work.example'],
+    aliases: [],
+    phones: [],
+    organization: 'CCC',
+    role: '',
+    preferences: [],
+    commitments: [],
+    last_context: ''
+  };
+
+  const merged = mergeRelationshipEntry(personal, asClient);
+  assert.deepEqual(merged.roles, ['ex-girlfriend', 'client']);
+  // Neither address nor the personal history may be dropped.
+  assert.equal(merged.emails.includes('melissa@personal.example'), true);
+  assert.equal(merged.emails.includes('mgordon@work.example'), true);
+  assert.equal(merged.last_context, 'AZCEND program');
+
+  // Anyone holding a personal role belongs with the owner's own people, so the
+  // business block's framing is never applied to them.
+  const context = buildProfileContext({ entries: { 'people.melissa': { ...merged, pinned: true } } });
+  assert.match(context, /OWNER PROFILE FACTS/);
+  assert.match(context, /roles=ex-girlfriend, client/);
+  assert.doesNotMatch(context, /CCC BUSINESS CONTACTS/);
+
+  // A client with no personal role still files as a business record.
+  const pureClient = {
+    ...asClient,
+    subject: 'Jack R. Privitello',
+    value: 'Jack R. Privitello',
+    aliases: [],
+    pinned: true
+  };
+  const clientContext = buildProfileContext({ entries: { 'people.jack': pureClient } });
+  assert.match(clientContext, /CCC BUSINESS CONTACTS/);
+  assert.doesNotMatch(clientContext, /OWNER PROFILE FACTS/);
+});
+
+test('the business-contacts block never denies a stated personal role', () => {
+  const context = buildProfileContext({
+    entries: {
+      'people.jack': {
+        kind: 'relationship',
+        key: 'people.jack',
+        subject: 'Jack R. Privitello',
+        value: 'Jack R. Privitello',
+        relationship: 'client',
+        roles: ['client'],
+        aliases: [], emails: [], phones: [], preferences: [], commitments: [],
+        organization: 'CCC', role: '', last_context: '',
+        pinned: true
+      }
+    }
+  });
+  // The old wording asserted these people are never personal relations, which
+  // is false for anyone who is both - and would have AURA deny something true.
+  assert.doesNotMatch(context, /Never describe these people as the owner's/);
+  assert.match(context, /may legitimately hold more than one role/);
+  assert.match(context, /never deny it if he asks directly/);
+});
+
+test('a dual-role contact gets an explicit business-privacy instruction', () => {
+  const entries = {
+    'people.melissa': {
+      key: 'people.melissa',
+      kind: 'relationship',
+      subject: 'Melissa D. Gordon',
+      value: 'Melissa',
+      relationship: 'client',
+      roles: ['ex-girlfriend', 'client'],
+      organization: 'CCC',
+      last_context: 'AZCEND program',
+      aliases: [], emails: [], phones: [], preferences: [], commitments: [], role: '',
+      pinned: true
+    }
+  };
+  const context = buildProfileContext({ entries });
+  // Stays in owner context so nothing can deny the personal tie...
+  assert.match(context, /OWNER PROFILE FACTS/);
+  // ...but the business discretion rule now reaches her, which it did not when
+  // it lived only in the CCC block she is deliberately not filed under.
+  assert.match(context, /DUAL-ROLE CONTACTS/);
+  assert.match(context, /business role client; personal role ex-girlfriend/);
+  assert.match(context, /leave their personal history out of the reply/);
+  assert.match(context, /never deny it/);
+
+  // A purely personal contact gets no such block.
+  const personalOnly = buildProfileContext({
+    entries: {
+      'people.taylor': {
+        ...entries['people.melissa'],
+        key: 'people.taylor', subject: 'Taylor', relationship: 'daughter',
+        roles: ['daughter'], organization: '', last_context: ''
+      }
+    }
+  });
+  assert.doesNotMatch(personalOnly, /DUAL-ROLE CONTACTS/);
+});
+
+test('two people sharing only a generic label are never merged', () => {
+  const person = ({ key, subject, relationship, email }) => ({
+    kind: 'relationship', key, subject, value: subject,
+    relationship, roles: [relationship], emails: [email],
+    aliases: [], phones: [], preferences: [], commitments: [],
+    organization: '', role: '', last_context: ''
+  });
+
+  // Two different clients who happen to share a first name. The shared
+  // "client" label must not count as evidence they are one person.
+  const merged = mergeRelationshipEntry(
+    person({ key: 'people.chris', subject: 'Chris', relationship: 'client', email: 'a@example.com' }),
+    person({ key: 'people.chris', subject: 'Chris', relationship: 'client', email: 'b@example.com' })
+  );
+  assert.deepEqual(merged.emails, ['b@example.com']);
+
+  // The owner's two daughters. A shared personal label is no better as proof
+  // of identity than a shared business one - merging them would collapse two
+  // of his children into a single record.
+  const kids = mergeRelationshipEntry(
+    person({ key: 'people.taylor', subject: 'Taylor', relationship: 'daughter', email: 'taylor@example.com' }),
+    person({ key: 'people.madison', subject: 'Madison', relationship: 'daughter', email: 'madison@example.com' })
+  );
+  assert.equal(kids.subject, 'Madison');
+  assert.equal(kids.emails.includes('taylor@example.com'), false);
+});
+
+test('an asked candidate survives long enough to be answered', async () => {
+  const profileStore = createProfileStore();
+  const semanticMemory = createSemanticMemory();
+  const client = extractionClient([{
+    key: 'preference.spark', kind: 'preference', value: 'daily sparks',
+    subject: '', relationship: '', instruction: 'Send a daily spark.',
+    replaces_key: '', pinned: true, confidence: 0.7
+  }]);
+  const memory = new MemoryV2({ profileStore, semanticMemory, client });
+  await memory.learnFromUserMessage('I like daily sparks.', { source: 'conversation' });
+
+  const first = await memory.getPendingConfirmation();
+  await memory.markConfirmationAsked(first.id, { entryKey: first.entry.key });
+  await memory.markConfirmationAsked(first.id, { entryKey: first.entry.key });
+
+  // The budget stops her ASKING again...
+  assert.equal(await memory.getPendingConfirmation(), null);
+  // ...but the candidate itself must still be resolvable, or the "yes" the
+  // owner is about to give for the question he just heard resolves nothing.
+  const resolution = await memory.resolvePendingConfirmation(first.id, true, { entryKey: first.entry.key });
+  assert.equal(resolution.resolved, true);
+  assert.equal(resolution.learned.length, 1);
 });
