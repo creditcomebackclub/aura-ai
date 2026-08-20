@@ -208,6 +208,16 @@ function normalizeEntry(raw, source = 'conversation') {
     value,
     subject,
     relationship,
+    // One person can hold several roles at once - the owner's ex who is also
+    // a CCC client is a real case, not a data error. `relationship` stays as
+    // the most recently stated label for compatibility; `roles` is the union
+    // of everything known, so recording her as a client can never erase the
+    // personal history and vice versa.
+    roles: cleanList(
+      [...(Array.isArray(raw.roles) ? raw.roles : []), raw.relationship],
+      6,
+      80
+    ).map(role => role.toLowerCase()),
     aliases: cleanList(raw.aliases, 8, 100),
     emails: cleanList(raw.emails, 5, 320)
       .filter(email => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)),
@@ -373,6 +383,11 @@ function relationshipEntriesDescribeSamePerson(existing, incoming) {
   };
   if (overlaps(existing.emails, incoming.emails)) return true;
   if (overlaps(existing.phones, incoming.phones)) return true;
+  // An alias is the owner telling us these are the same human - "Melissa" and
+  // "Melissa D. Gordon" share nothing else when one record is personal and
+  // the other came from the client roster.
+  if (overlaps(existing.aliases, [incoming.subject, ...(incoming.aliases || [])])) return true;
+  if (overlaps(incoming.aliases, [existing.subject, ...(existing.aliases || [])])) return true;
 
   const sameOrganization = existing.organization && incoming.organization &&
     existing.organization.toLowerCase() === incoming.organization.toLowerCase();
@@ -397,11 +412,6 @@ function mergeRelationshipEntry(existing, incoming) {
   if (incoming?.kind !== 'relationship' || !existing || existing.kind !== 'relationship') {
     return incoming;
   }
-  // Never let a business contact inherit a personal label, or the reverse.
-  if (existing.relationship && incoming.relationship &&
-      isBusinessRelationship(existing.relationship) !== isBusinessRelationship(incoming.relationship)) {
-    return incoming;
-  }
   if (!relationshipEntriesDescribeSamePerson(existing, incoming)) {
     // Same name, different person: keep the incoming entry whole rather than
     // fusing two humans' details together.
@@ -412,6 +422,15 @@ function mergeRelationshipEntry(existing, incoming) {
     ...existing,
     ...incoming,
     relationship: incoming.relationship || existing.relationship || '',
+    // Every role this person has ever been recorded under, kept together.
+    // Learning that someone is a client must never erase that they are also
+    // the owner's ex - that fact is true, and losing it is how AURA ends up
+    // either surprised by the connection or unable to acknowledge it.
+    roles: union(
+      [...(existing.roles || []), existing.relationship].filter(Boolean),
+      [...(incoming.roles || []), incoming.relationship].filter(Boolean),
+      6
+    ),
     aliases: union(existing.aliases, incoming.aliases, 8),
     emails: union(existing.emails, incoming.emails, 5),
     phones: union(existing.phones, incoming.phones, 5),
@@ -599,8 +618,11 @@ function buildProfileContext(profile) {
   const instructions = [];
   for (const entry of pinned) {
     if (entry.kind === 'relationship') {
+      const roles = (entry.roles || []).filter(Boolean);
       const details = [
-        entry.relationship ? `relationship=${entry.relationship}` : 'relationship=unstated',
+        roles.length
+          ? `roles=${roles.join(', ')}`
+          : (entry.relationship ? `relationship=${entry.relationship}` : 'relationship=unstated'),
         entry.role ? `role=${entry.role}` : '',
         entry.organization ? `organization=${entry.organization}` : '',
         entry.aliases?.length ? `aliases=${entry.aliases.join(', ')}` : '',
@@ -614,8 +636,17 @@ function buildProfileContext(profile) {
       // Business contacts are filed separately from the owner's personal
       // relations. Mixing them under one "OWNER PROFILE FACTS" heading is
       // what let a client read as somebody the owner is personally close to.
-      if (isBusinessRelationship(entry.relationship)) businessContacts.push(line);
-      else facts.push(line);
+      // Placement follows the strongest claim on the record: anyone holding a
+      // personal role belongs with the owner's own people even when they are
+      // also a client, because filing them as a pure business contact is what
+      // makes the business framing below a lie about them.
+      const personalRole = roles.some(role => !isBusinessRelationship(role)) ||
+        (!roles.length && entry.relationship && !isBusinessRelationship(entry.relationship));
+      if (!personalRole && (roles.some(isBusinessRelationship) || isBusinessRelationship(entry.relationship))) {
+        businessContacts.push(line);
+      } else {
+        facts.push(line);
+      }
     } else if (entry.kind !== 'communication' && entry.instruction) {
       facts.push(`- ${entry.key}: ${entry.value}`);
       instructions.push(`- ${entry.instruction}`);
@@ -631,9 +662,11 @@ function buildProfileContext(profile) {
     context += `\nOWNER PROFILE FACTS (direct owner-provided data; use when relevant):\n${facts.join('\n')}`;
   }
   if (businessContacts.length) {
-    context += `\nCCC BUSINESS CONTACTS (business records, not personal relations of the owner. ` +
-      `Never describe these people as the owner's friends, family, or romantic partners, and never ` +
-      `mention one unless the current request is about that person or about the business):\n` +
+    context += `\nCCC BUSINESS CONTACTS (business records. Do not assume any personal tie to the owner ` +
+      `beyond what a record states, and do not bring one of these people up unless the current request ` +
+      `is about them or about the business. A person may legitimately hold more than one role - if a ` +
+      `record lists a personal role alongside a business one, both are true; keep personal history out ` +
+      `of business answers unless the owner raises it, and never deny it if he asks directly):\n` +
       `${businessContacts.join('\n')}`;
   }
   if (instructions.length) {
@@ -884,7 +917,8 @@ function renderProfileEntryLine(entry) {
   const provenance = `_(source: ${entry.source || 'unknown'}, confidence ${entry.confidence ?? '?'})_`;
   if (entry.kind === 'relationship') {
     const who = entry.subject || entry.value;
-    const relationship = entry.relationship || 'contact (relationship not stated)';
+    const relationship = (entry.roles || []).filter(Boolean).join(', ')
+      || entry.relationship || 'contact (relationship not stated)';
     const details = [entry.role, entry.organization, ...(entry.emails || []), ...(entry.phones || [])].filter(Boolean);
     return `- **${who}** — ${relationship}${details.length ? `; ${details.join('; ')}` : ''}${entry.pinned ? '' : ' (not pinned)'} ${provenance}`;
   }
@@ -978,8 +1012,10 @@ function canonicalMemory(entry) {
     // the DURABLE memory row itself, so a business contact was permanently
     // stored as a relation of the owner.
     const who = entry.subject || entry.value;
-    const head = entry.relationship
-      ? `${who} is the owner's ${entry.relationship}`
+    const roles = (entry.roles || []).filter(Boolean);
+    const stated = roles.length ? roles.join(' and ') : entry.relationship;
+    const head = stated
+      ? `${who} is the owner's ${stated}`
       : `${who} is a known contact`;
     return `${head}${details.length ? `. ${details.join('. ')}` : ''}.`;
   }

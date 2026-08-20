@@ -1593,7 +1593,8 @@ test('transcript correction leaves ordinary English alone', () => {
     { id: 3, name: 'Dawn Reilly' },
     { id: 4, name: 'Grant Hughes' },
     { id: 5, name: 'Wade Harris' },
-    { id: 6, name: 'Bill Turner' }
+    { id: 6, name: 'Bill Turner' },
+    { id: 7, name: 'Jack R. Privitello' }
   ];
   const untouched = [
     'call him back tomorrow',
@@ -1607,7 +1608,14 @@ test('transcript correction leaves ordinary English alone', () => {
     'we made a deal',
     'at the dawn of the project',
     'mark it as done',
-    'I will be right back'
+    'I will be right back',
+    // The reported incident: talking about an ex, with a client named Jack in
+    // the roster. "we got back together" became "we got Jack together", and
+    // AURA concluded the owner was romantically involved with that client.
+    'we got back together',
+    'I want her back',
+    'she never came back',
+    'I never got her back'
   ];
   for (const phrase of untouched) {
     assert.equal(correctTranscriptClientNames(phrase, clients), phrase);
@@ -1768,4 +1776,92 @@ test('a memory candidate is retired after the ask budget is spent', () => {
     }),
     null
   );
+});
+
+// The owner's ex-girlfriend is also a CCC client. That is one person holding
+// two true roles, not a data error - and an earlier version of this code
+// treated the business/personal boundary as exclusive, which discarded her
+// personal history every time the client record was re-extracted.
+test('a person who is both a client and a personal relation keeps both roles', () => {
+  const personal = {
+    kind: 'relationship',
+    key: 'people.melissa',
+    subject: 'Melissa',
+    value: 'Melissa',
+    relationship: 'ex-girlfriend',
+    roles: ['ex-girlfriend'],
+    emails: ['melissa@personal.example'],
+    aliases: ['Melissa D. Gordon'],
+    phones: [],
+    organization: '',
+    role: '',
+    preferences: [],
+    commitments: [],
+    last_context: 'AZCEND program'
+  };
+  const asClient = {
+    kind: 'relationship',
+    key: 'people.melissa',
+    subject: 'Melissa D. Gordon',
+    value: 'Melissa D. Gordon',
+    relationship: 'client',
+    roles: ['client'],
+    emails: ['mgordon@work.example'],
+    aliases: [],
+    phones: [],
+    organization: 'CCC',
+    role: '',
+    preferences: [],
+    commitments: [],
+    last_context: ''
+  };
+
+  const merged = mergeRelationshipEntry(personal, asClient);
+  assert.deepEqual(merged.roles, ['ex-girlfriend', 'client']);
+  // Neither address nor the personal history may be dropped.
+  assert.equal(merged.emails.includes('melissa@personal.example'), true);
+  assert.equal(merged.emails.includes('mgordon@work.example'), true);
+  assert.equal(merged.last_context, 'AZCEND program');
+
+  // Anyone holding a personal role belongs with the owner's own people, so the
+  // business block's framing is never applied to them.
+  const context = buildProfileContext({ entries: { 'people.melissa': { ...merged, pinned: true } } });
+  assert.match(context, /OWNER PROFILE FACTS/);
+  assert.match(context, /roles=ex-girlfriend, client/);
+  assert.doesNotMatch(context, /CCC BUSINESS CONTACTS/);
+
+  // A client with no personal role still files as a business record.
+  const pureClient = {
+    ...asClient,
+    subject: 'Jack R. Privitello',
+    value: 'Jack R. Privitello',
+    aliases: [],
+    pinned: true
+  };
+  const clientContext = buildProfileContext({ entries: { 'people.jack': pureClient } });
+  assert.match(clientContext, /CCC BUSINESS CONTACTS/);
+  assert.doesNotMatch(clientContext, /OWNER PROFILE FACTS/);
+});
+
+test('the business-contacts block never denies a stated personal role', () => {
+  const context = buildProfileContext({
+    entries: {
+      'people.jack': {
+        kind: 'relationship',
+        key: 'people.jack',
+        subject: 'Jack R. Privitello',
+        value: 'Jack R. Privitello',
+        relationship: 'client',
+        roles: ['client'],
+        aliases: [], emails: [], phones: [], preferences: [], commitments: [],
+        organization: 'CCC', role: '', last_context: '',
+        pinned: true
+      }
+    }
+  });
+  // The old wording asserted these people are never personal relations, which
+  // is false for anyone who is both - and would have AURA deny something true.
+  assert.doesNotMatch(context, /Never describe these people as the owner's/);
+  assert.match(context, /may legitimately hold more than one role/);
+  assert.match(context, /never deny it if he asks directly/);
 });
