@@ -1905,20 +1905,30 @@ test('a dual-role contact gets an explicit business-privacy instruction', () => 
 });
 
 test('two people sharing only a generic label are never merged', () => {
-  const client = (subject, email) => ({
-    kind: 'relationship', key: 'people.chris', subject, value: subject,
-    relationship: 'client', roles: ['client'], emails: [email],
+  const person = ({ key, subject, relationship, email }) => ({
+    kind: 'relationship', key, subject, value: subject,
+    relationship, roles: [relationship], emails: [email],
     aliases: [], phones: [], preferences: [], commitments: [],
     organization: '', role: '', last_context: ''
   });
-  // Both are "client"; that shared label must not count as identity evidence.
-  const merged = mergeRelationshipEntry(client('Chris', 'a@example.com'), client('Chris', 'b@example.com'));
+
+  // Two different clients who happen to share a first name. The shared
+  // "client" label must not count as evidence they are one person.
+  const merged = mergeRelationshipEntry(
+    person({ key: 'people.chris', subject: 'Chris', relationship: 'client', email: 'a@example.com' }),
+    person({ key: 'people.chris', subject: 'Chris', relationship: 'client', email: 'b@example.com' })
+  );
   assert.deepEqual(merged.emails, ['b@example.com']);
 
-  // Same for two daughters - a shared personal label is no better as proof.
-  const daughter = (subject) => ({ ...client(subject, `${subject}@example.com`), relationship: 'daughter', roles: ['daughter'] });
-  const kids = mergeRelationshipEntry(daughter('Taylor'), daughter('Madison'));
-  assert.equal(kids.emails.includes('Taylor@example.com'), false);
+  // The owner's two daughters. A shared personal label is no better as proof
+  // of identity than a shared business one - merging them would collapse two
+  // of his children into a single record.
+  const kids = mergeRelationshipEntry(
+    person({ key: 'people.taylor', subject: 'Taylor', relationship: 'daughter', email: 'taylor@example.com' }),
+    person({ key: 'people.madison', subject: 'Madison', relationship: 'daughter', email: 'madison@example.com' })
+  );
+  assert.equal(kids.subject, 'Madison');
+  assert.equal(kids.emails.includes('taylor@example.com'), false);
 });
 
 test('an asked candidate survives long enough to be answered', async () => {
