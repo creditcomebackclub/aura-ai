@@ -180,6 +180,18 @@ authenticated `GET /api/memory/retrievals`. Use the existing profile and memory
 deletion endpoints to correct any influential memory; cloud deletions remain
 approval-staged.
 
+### Retrieval benchmark
+
+`npm run bench:retrieval` evaluates a committed, fully fictional 180-memory,
+84-query fixture offline against the production scorer. On its held-out test
+split, the full hybrid configuration achieved MRR **0.720 [0.631, 0.810]** and
+nDCG@4 **0.789 [0.720, 0.856]**; vector-only achieved MRR **0.847 [0.762,
+0.925]** and nDCG@4 **0.873 [0.808, 0.930]**. The paired intervals show that,
+on this synthetic fixture, hybrid scoring is worse than vector-only—not a basis
+to claim a hybrid recall win or to change production behavior. See the
+[full report](eval/retrieval/results/REPORT.md) and
+[labeling guide](eval/retrieval/LABELING.md).
+
 AURA extracts durable facts automatically with the configured background model.
 These commands are also handled explicitly:
 
