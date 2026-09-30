@@ -1,0 +1,1442 @@
+[
+  {
+    "id": "pref-quiet-brief",
+    "content": "The owner prefers the morning brief as three concise bullets with no motivational introduction.",
+    "kind": "preference",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "pref-calendar-buffer",
+    "content": "The owner prefers a fifteen minute buffer before every client call.",
+    "kind": "preference",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "person-mira-voss",
+    "content": "Mira Voss is the fictional operations lead at Northstar Credit Works and owns dispute packet review.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "person-teo-larkin",
+    "content": "Teo Larkin is the fictional bookkeeping advisor who reconciles invoice adjustments on Fridays.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "client-orion-phase",
+    "content": "Fictional client Orion Vale is in the bureau-response review phase after Experian acknowledged packet ZX-4821.",
+    "kind": "episode",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "client-lyra-phase",
+    "content": "Fictional client Lyra Quill is waiting for identity documents before the first dispute packet can be mailed.",
+    "kind": "episode",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "client-lyra-code",
+    "content": "Lyra Quill case code QV-7719 is attached to the Equifax address correction workflow.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "client-cedar-payment",
+    "content": "Fictional client Cedar Rowan scheduled a $129 payment for the 18th after a missed installment.",
+    "kind": "episode",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "course-aster-deadline",
+    "content": "ASTR-204 fictional coursework: submit the orbital mechanics lab by September 18 at 5 PM.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "course-nova-reading",
+    "content": "For the fictional NOVA-310 seminar, read the memory-systems chapter before the Wednesday discussion.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "meeting-harbor",
+    "content": "The fictional Harbor Lantern meeting is Tuesday at 10 AM to review weekly dispute response counts.",
+    "kind": "episode",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "meeting-kestrel",
+    "content": "Schedule the fictional Kestrel planning session for Thursday at 2 PM with Mira Voss.",
+    "kind": "episode",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "episode-packet-zx",
+    "content": "Experian acknowledged fictional dispute packet ZX-4821 for Orion Vale; the next step is to wait for its response.",
+    "kind": "episode",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "episode-followup",
+    "content": "During the fictional Friday review, Teo Larkin asked for the aged-invoice ledger before noon.",
+    "kind": "episode",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "belief-followthrough",
+    "content": "The owner believes client updates should explain the next concrete step rather than only report a bureau status.",
+    "kind": "belief",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "belief-focus",
+    "content": "The owner believes afternoon meetings should be grouped to protect a long morning focus block.",
+    "kind": "belief",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "org-northstar",
+    "content": "Northstar Credit Works is a fictional credit-repair practice with a Tuesday operations review.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "org-ember",
+    "content": "Ember Ledger is a fictional bookkeeping vendor used only for invoice reconciliation.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "code-aurora",
+    "content": "Fictional workflow code AUR-9042 means request a fresh proof-of-address document before a dispute.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "code-lumen",
+    "content": "Fictional workflow code LUM-1138 marks a duplicate collection account that needs a documentation checklist.",
+    "kind": "fact",
+    "confidence": 0.85,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "temporal-old-orion",
+    "content": "Earlier fictional Orion Vale update: the dispute packet was being assembled for Experian.",
+    "kind": "episode",
+    "confidence": 0.77,
+    "created_at": "2026-06-08T12:00:00.000Z",
+    "updated_at": "2026-06-13T12:00:00.000Z"
+  },
+  {
+    "id": "temporal-new-orion",
+    "content": "Latest fictional Orion Vale update: Experian acknowledged packet ZX-4821 and the case is in response review.",
+    "kind": "episode",
+    "confidence": 0.9,
+    "created_at": "2026-08-24T12:00:00.000Z",
+    "updated_at": "2026-08-30T12:00:00.000Z"
+  },
+  {
+    "id": "temporal-old-brief",
+    "content": "Earlier preference note: the owner liked a detailed morning brief with ten sections.",
+    "kind": "preference",
+    "confidence": 0.6,
+    "created_at": "2026-03-30T12:00:00.000Z",
+    "updated_at": "2026-04-04T12:00:00.000Z"
+  },
+  {
+    "id": "temporal-new-brief",
+    "content": "Current preference note: the owner wants exactly three concise morning-brief bullets.",
+    "kind": "preference",
+    "confidence": 0.92,
+    "created_at": "2026-08-22T12:00:00.000Z",
+    "updated_at": "2026-08-31T12:00:00.000Z"
+  },
+  {
+    "id": "dist-orion-invoice",
+    "content": "Orion Vale invoice status is current; this is unrelated to the Experian dispute response.",
+    "kind": "episode",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-mira-social",
+    "content": "Mira Voss chose coffee for the fictional Northstar office social, not a packet review decision.",
+    "kind": "episode",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-lyra-calendar",
+    "content": "Lyra Quill was invited to a fictional calendar planning call; this is not a document request.",
+    "kind": "episode",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-zx-training",
+    "content": "The training exercise ZX-4821 explains how to label mock folders and is not a client packet.",
+    "kind": "fact",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-aster-meeting",
+    "content": "ASTR-204 study group meets September 18, but no assignment is due in this note.",
+    "kind": "episode",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-harbor-invoice",
+    "content": "Harbor Lantern reviewed invoice colors, not dispute response counts.",
+    "kind": "episode",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-quiet-office",
+    "content": "The Northstar office is quiet before noon; this is unrelated to morning brief formatting.",
+    "kind": "fact",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-aurora-brand",
+    "content": "Aurora is a fictional paint color used in the office, unrelated to workflow code AUR-9042.",
+    "kind": "fact",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-recent-unrelated",
+    "content": "A recent high-confidence note: the fictional greenhouse thermostat was set to 71 degrees.",
+    "kind": "fact",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "dist-lumen-lamp",
+    "content": "The Lumen desk lamp warranty was filed; it is unrelated to collection accounts.",
+    "kind": "fact",
+    "confidence": 0.99,
+    "created_at": "2026-08-26T12:00:00.000Z",
+    "updated_at": "2026-09-01T12:00:00.000Z"
+  },
+  {
+    "id": "filler-001",
+    "content": "Fictional Alder Finch document checklist: record 4100 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.55,
+    "created_at": "2026-08-07T12:00:00.000Z",
+    "updated_at": "2026-08-12T12:00:00.000Z"
+  },
+  {
+    "id": "filler-002",
+    "content": "Fictional Bramble Knox invoice follow-up: record 4101 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.56,
+    "created_at": "2026-08-06T12:00:00.000Z",
+    "updated_at": "2026-08-11T12:00:00.000Z"
+  },
+  {
+    "id": "filler-003",
+    "content": "Fictional Cobalt Wren bureau timeline: record 4102 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5700000000000001,
+    "created_at": "2026-08-05T12:00:00.000Z",
+    "updated_at": "2026-08-10T12:00:00.000Z"
+  },
+  {
+    "id": "filler-004",
+    "content": "Fictional Dune Sable course note: record 4103 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5800000000000001,
+    "created_at": "2026-08-04T12:00:00.000Z",
+    "updated_at": "2026-08-09T12:00:00.000Z"
+  },
+  {
+    "id": "filler-005",
+    "content": "Fictional Elara Pike calendar hold: record 4104 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5900000000000001,
+    "created_at": "2026-08-03T12:00:00.000Z",
+    "updated_at": "2026-08-08T12:00:00.000Z"
+  },
+  {
+    "id": "filler-006",
+    "content": "Fictional Fable Moss status summary: record 4105 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.6000000000000001,
+    "created_at": "2026-08-02T12:00:00.000Z",
+    "updated_at": "2026-08-07T12:00:00.000Z"
+  },
+  {
+    "id": "filler-007",
+    "content": "Fictional Garnet Vale document checklist: record 4106 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6100000000000001,
+    "created_at": "2026-08-01T12:00:00.000Z",
+    "updated_at": "2026-08-06T12:00:00.000Z"
+  },
+  {
+    "id": "filler-008",
+    "content": "Fictional Hollow Reed invoice follow-up: record 4107 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6200000000000001,
+    "created_at": "2026-07-31T12:00:00.000Z",
+    "updated_at": "2026-08-05T12:00:00.000Z"
+  },
+  {
+    "id": "filler-009",
+    "content": "Fictional Indigo Crane bureau timeline: record 4108 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.63,
+    "created_at": "2026-07-30T12:00:00.000Z",
+    "updated_at": "2026-08-04T12:00:00.000Z"
+  },
+  {
+    "id": "filler-010",
+    "content": "Fictional Juniper Slate course note: record 4109 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.64,
+    "created_at": "2026-07-29T12:00:00.000Z",
+    "updated_at": "2026-08-03T12:00:00.000Z"
+  },
+  {
+    "id": "filler-011",
+    "content": "Fictional Kepler Ash calendar hold: record 4110 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.65,
+    "created_at": "2026-07-28T12:00:00.000Z",
+    "updated_at": "2026-08-02T12:00:00.000Z"
+  },
+  {
+    "id": "filler-012",
+    "content": "Fictional Lark Ember status summary: record 4111 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.66,
+    "created_at": "2026-07-27T12:00:00.000Z",
+    "updated_at": "2026-08-01T12:00:00.000Z"
+  },
+  {
+    "id": "filler-013",
+    "content": "Fictional Marrow Finch document checklist: record 4112 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.67,
+    "created_at": "2026-07-26T12:00:00.000Z",
+    "updated_at": "2026-07-31T12:00:00.000Z"
+  },
+  {
+    "id": "filler-014",
+    "content": "Fictional Nimble Frost invoice follow-up: record 4113 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.68,
+    "created_at": "2026-07-25T12:00:00.000Z",
+    "updated_at": "2026-07-30T12:00:00.000Z"
+  },
+  {
+    "id": "filler-015",
+    "content": "Fictional Opal Grove bureau timeline: record 4114 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6900000000000001,
+    "created_at": "2026-07-24T12:00:00.000Z",
+    "updated_at": "2026-07-29T12:00:00.000Z"
+  },
+  {
+    "id": "filler-016",
+    "content": "Fictional Piper North course note: record 4115 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.7000000000000001,
+    "created_at": "2026-07-23T12:00:00.000Z",
+    "updated_at": "2026-07-28T12:00:00.000Z"
+  },
+  {
+    "id": "filler-017",
+    "content": "Fictional Quartz Bloom calendar hold: record 4116 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.7100000000000001,
+    "created_at": "2026-07-22T12:00:00.000Z",
+    "updated_at": "2026-07-27T12:00:00.000Z"
+  },
+  {
+    "id": "filler-018",
+    "content": "Fictional Raven Sol status summary: record 4117 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.7200000000000001,
+    "created_at": "2026-07-21T12:00:00.000Z",
+    "updated_at": "2026-07-26T12:00:00.000Z"
+  },
+  {
+    "id": "filler-019",
+    "content": "Fictional Sable Hart document checklist: record 4118 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.73,
+    "created_at": "2026-07-20T12:00:00.000Z",
+    "updated_at": "2026-07-25T12:00:00.000Z"
+  },
+  {
+    "id": "filler-020",
+    "content": "Fictional Tundra Bell invoice follow-up: record 4119 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.74,
+    "created_at": "2026-07-19T12:00:00.000Z",
+    "updated_at": "2026-07-24T12:00:00.000Z"
+  },
+  {
+    "id": "filler-021",
+    "content": "Fictional Umber Fox bureau timeline: record 4120 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.75,
+    "created_at": "2026-07-18T12:00:00.000Z",
+    "updated_at": "2026-07-23T12:00:00.000Z"
+  },
+  {
+    "id": "filler-022",
+    "content": "Fictional Vesper Rain course note: record 4121 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.76,
+    "created_at": "2026-07-17T12:00:00.000Z",
+    "updated_at": "2026-07-22T12:00:00.000Z"
+  },
+  {
+    "id": "filler-023",
+    "content": "Fictional Willow Crest calendar hold: record 4122 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.77,
+    "created_at": "2026-07-16T12:00:00.000Z",
+    "updated_at": "2026-07-21T12:00:00.000Z"
+  },
+  {
+    "id": "filler-024",
+    "content": "Fictional Xylo Fern status summary: record 4123 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.78,
+    "created_at": "2026-07-15T12:00:00.000Z",
+    "updated_at": "2026-07-20T12:00:00.000Z"
+  },
+  {
+    "id": "filler-025",
+    "content": "Fictional Yarrow Lake document checklist: record 4124 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.79,
+    "created_at": "2026-07-14T12:00:00.000Z",
+    "updated_at": "2026-07-19T12:00:00.000Z"
+  },
+  {
+    "id": "filler-026",
+    "content": "Fictional Zephyr Stone invoice follow-up: record 4125 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.8,
+    "created_at": "2026-07-13T12:00:00.000Z",
+    "updated_at": "2026-07-18T12:00:00.000Z"
+  },
+  {
+    "id": "filler-027",
+    "content": "Fictional Alder Finch bureau timeline: record 4126 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.81,
+    "created_at": "2026-07-12T12:00:00.000Z",
+    "updated_at": "2026-07-17T12:00:00.000Z"
+  },
+  {
+    "id": "filler-028",
+    "content": "Fictional Bramble Knox course note: record 4127 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8200000000000001,
+    "created_at": "2026-07-11T12:00:00.000Z",
+    "updated_at": "2026-07-16T12:00:00.000Z"
+  },
+  {
+    "id": "filler-029",
+    "content": "Fictional Cobalt Wren calendar hold: record 4128 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8300000000000001,
+    "created_at": "2026-07-10T12:00:00.000Z",
+    "updated_at": "2026-07-15T12:00:00.000Z"
+  },
+  {
+    "id": "filler-030",
+    "content": "Fictional Dune Sable status summary: record 4129 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8400000000000001,
+    "created_at": "2026-07-09T12:00:00.000Z",
+    "updated_at": "2026-07-14T12:00:00.000Z"
+  },
+  {
+    "id": "filler-031",
+    "content": "Fictional Elara Pike document checklist: record 4130 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.8500000000000001,
+    "created_at": "2026-07-08T12:00:00.000Z",
+    "updated_at": "2026-07-13T12:00:00.000Z"
+  },
+  {
+    "id": "filler-032",
+    "content": "Fictional Fable Moss invoice follow-up: record 4131 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8600000000000001,
+    "created_at": "2026-07-07T12:00:00.000Z",
+    "updated_at": "2026-07-12T12:00:00.000Z"
+  },
+  {
+    "id": "filler-033",
+    "content": "Fictional Garnet Vale bureau timeline: record 4132 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8700000000000001,
+    "created_at": "2026-07-06T12:00:00.000Z",
+    "updated_at": "2026-07-11T12:00:00.000Z"
+  },
+  {
+    "id": "filler-034",
+    "content": "Fictional Hollow Reed course note: record 4133 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8800000000000001,
+    "created_at": "2026-07-05T12:00:00.000Z",
+    "updated_at": "2026-07-10T12:00:00.000Z"
+  },
+  {
+    "id": "filler-035",
+    "content": "Fictional Indigo Crane calendar hold: record 4134 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8900000000000001,
+    "created_at": "2026-07-04T12:00:00.000Z",
+    "updated_at": "2026-07-09T12:00:00.000Z"
+  },
+  {
+    "id": "filler-036",
+    "content": "Fictional Juniper Slate status summary: record 4135 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.9,
+    "created_at": "2026-07-03T12:00:00.000Z",
+    "updated_at": "2026-07-08T12:00:00.000Z"
+  },
+  {
+    "id": "filler-037",
+    "content": "Fictional Kepler Ash document checklist: record 4136 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.91,
+    "created_at": "2026-07-02T12:00:00.000Z",
+    "updated_at": "2026-07-07T12:00:00.000Z"
+  },
+  {
+    "id": "filler-038",
+    "content": "Fictional Lark Ember invoice follow-up: record 4137 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.92,
+    "created_at": "2026-07-01T12:00:00.000Z",
+    "updated_at": "2026-07-06T12:00:00.000Z"
+  },
+  {
+    "id": "filler-039",
+    "content": "Fictional Marrow Finch bureau timeline: record 4138 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.93,
+    "created_at": "2026-06-30T12:00:00.000Z",
+    "updated_at": "2026-07-05T12:00:00.000Z"
+  },
+  {
+    "id": "filler-040",
+    "content": "Fictional Nimble Frost course note: record 4139 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.9400000000000001,
+    "created_at": "2026-06-29T12:00:00.000Z",
+    "updated_at": "2026-07-04T12:00:00.000Z"
+  },
+  {
+    "id": "filler-041",
+    "content": "Fictional Opal Grove calendar hold: record 4140 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.55,
+    "created_at": "2026-06-28T12:00:00.000Z",
+    "updated_at": "2026-07-03T12:00:00.000Z"
+  },
+  {
+    "id": "filler-042",
+    "content": "Fictional Piper North status summary: record 4141 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.56,
+    "created_at": "2026-06-27T12:00:00.000Z",
+    "updated_at": "2026-07-02T12:00:00.000Z"
+  },
+  {
+    "id": "filler-043",
+    "content": "Fictional Quartz Bloom document checklist: record 4142 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5700000000000001,
+    "created_at": "2026-06-26T12:00:00.000Z",
+    "updated_at": "2026-07-01T12:00:00.000Z"
+  },
+  {
+    "id": "filler-044",
+    "content": "Fictional Raven Sol invoice follow-up: record 4143 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5800000000000001,
+    "created_at": "2026-06-25T12:00:00.000Z",
+    "updated_at": "2026-06-30T12:00:00.000Z"
+  },
+  {
+    "id": "filler-045",
+    "content": "Fictional Sable Hart bureau timeline: record 4144 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5900000000000001,
+    "created_at": "2026-06-24T12:00:00.000Z",
+    "updated_at": "2026-06-29T12:00:00.000Z"
+  },
+  {
+    "id": "filler-046",
+    "content": "Fictional Tundra Bell course note: record 4145 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.6000000000000001,
+    "created_at": "2026-06-23T12:00:00.000Z",
+    "updated_at": "2026-06-28T12:00:00.000Z"
+  },
+  {
+    "id": "filler-047",
+    "content": "Fictional Umber Fox calendar hold: record 4146 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6100000000000001,
+    "created_at": "2026-06-22T12:00:00.000Z",
+    "updated_at": "2026-06-27T12:00:00.000Z"
+  },
+  {
+    "id": "filler-048",
+    "content": "Fictional Vesper Rain status summary: record 4147 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6200000000000001,
+    "created_at": "2026-06-21T12:00:00.000Z",
+    "updated_at": "2026-06-26T12:00:00.000Z"
+  },
+  {
+    "id": "filler-049",
+    "content": "Fictional Willow Crest document checklist: record 4148 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.63,
+    "created_at": "2026-06-20T12:00:00.000Z",
+    "updated_at": "2026-06-25T12:00:00.000Z"
+  },
+  {
+    "id": "filler-050",
+    "content": "Fictional Xylo Fern invoice follow-up: record 4149 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.64,
+    "created_at": "2026-06-19T12:00:00.000Z",
+    "updated_at": "2026-06-24T12:00:00.000Z"
+  },
+  {
+    "id": "filler-051",
+    "content": "Fictional Yarrow Lake bureau timeline: record 4150 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.65,
+    "created_at": "2026-06-18T12:00:00.000Z",
+    "updated_at": "2026-06-23T12:00:00.000Z"
+  },
+  {
+    "id": "filler-052",
+    "content": "Fictional Zephyr Stone course note: record 4151 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.66,
+    "created_at": "2026-06-17T12:00:00.000Z",
+    "updated_at": "2026-06-22T12:00:00.000Z"
+  },
+  {
+    "id": "filler-053",
+    "content": "Fictional Alder Finch calendar hold: record 4152 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.67,
+    "created_at": "2026-06-16T12:00:00.000Z",
+    "updated_at": "2026-06-21T12:00:00.000Z"
+  },
+  {
+    "id": "filler-054",
+    "content": "Fictional Bramble Knox status summary: record 4153 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.68,
+    "created_at": "2026-06-15T12:00:00.000Z",
+    "updated_at": "2026-06-20T12:00:00.000Z"
+  },
+  {
+    "id": "filler-055",
+    "content": "Fictional Cobalt Wren document checklist: record 4154 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6900000000000001,
+    "created_at": "2026-06-14T12:00:00.000Z",
+    "updated_at": "2026-06-19T12:00:00.000Z"
+  },
+  {
+    "id": "filler-056",
+    "content": "Fictional Dune Sable invoice follow-up: record 4155 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.7000000000000001,
+    "created_at": "2026-06-13T12:00:00.000Z",
+    "updated_at": "2026-06-18T12:00:00.000Z"
+  },
+  {
+    "id": "filler-057",
+    "content": "Fictional Elara Pike bureau timeline: record 4156 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.7100000000000001,
+    "created_at": "2026-06-12T12:00:00.000Z",
+    "updated_at": "2026-06-17T12:00:00.000Z"
+  },
+  {
+    "id": "filler-058",
+    "content": "Fictional Fable Moss course note: record 4157 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.7200000000000001,
+    "created_at": "2026-06-11T12:00:00.000Z",
+    "updated_at": "2026-06-16T12:00:00.000Z"
+  },
+  {
+    "id": "filler-059",
+    "content": "Fictional Garnet Vale calendar hold: record 4158 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.73,
+    "created_at": "2026-06-10T12:00:00.000Z",
+    "updated_at": "2026-06-15T12:00:00.000Z"
+  },
+  {
+    "id": "filler-060",
+    "content": "Fictional Hollow Reed status summary: record 4159 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.74,
+    "created_at": "2026-06-09T12:00:00.000Z",
+    "updated_at": "2026-06-14T12:00:00.000Z"
+  },
+  {
+    "id": "filler-061",
+    "content": "Fictional Indigo Crane document checklist: record 4160 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.75,
+    "created_at": "2026-06-08T12:00:00.000Z",
+    "updated_at": "2026-06-13T12:00:00.000Z"
+  },
+  {
+    "id": "filler-062",
+    "content": "Fictional Juniper Slate invoice follow-up: record 4161 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.76,
+    "created_at": "2026-06-07T12:00:00.000Z",
+    "updated_at": "2026-06-12T12:00:00.000Z"
+  },
+  {
+    "id": "filler-063",
+    "content": "Fictional Kepler Ash bureau timeline: record 4162 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.77,
+    "created_at": "2026-06-06T12:00:00.000Z",
+    "updated_at": "2026-06-11T12:00:00.000Z"
+  },
+  {
+    "id": "filler-064",
+    "content": "Fictional Lark Ember course note: record 4163 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.78,
+    "created_at": "2026-06-05T12:00:00.000Z",
+    "updated_at": "2026-06-10T12:00:00.000Z"
+  },
+  {
+    "id": "filler-065",
+    "content": "Fictional Marrow Finch calendar hold: record 4164 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.79,
+    "created_at": "2026-06-04T12:00:00.000Z",
+    "updated_at": "2026-06-09T12:00:00.000Z"
+  },
+  {
+    "id": "filler-066",
+    "content": "Fictional Nimble Frost status summary: record 4165 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.8,
+    "created_at": "2026-06-03T12:00:00.000Z",
+    "updated_at": "2026-06-08T12:00:00.000Z"
+  },
+  {
+    "id": "filler-067",
+    "content": "Fictional Opal Grove document checklist: record 4166 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.81,
+    "created_at": "2026-06-02T12:00:00.000Z",
+    "updated_at": "2026-06-07T12:00:00.000Z"
+  },
+  {
+    "id": "filler-068",
+    "content": "Fictional Piper North invoice follow-up: record 4167 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8200000000000001,
+    "created_at": "2026-06-01T12:00:00.000Z",
+    "updated_at": "2026-06-06T12:00:00.000Z"
+  },
+  {
+    "id": "filler-069",
+    "content": "Fictional Quartz Bloom bureau timeline: record 4168 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8300000000000001,
+    "created_at": "2026-05-31T12:00:00.000Z",
+    "updated_at": "2026-06-05T12:00:00.000Z"
+  },
+  {
+    "id": "filler-070",
+    "content": "Fictional Raven Sol course note: record 4169 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8400000000000001,
+    "created_at": "2026-05-30T12:00:00.000Z",
+    "updated_at": "2026-06-04T12:00:00.000Z"
+  },
+  {
+    "id": "filler-071",
+    "content": "Fictional Sable Hart calendar hold: record 4170 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.8500000000000001,
+    "created_at": "2026-05-29T12:00:00.000Z",
+    "updated_at": "2026-06-03T12:00:00.000Z"
+  },
+  {
+    "id": "filler-072",
+    "content": "Fictional Tundra Bell status summary: record 4171 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8600000000000001,
+    "created_at": "2026-05-28T12:00:00.000Z",
+    "updated_at": "2026-06-02T12:00:00.000Z"
+  },
+  {
+    "id": "filler-073",
+    "content": "Fictional Umber Fox document checklist: record 4172 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8700000000000001,
+    "created_at": "2026-05-27T12:00:00.000Z",
+    "updated_at": "2026-06-01T12:00:00.000Z"
+  },
+  {
+    "id": "filler-074",
+    "content": "Fictional Vesper Rain invoice follow-up: record 4173 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8800000000000001,
+    "created_at": "2026-05-26T12:00:00.000Z",
+    "updated_at": "2026-05-31T12:00:00.000Z"
+  },
+  {
+    "id": "filler-075",
+    "content": "Fictional Willow Crest bureau timeline: record 4174 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8900000000000001,
+    "created_at": "2026-05-25T12:00:00.000Z",
+    "updated_at": "2026-05-30T12:00:00.000Z"
+  },
+  {
+    "id": "filler-076",
+    "content": "Fictional Xylo Fern course note: record 4175 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.9,
+    "created_at": "2026-05-24T12:00:00.000Z",
+    "updated_at": "2026-05-29T12:00:00.000Z"
+  },
+  {
+    "id": "filler-077",
+    "content": "Fictional Yarrow Lake calendar hold: record 4176 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.91,
+    "created_at": "2026-05-23T12:00:00.000Z",
+    "updated_at": "2026-05-28T12:00:00.000Z"
+  },
+  {
+    "id": "filler-078",
+    "content": "Fictional Zephyr Stone status summary: record 4177 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.92,
+    "created_at": "2026-05-22T12:00:00.000Z",
+    "updated_at": "2026-05-27T12:00:00.000Z"
+  },
+  {
+    "id": "filler-079",
+    "content": "Fictional Alder Finch document checklist: record 4178 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.93,
+    "created_at": "2026-05-21T12:00:00.000Z",
+    "updated_at": "2026-05-26T12:00:00.000Z"
+  },
+  {
+    "id": "filler-080",
+    "content": "Fictional Bramble Knox invoice follow-up: record 4179 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.9400000000000001,
+    "created_at": "2026-05-20T12:00:00.000Z",
+    "updated_at": "2026-05-25T12:00:00.000Z"
+  },
+  {
+    "id": "filler-081",
+    "content": "Fictional Cobalt Wren bureau timeline: record 4180 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.55,
+    "created_at": "2026-05-19T12:00:00.000Z",
+    "updated_at": "2026-05-24T12:00:00.000Z"
+  },
+  {
+    "id": "filler-082",
+    "content": "Fictional Dune Sable course note: record 4181 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.56,
+    "created_at": "2026-05-18T12:00:00.000Z",
+    "updated_at": "2026-05-23T12:00:00.000Z"
+  },
+  {
+    "id": "filler-083",
+    "content": "Fictional Elara Pike calendar hold: record 4182 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5700000000000001,
+    "created_at": "2026-05-17T12:00:00.000Z",
+    "updated_at": "2026-05-22T12:00:00.000Z"
+  },
+  {
+    "id": "filler-084",
+    "content": "Fictional Fable Moss status summary: record 4183 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5800000000000001,
+    "created_at": "2026-05-16T12:00:00.000Z",
+    "updated_at": "2026-05-21T12:00:00.000Z"
+  },
+  {
+    "id": "filler-085",
+    "content": "Fictional Garnet Vale document checklist: record 4184 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5900000000000001,
+    "created_at": "2026-05-15T12:00:00.000Z",
+    "updated_at": "2026-05-20T12:00:00.000Z"
+  },
+  {
+    "id": "filler-086",
+    "content": "Fictional Hollow Reed invoice follow-up: record 4185 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.6000000000000001,
+    "created_at": "2026-05-14T12:00:00.000Z",
+    "updated_at": "2026-05-19T12:00:00.000Z"
+  },
+  {
+    "id": "filler-087",
+    "content": "Fictional Indigo Crane bureau timeline: record 4186 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6100000000000001,
+    "created_at": "2026-05-13T12:00:00.000Z",
+    "updated_at": "2026-05-18T12:00:00.000Z"
+  },
+  {
+    "id": "filler-088",
+    "content": "Fictional Juniper Slate course note: record 4187 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6200000000000001,
+    "created_at": "2026-05-12T12:00:00.000Z",
+    "updated_at": "2026-05-17T12:00:00.000Z"
+  },
+  {
+    "id": "filler-089",
+    "content": "Fictional Kepler Ash calendar hold: record 4188 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.63,
+    "created_at": "2026-05-11T12:00:00.000Z",
+    "updated_at": "2026-05-16T12:00:00.000Z"
+  },
+  {
+    "id": "filler-090",
+    "content": "Fictional Lark Ember status summary: record 4189 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.64,
+    "created_at": "2026-05-10T12:00:00.000Z",
+    "updated_at": "2026-05-15T12:00:00.000Z"
+  },
+  {
+    "id": "filler-091",
+    "content": "Fictional Marrow Finch document checklist: record 4190 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.65,
+    "created_at": "2026-05-09T12:00:00.000Z",
+    "updated_at": "2026-05-14T12:00:00.000Z"
+  },
+  {
+    "id": "filler-092",
+    "content": "Fictional Nimble Frost invoice follow-up: record 4191 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.66,
+    "created_at": "2026-05-08T12:00:00.000Z",
+    "updated_at": "2026-05-13T12:00:00.000Z"
+  },
+  {
+    "id": "filler-093",
+    "content": "Fictional Opal Grove bureau timeline: record 4192 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.67,
+    "created_at": "2026-05-07T12:00:00.000Z",
+    "updated_at": "2026-05-12T12:00:00.000Z"
+  },
+  {
+    "id": "filler-094",
+    "content": "Fictional Piper North course note: record 4193 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.68,
+    "created_at": "2026-05-06T12:00:00.000Z",
+    "updated_at": "2026-05-11T12:00:00.000Z"
+  },
+  {
+    "id": "filler-095",
+    "content": "Fictional Quartz Bloom calendar hold: record 4194 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6900000000000001,
+    "created_at": "2026-05-05T12:00:00.000Z",
+    "updated_at": "2026-05-10T12:00:00.000Z"
+  },
+  {
+    "id": "filler-096",
+    "content": "Fictional Raven Sol status summary: record 4195 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.7000000000000001,
+    "created_at": "2026-05-04T12:00:00.000Z",
+    "updated_at": "2026-05-09T12:00:00.000Z"
+  },
+  {
+    "id": "filler-097",
+    "content": "Fictional Sable Hart document checklist: record 4196 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.7100000000000001,
+    "created_at": "2026-05-03T12:00:00.000Z",
+    "updated_at": "2026-05-08T12:00:00.000Z"
+  },
+  {
+    "id": "filler-098",
+    "content": "Fictional Tundra Bell invoice follow-up: record 4197 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.7200000000000001,
+    "created_at": "2026-05-02T12:00:00.000Z",
+    "updated_at": "2026-05-07T12:00:00.000Z"
+  },
+  {
+    "id": "filler-099",
+    "content": "Fictional Umber Fox bureau timeline: record 4198 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.73,
+    "created_at": "2026-05-01T12:00:00.000Z",
+    "updated_at": "2026-05-06T12:00:00.000Z"
+  },
+  {
+    "id": "filler-100",
+    "content": "Fictional Vesper Rain course note: record 4199 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.74,
+    "created_at": "2026-04-30T12:00:00.000Z",
+    "updated_at": "2026-05-05T12:00:00.000Z"
+  },
+  {
+    "id": "filler-101",
+    "content": "Fictional Willow Crest calendar hold: record 4200 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.75,
+    "created_at": "2026-04-29T12:00:00.000Z",
+    "updated_at": "2026-05-04T12:00:00.000Z"
+  },
+  {
+    "id": "filler-102",
+    "content": "Fictional Xylo Fern status summary: record 4201 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.76,
+    "created_at": "2026-04-28T12:00:00.000Z",
+    "updated_at": "2026-05-03T12:00:00.000Z"
+  },
+  {
+    "id": "filler-103",
+    "content": "Fictional Yarrow Lake document checklist: record 4202 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.77,
+    "created_at": "2026-04-27T12:00:00.000Z",
+    "updated_at": "2026-05-02T12:00:00.000Z"
+  },
+  {
+    "id": "filler-104",
+    "content": "Fictional Zephyr Stone invoice follow-up: record 4203 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.78,
+    "created_at": "2026-04-26T12:00:00.000Z",
+    "updated_at": "2026-05-01T12:00:00.000Z"
+  },
+  {
+    "id": "filler-105",
+    "content": "Fictional Alder Finch bureau timeline: record 4204 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.79,
+    "created_at": "2026-04-25T12:00:00.000Z",
+    "updated_at": "2026-04-30T12:00:00.000Z"
+  },
+  {
+    "id": "filler-106",
+    "content": "Fictional Bramble Knox course note: record 4205 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.8,
+    "created_at": "2026-04-24T12:00:00.000Z",
+    "updated_at": "2026-04-29T12:00:00.000Z"
+  },
+  {
+    "id": "filler-107",
+    "content": "Fictional Cobalt Wren calendar hold: record 4206 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.81,
+    "created_at": "2026-04-23T12:00:00.000Z",
+    "updated_at": "2026-04-28T12:00:00.000Z"
+  },
+  {
+    "id": "filler-108",
+    "content": "Fictional Dune Sable status summary: record 4207 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8200000000000001,
+    "created_at": "2026-04-22T12:00:00.000Z",
+    "updated_at": "2026-04-27T12:00:00.000Z"
+  },
+  {
+    "id": "filler-109",
+    "content": "Fictional Elara Pike document checklist: record 4208 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8300000000000001,
+    "created_at": "2026-04-21T12:00:00.000Z",
+    "updated_at": "2026-04-26T12:00:00.000Z"
+  },
+  {
+    "id": "filler-110",
+    "content": "Fictional Fable Moss invoice follow-up: record 4209 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8400000000000001,
+    "created_at": "2026-04-20T12:00:00.000Z",
+    "updated_at": "2026-04-25T12:00:00.000Z"
+  },
+  {
+    "id": "filler-111",
+    "content": "Fictional Garnet Vale bureau timeline: record 4210 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.8500000000000001,
+    "created_at": "2026-04-19T12:00:00.000Z",
+    "updated_at": "2026-04-24T12:00:00.000Z"
+  },
+  {
+    "id": "filler-112",
+    "content": "Fictional Hollow Reed course note: record 4211 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8600000000000001,
+    "created_at": "2026-04-18T12:00:00.000Z",
+    "updated_at": "2026-04-23T12:00:00.000Z"
+  },
+  {
+    "id": "filler-113",
+    "content": "Fictional Indigo Crane calendar hold: record 4212 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8700000000000001,
+    "created_at": "2026-04-17T12:00:00.000Z",
+    "updated_at": "2026-04-22T12:00:00.000Z"
+  },
+  {
+    "id": "filler-114",
+    "content": "Fictional Juniper Slate status summary: record 4213 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8800000000000001,
+    "created_at": "2026-04-16T12:00:00.000Z",
+    "updated_at": "2026-04-21T12:00:00.000Z"
+  },
+  {
+    "id": "filler-115",
+    "content": "Fictional Kepler Ash document checklist: record 4214 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.8900000000000001,
+    "created_at": "2026-04-15T12:00:00.000Z",
+    "updated_at": "2026-04-20T12:00:00.000Z"
+  },
+  {
+    "id": "filler-116",
+    "content": "Fictional Lark Ember invoice follow-up: record 4215 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.9,
+    "created_at": "2026-04-14T12:00:00.000Z",
+    "updated_at": "2026-04-19T12:00:00.000Z"
+  },
+  {
+    "id": "filler-117",
+    "content": "Fictional Marrow Finch bureau timeline: record 4216 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.91,
+    "created_at": "2026-04-13T12:00:00.000Z",
+    "updated_at": "2026-04-18T12:00:00.000Z"
+  },
+  {
+    "id": "filler-118",
+    "content": "Fictional Nimble Frost course note: record 4217 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.92,
+    "created_at": "2026-04-12T12:00:00.000Z",
+    "updated_at": "2026-04-17T12:00:00.000Z"
+  },
+  {
+    "id": "filler-119",
+    "content": "Fictional Opal Grove calendar hold: record 4218 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.93,
+    "created_at": "2026-04-11T12:00:00.000Z",
+    "updated_at": "2026-04-16T12:00:00.000Z"
+  },
+  {
+    "id": "filler-120",
+    "content": "Fictional Piper North status summary: record 4219 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.9400000000000001,
+    "created_at": "2026-04-10T12:00:00.000Z",
+    "updated_at": "2026-04-15T12:00:00.000Z"
+  },
+  {
+    "id": "filler-121",
+    "content": "Fictional Quartz Bloom document checklist: record 4220 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.55,
+    "created_at": "2026-04-09T12:00:00.000Z",
+    "updated_at": "2026-04-14T12:00:00.000Z"
+  },
+  {
+    "id": "filler-122",
+    "content": "Fictional Raven Sol invoice follow-up: record 4221 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.56,
+    "created_at": "2026-04-08T12:00:00.000Z",
+    "updated_at": "2026-04-13T12:00:00.000Z"
+  },
+  {
+    "id": "filler-123",
+    "content": "Fictional Sable Hart bureau timeline: record 4222 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5700000000000001,
+    "created_at": "2026-04-07T12:00:00.000Z",
+    "updated_at": "2026-04-12T12:00:00.000Z"
+  },
+  {
+    "id": "filler-124",
+    "content": "Fictional Tundra Bell course note: record 4223 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5800000000000001,
+    "created_at": "2026-04-06T12:00:00.000Z",
+    "updated_at": "2026-04-11T12:00:00.000Z"
+  },
+  {
+    "id": "filler-125",
+    "content": "Fictional Umber Fox calendar hold: record 4224 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.5900000000000001,
+    "created_at": "2026-04-05T12:00:00.000Z",
+    "updated_at": "2026-04-10T12:00:00.000Z"
+  },
+  {
+    "id": "filler-126",
+    "content": "Fictional Vesper Rain status summary: record 4225 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.6000000000000001,
+    "created_at": "2026-04-04T12:00:00.000Z",
+    "updated_at": "2026-04-09T12:00:00.000Z"
+  },
+  {
+    "id": "filler-127",
+    "content": "Fictional Willow Crest document checklist: record 4226 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6100000000000001,
+    "created_at": "2026-04-03T12:00:00.000Z",
+    "updated_at": "2026-04-08T12:00:00.000Z"
+  },
+  {
+    "id": "filler-128",
+    "content": "Fictional Xylo Fern invoice follow-up: record 4227 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6200000000000001,
+    "created_at": "2026-04-02T12:00:00.000Z",
+    "updated_at": "2026-04-07T12:00:00.000Z"
+  },
+  {
+    "id": "filler-129",
+    "content": "Fictional Yarrow Lake bureau timeline: record 4228 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.63,
+    "created_at": "2026-04-01T12:00:00.000Z",
+    "updated_at": "2026-04-06T12:00:00.000Z"
+  },
+  {
+    "id": "filler-130",
+    "content": "Fictional Zephyr Stone course note: record 4229 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.64,
+    "created_at": "2026-03-31T12:00:00.000Z",
+    "updated_at": "2026-04-05T12:00:00.000Z"
+  },
+  {
+    "id": "filler-131",
+    "content": "Fictional Alder Finch calendar hold: record 4230 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.65,
+    "created_at": "2026-03-30T12:00:00.000Z",
+    "updated_at": "2026-04-04T12:00:00.000Z"
+  },
+  {
+    "id": "filler-132",
+    "content": "Fictional Bramble Knox status summary: record 4231 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.66,
+    "created_at": "2026-03-29T12:00:00.000Z",
+    "updated_at": "2026-04-03T12:00:00.000Z"
+  },
+  {
+    "id": "filler-133",
+    "content": "Fictional Cobalt Wren document checklist: record 4232 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.67,
+    "created_at": "2026-03-28T12:00:00.000Z",
+    "updated_at": "2026-04-02T12:00:00.000Z"
+  },
+  {
+    "id": "filler-134",
+    "content": "Fictional Dune Sable invoice follow-up: record 4233 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.68,
+    "created_at": "2026-03-27T12:00:00.000Z",
+    "updated_at": "2026-04-01T12:00:00.000Z"
+  },
+  {
+    "id": "filler-135",
+    "content": "Fictional Elara Pike bureau timeline: record 4234 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.6900000000000001,
+    "created_at": "2026-03-26T12:00:00.000Z",
+    "updated_at": "2026-03-31T12:00:00.000Z"
+  },
+  {
+    "id": "filler-136",
+    "content": "Fictional Fable Moss course note: record 4235 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.7000000000000001,
+    "created_at": "2026-03-25T12:00:00.000Z",
+    "updated_at": "2026-03-30T12:00:00.000Z"
+  },
+  {
+    "id": "filler-137",
+    "content": "Fictional Garnet Vale calendar hold: record 4236 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.7100000000000001,
+    "created_at": "2026-03-24T12:00:00.000Z",
+    "updated_at": "2026-03-29T12:00:00.000Z"
+  },
+  {
+    "id": "filler-138",
+    "content": "Fictional Hollow Reed status summary: record 4237 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.7200000000000001,
+    "created_at": "2026-03-23T12:00:00.000Z",
+    "updated_at": "2026-03-28T12:00:00.000Z"
+  },
+  {
+    "id": "filler-139",
+    "content": "Fictional Indigo Crane document checklist: record 4238 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.73,
+    "created_at": "2026-03-22T12:00:00.000Z",
+    "updated_at": "2026-03-27T12:00:00.000Z"
+  },
+  {
+    "id": "filler-140",
+    "content": "Fictional Juniper Slate invoice follow-up: record 4239 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.74,
+    "created_at": "2026-03-21T12:00:00.000Z",
+    "updated_at": "2026-03-26T12:00:00.000Z"
+  },
+  {
+    "id": "filler-141",
+    "content": "Fictional Kepler Ash bureau timeline: record 4240 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.75,
+    "created_at": "2026-03-20T12:00:00.000Z",
+    "updated_at": "2026-03-25T12:00:00.000Z"
+  },
+  {
+    "id": "filler-142",
+    "content": "Fictional Lark Ember course note: record 4241 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.76,
+    "created_at": "2026-03-19T12:00:00.000Z",
+    "updated_at": "2026-03-24T12:00:00.000Z"
+  },
+  {
+    "id": "filler-143",
+    "content": "Fictional Marrow Finch calendar hold: record 4242 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.77,
+    "created_at": "2026-03-18T12:00:00.000Z",
+    "updated_at": "2026-03-23T12:00:00.000Z"
+  },
+  {
+    "id": "filler-144",
+    "content": "Fictional Nimble Frost status summary: record 4243 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.78,
+    "created_at": "2026-03-17T12:00:00.000Z",
+    "updated_at": "2026-03-22T12:00:00.000Z"
+  },
+  {
+    "id": "filler-145",
+    "content": "Fictional Opal Grove document checklist: record 4244 was reviewed during the routine weekly workflow.",
+    "kind": "fact",
+    "confidence": 0.79,
+    "created_at": "2026-03-16T12:00:00.000Z",
+    "updated_at": "2026-03-21T12:00:00.000Z"
+  },
+  {
+    "id": "filler-146",
+    "content": "Fictional Piper North invoice follow-up: record 4245 was reviewed during the routine weekly workflow.",
+    "kind": "episode",
+    "confidence": 0.8,
+    "created_at": "2026-03-15T12:00:00.000Z",
+    "updated_at": "2026-03-20T12:00:00.000Z"
+  }
+]

@@ -74,17 +74,24 @@ Core gate met: AURA distinguishes a recent event from a durable rule, does not
 pin episodes into the owner profile, can show why a belief exists, and surfaces
 unresolved contradictions instead of silently choosing one.
 
-### 4. Retrieval quality and memory observability — scoring and traces live
+### 4. Retrieval quality and memory observability — benchmark and traces live
 
 Recall now combines vector similarity, lexical overlap, named-entity overlap,
 recency, and confidence, while filtering relevance on the unboosted match. A
 private bounded retrieval ledger records the exact memories AURA injected, why
-they matched, source, confidence, score components, and age. Existing memory
-and profile correction endpoints provide the owner controls. Remaining work is
-a visual in-app dashboard and a fixed retrieval evaluation set/benchmark.
+they matched, source, confidence, score components, and age. A fixed offline
+benchmark now imports the production scorer against 180 fictional memories and
+84 fictional labeled queries, with cached embeddings, bootstrap CIs, ablations,
+and a dev/test threshold sweep. It makes the current synthetic result auditable:
+the full hybrid scorer ranked worse than vector-only on the held-out fixture.
+It does not prove real owner-memory quality, authorize a scoring change, or
+stress the 200-row production candidate cap. Existing memory and profile
+correction endpoints provide the owner controls. Remaining work is a visual
+in-app dashboard and owner-reviewed retrieval traces.
 
 Partial gate met: the owner can inspect or correct every traced influential
-memory. Full completion still needs a fixed benchmark proving recall quality.
+memory and reproduce a fixed synthetic benchmark. Full completion still needs
+owner-reviewed evidence of recall quality on representative private data.
 
 ### 5. Bounded proactive planning — plan ledger and next action implemented
 

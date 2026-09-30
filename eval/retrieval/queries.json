@@ -1,0 +1,758 @@
+[
+  {
+    "id": "para-01",
+    "query": "How should the daily update be formatted?",
+    "split": "dev",
+    "category": "paraphrase",
+    "relevant": {
+      "pref-quiet-brief": 2
+    }
+  },
+  {
+    "id": "para-02",
+    "query": "When should we leave space around a customer call?",
+    "split": "dev",
+    "category": "paraphrase",
+    "relevant": {
+      "pref-calendar-buffer": 2
+    }
+  },
+  {
+    "id": "para-03",
+    "query": "Who handles review of challenge packets?",
+    "split": "dev",
+    "category": "paraphrase",
+    "relevant": {
+      "person-mira-voss": 2
+    }
+  },
+  {
+    "id": "para-04",
+    "query": "What is the next stage after the bureau has received Orion paperwork?",
+    "split": "dev",
+    "category": "paraphrase",
+    "relevant": {
+      "client-orion-phase": 2,
+      "episode-packet-zx": 1
+    }
+  },
+  {
+    "id": "para-05",
+    "query": "What task must happen before mailing Lyra paperwork?",
+    "split": "dev",
+    "category": "paraphrase",
+    "relevant": {
+      "client-lyra-phase": 2
+    }
+  },
+  {
+    "id": "para-06",
+    "query": "Which study deliverable is due in mid September?",
+    "split": "test",
+    "category": "paraphrase",
+    "relevant": {
+      "course-aster-deadline": 2
+    }
+  },
+  {
+    "id": "para-07",
+    "query": "What should client status messages emphasize?",
+    "split": "test",
+    "category": "paraphrase",
+    "relevant": {
+      "belief-followthrough": 2
+    }
+  },
+  {
+    "id": "para-08",
+    "query": "How should the workday protect concentrated work?",
+    "split": "test",
+    "category": "paraphrase",
+    "relevant": {
+      "belief-focus": 2
+    }
+  },
+  {
+    "id": "para-09",
+    "query": "What is the next action on the acknowledged Orion case?",
+    "split": "test",
+    "category": "paraphrase",
+    "relevant": {
+      "episode-packet-zx": 2,
+      "client-orion-phase": 1
+    }
+  },
+  {
+    "id": "para-10",
+    "query": "Which financial record did Teo request?",
+    "split": "test",
+    "category": "paraphrase",
+    "relevant": {
+      "episode-followup": 2
+    }
+  },
+  {
+    "id": "para-11",
+    "query": "What happens with a missed Cedar installment?",
+    "split": "test",
+    "category": "paraphrase",
+    "relevant": {
+      "client-cedar-payment": 2
+    }
+  },
+  {
+    "id": "para-12",
+    "query": "What preparation is needed for a duplicate collection?",
+    "split": "test",
+    "category": "paraphrase",
+    "relevant": {
+      "code-lumen": 2
+    }
+  },
+  {
+    "id": "term-01",
+    "query": "What does ZX-4821 refer to?",
+    "split": "dev",
+    "category": "exact_term",
+    "relevant": {
+      "episode-packet-zx": 2,
+      "client-orion-phase": 1
+    }
+  },
+  {
+    "id": "term-02",
+    "query": "Find QV-7719.",
+    "split": "dev",
+    "category": "exact_term",
+    "relevant": {
+      "client-lyra-code": 2
+    }
+  },
+  {
+    "id": "term-03",
+    "query": "Explain AUR-9042.",
+    "split": "dev",
+    "category": "exact_term",
+    "relevant": {
+      "code-aurora": 2
+    }
+  },
+  {
+    "id": "term-04",
+    "query": "Explain LUM-1138.",
+    "split": "dev",
+    "category": "exact_term",
+    "relevant": {
+      "code-lumen": 2
+    }
+  },
+  {
+    "id": "term-05",
+    "query": "What is ASTR-204 due date?",
+    "split": "dev",
+    "category": "exact_term",
+    "relevant": {
+      "course-aster-deadline": 2
+    }
+  },
+  {
+    "id": "term-06",
+    "query": "What should I read for NOVA-310?",
+    "split": "test",
+    "category": "exact_term",
+    "relevant": {
+      "course-nova-reading": 2
+    }
+  },
+  {
+    "id": "term-07",
+    "query": "What is the Harbor Lantern agenda?",
+    "split": "test",
+    "category": "exact_term",
+    "relevant": {
+      "meeting-harbor": 2
+    }
+  },
+  {
+    "id": "term-08",
+    "query": "What is Ember Ledger used for?",
+    "split": "test",
+    "category": "exact_term",
+    "relevant": {
+      "org-ember": 2
+    }
+  },
+  {
+    "id": "term-09",
+    "query": "What does Northstar Credit Works do?",
+    "split": "test",
+    "category": "exact_term",
+    "relevant": {
+      "org-northstar": 2
+    }
+  },
+  {
+    "id": "term-10",
+    "query": "What is Kestrel planning?",
+    "split": "test",
+    "category": "exact_term",
+    "relevant": {
+      "meeting-kestrel": 2
+    }
+  },
+  {
+    "id": "term-11",
+    "query": "Which case has code QV-7719?",
+    "split": "test",
+    "category": "exact_term",
+    "relevant": {
+      "client-lyra-code": 2
+    }
+  },
+  {
+    "id": "term-12",
+    "query": "Which packet is ZX-4821?",
+    "split": "test",
+    "category": "exact_term",
+    "relevant": {
+      "episode-packet-zx": 2
+    }
+  },
+  {
+    "id": "entity-01",
+    "query": "What does Mira Voss own?",
+    "split": "dev",
+    "category": "named_entity",
+    "relevant": {
+      "person-mira-voss": 2
+    }
+  },
+  {
+    "id": "entity-02",
+    "query": "What is Teo Larkin responsible for?",
+    "split": "dev",
+    "category": "named_entity",
+    "relevant": {
+      "person-teo-larkin": 2
+    }
+  },
+  {
+    "id": "entity-03",
+    "query": "What is Orion Vale doing now?",
+    "split": "dev",
+    "category": "named_entity",
+    "relevant": {
+      "temporal-new-orion": 2,
+      "client-orion-phase": 1
+    }
+  },
+  {
+    "id": "entity-04",
+    "query": "What document does Lyra Quill need?",
+    "split": "dev",
+    "category": "named_entity",
+    "relevant": {
+      "client-lyra-phase": 2
+    }
+  },
+  {
+    "id": "entity-05",
+    "query": "What did Cedar Rowan schedule?",
+    "split": "dev",
+    "category": "named_entity",
+    "relevant": {
+      "client-cedar-payment": 2
+    }
+  },
+  {
+    "id": "entity-06",
+    "query": "When is the Kestrel session with Mira Voss?",
+    "split": "test",
+    "category": "named_entity",
+    "relevant": {
+      "meeting-kestrel": 2
+    }
+  },
+  {
+    "id": "entity-07",
+    "query": "What is Northstar Credit Works?",
+    "split": "test",
+    "category": "named_entity",
+    "relevant": {
+      "org-northstar": 2
+    }
+  },
+  {
+    "id": "entity-08",
+    "query": "Who asked for the aged-invoice ledger?",
+    "split": "test",
+    "category": "named_entity",
+    "relevant": {
+      "episode-followup": 2
+    }
+  },
+  {
+    "id": "entity-09",
+    "query": "What was Orion Vale waiting for?",
+    "split": "test",
+    "category": "named_entity",
+    "relevant": {
+      "episode-packet-zx": 2
+    }
+  },
+  {
+    "id": "entity-10",
+    "query": "What workflow is tied to Lyra Quill?",
+    "split": "test",
+    "category": "named_entity",
+    "relevant": {
+      "client-lyra-code": 2
+    }
+  },
+  {
+    "id": "entity-11",
+    "query": "What does Mira Voss review?",
+    "split": "test",
+    "category": "named_entity",
+    "relevant": {
+      "person-mira-voss": 2
+    }
+  },
+  {
+    "id": "entity-12",
+    "query": "What is Teo Larkin’s Friday task?",
+    "split": "test",
+    "category": "named_entity",
+    "relevant": {
+      "person-teo-larkin": 2
+    }
+  },
+  {
+    "id": "spoken-01",
+    "query": "Mira um what does she handle",
+    "split": "dev",
+    "category": "spoken",
+    "relevant": {
+      "person-mira-voss": 2
+    }
+  },
+  {
+    "id": "spoken-02",
+    "query": "Orion hey whats the latest on him",
+    "split": "dev",
+    "category": "spoken",
+    "relevant": {
+      "temporal-new-orion": 2,
+      "client-orion-phase": 1
+    }
+  },
+  {
+    "id": "spoken-03",
+    "query": "Lyra uh what papers are we waiting on",
+    "split": "dev",
+    "category": "spoken",
+    "relevant": {
+      "client-lyra-phase": 2
+    }
+  },
+  {
+    "id": "spoken-04",
+    "query": "Teo can you remind me what he checks",
+    "split": "dev",
+    "category": "spoken",
+    "relevant": {
+      "person-teo-larkin": 2
+    }
+  },
+  {
+    "id": "spoken-05",
+    "query": "Harbor so what are we reviewing",
+    "split": "dev",
+    "category": "spoken",
+    "relevant": {
+      "meeting-harbor": 2
+    }
+  },
+  {
+    "id": "spoken-06",
+    "query": "AUR-9042 wait what is that",
+    "split": "test",
+    "category": "spoken",
+    "relevant": {
+      "code-aurora": 2
+    }
+  },
+  {
+    "id": "spoken-07",
+    "query": "Cedar what payment did they plan",
+    "split": "test",
+    "category": "spoken",
+    "relevant": {
+      "client-cedar-payment": 2
+    }
+  },
+  {
+    "id": "spoken-08",
+    "query": "Kestrel when is that planning thing",
+    "split": "test",
+    "category": "spoken",
+    "relevant": {
+      "meeting-kestrel": 2
+    }
+  },
+  {
+    "id": "spoken-09",
+    "query": "Northstar hey what kind of place is it",
+    "split": "test",
+    "category": "spoken",
+    "relevant": {
+      "org-northstar": 2
+    }
+  },
+  {
+    "id": "spoken-10",
+    "query": "NOVA what am i supposed to read",
+    "split": "test",
+    "category": "spoken",
+    "relevant": {
+      "course-nova-reading": 2
+    }
+  },
+  {
+    "id": "spoken-11",
+    "query": "Lumen uh whats the checklist for",
+    "split": "test",
+    "category": "spoken",
+    "relevant": {
+      "code-lumen": 2
+    }
+  },
+  {
+    "id": "spoken-12",
+    "query": "Orion did experian already get it",
+    "split": "test",
+    "category": "spoken",
+    "relevant": {
+      "episode-packet-zx": 2
+    }
+  },
+  {
+    "id": "time-01",
+    "query": "What is the current Orion Vale status?",
+    "split": "dev",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-orion": 2,
+      "client-orion-phase": 1
+    }
+  },
+  {
+    "id": "time-02",
+    "query": "How should the morning brief be formatted now?",
+    "split": "dev",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-brief": 2,
+      "pref-quiet-brief": 1
+    }
+  },
+  {
+    "id": "time-03",
+    "query": "Which Orion update is newest?",
+    "split": "dev",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-orion": 2
+    }
+  },
+  {
+    "id": "time-04",
+    "query": "What is the latest brief preference?",
+    "split": "dev",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-brief": 2
+    }
+  },
+  {
+    "id": "time-05",
+    "query": "Where is Orion in the workflow today?",
+    "split": "dev",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-orion": 2,
+      "client-orion-phase": 1
+    }
+  },
+  {
+    "id": "time-06",
+    "query": "What is the newest report about the daily brief?",
+    "split": "test",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-brief": 2
+    }
+  },
+  {
+    "id": "time-07",
+    "query": "Has Orion moved beyond packet assembly?",
+    "split": "test",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-orion": 2
+    }
+  },
+  {
+    "id": "time-08",
+    "query": "What is the current three-bullet preference?",
+    "split": "test",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-brief": 2,
+      "pref-quiet-brief": 1
+    }
+  },
+  {
+    "id": "time-09",
+    "query": "What happened after Experian received Orion material?",
+    "split": "test",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-orion": 2,
+      "episode-packet-zx": 1
+    }
+  },
+  {
+    "id": "time-10",
+    "query": "Which update supersedes Orion assembly?",
+    "split": "test",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-orion": 2
+    }
+  },
+  {
+    "id": "time-11",
+    "query": "What does the owner want in the brief now?",
+    "split": "test",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-brief": 2
+    }
+  },
+  {
+    "id": "time-12",
+    "query": "What is Orion’s latest bureau step?",
+    "split": "test",
+    "category": "temporal",
+    "relevant": {
+      "temporal-new-orion": 2
+    }
+  },
+  {
+    "id": "dist-01",
+    "query": "What is the status of Orion Vale’s Experian dispute?",
+    "split": "dev",
+    "category": "distractor",
+    "relevant": {
+      "client-orion-phase": 2,
+      "episode-packet-zx": 1
+    },
+    "distractor_id": "dist-orion-invoice"
+  },
+  {
+    "id": "dist-02",
+    "query": "What review does Mira Voss lead?",
+    "split": "dev",
+    "category": "distractor",
+    "relevant": {
+      "person-mira-voss": 2
+    },
+    "distractor_id": "dist-mira-social"
+  },
+  {
+    "id": "dist-03",
+    "query": "What does Lyra need before her first packet?",
+    "split": "dev",
+    "category": "distractor",
+    "relevant": {
+      "client-lyra-phase": 2
+    },
+    "distractor_id": "dist-lyra-calendar"
+  },
+  {
+    "id": "dist-04",
+    "query": "What occurred for packet ZX-4821?",
+    "split": "dev",
+    "category": "distractor",
+    "relevant": {
+      "episode-packet-zx": 2
+    },
+    "distractor_id": "dist-zx-training"
+  },
+  {
+    "id": "dist-05",
+    "query": "When is the orbital mechanics lab due?",
+    "split": "dev",
+    "category": "distractor",
+    "relevant": {
+      "course-aster-deadline": 2
+    },
+    "distractor_id": "dist-aster-meeting"
+  },
+  {
+    "id": "dist-06",
+    "query": "What will Harbor Lantern review?",
+    "split": "test",
+    "category": "distractor",
+    "relevant": {
+      "meeting-harbor": 2
+    },
+    "distractor_id": "dist-harbor-invoice"
+  },
+  {
+    "id": "dist-07",
+    "query": "How many bullets should the morning brief have?",
+    "split": "test",
+    "category": "distractor",
+    "relevant": {
+      "pref-quiet-brief": 2,
+      "temporal-new-brief": 1
+    },
+    "distractor_id": "dist-quiet-office"
+  },
+  {
+    "id": "dist-08",
+    "query": "What must happen for AUR-9042?",
+    "split": "test",
+    "category": "distractor",
+    "relevant": {
+      "code-aurora": 2
+    },
+    "distractor_id": "dist-aurora-brand"
+  },
+  {
+    "id": "dist-09",
+    "query": "Which record needs a documentation checklist?",
+    "split": "test",
+    "category": "distractor",
+    "relevant": {
+      "code-lumen": 2
+    },
+    "distractor_id": "dist-lumen-lamp"
+  },
+  {
+    "id": "dist-10",
+    "query": "What is Lyra’s case code?",
+    "split": "test",
+    "category": "distractor",
+    "relevant": {
+      "client-lyra-code": 2
+    },
+    "distractor_id": "dist-recent-unrelated"
+  },
+  {
+    "id": "dist-11",
+    "query": "What did Teo request Friday?",
+    "split": "test",
+    "category": "distractor",
+    "relevant": {
+      "episode-followup": 2
+    },
+    "distractor_id": "dist-recent-unrelated"
+  },
+  {
+    "id": "dist-12",
+    "query": "What payment did Cedar schedule?",
+    "split": "test",
+    "category": "distractor",
+    "relevant": {
+      "client-cedar-payment": 2
+    },
+    "distractor_id": "dist-recent-unrelated"
+  },
+  {
+    "id": "none-01",
+    "query": "What color is the fictional greenhouse thermostat?",
+    "split": "dev",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-02",
+    "query": "Who won the imaginary comet race?",
+    "split": "dev",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-03",
+    "query": "What is the recipe for lunar soup?",
+    "split": "dev",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-04",
+    "query": "Where is the underwater observatory?",
+    "split": "dev",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-05",
+    "query": "What was the dragon’s library password?",
+    "split": "dev",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-06",
+    "query": "When does the fictional airship depart?",
+    "split": "test",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-07",
+    "query": "What habitat does the Altair nebula have?",
+    "split": "test",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-08",
+    "query": "Which chef invented cloud bread?",
+    "split": "test",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-09",
+    "query": "What is the moon garden watering schedule?",
+    "split": "test",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-10",
+    "query": "How many wings has the imaginary museum?",
+    "split": "test",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-11",
+    "query": "What language do paper whales speak?",
+    "split": "test",
+    "category": "no_answer",
+    "relevant": {}
+  },
+  {
+    "id": "none-12",
+    "query": "Who repairs the fictional time telescope?",
+    "split": "test",
+    "category": "no_answer",
+    "relevant": {}
+  }
+]
