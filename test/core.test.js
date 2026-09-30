@@ -1738,6 +1738,9 @@ test('two different people sharing a name are not fused into one record', () => 
 });
 
 test('a memory candidate is retired after the ask budget is spent', () => {
+  // Dates are relative to now: candidates expire after a 30-day TTL, so a
+  // hardcoded calendar date turns this test into a time bomb.
+  const daysAgo = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
   const candidate = (id, askCount, updatedAt) => ({
     id,
     entry: {
@@ -1755,15 +1758,15 @@ test('a memory candidate is retired after the ask budget is spent', () => {
       confidence: 0.7,
       source: 'conversation'
     },
-    created_at: '2026-08-18T00:00:00.000Z',
+    created_at: daysAgo(2),
     updated_at: updatedAt,
     ask_count: askCount,
     occurrences: 1
   });
   const profile = {
     memory_candidates: [
-      candidate('exhausted-candidate', 2, '2026-08-19T00:00:00.000Z'),
-      candidate('fresh-candidate', 0, '2026-08-18T00:00:00.000Z')
+      candidate('exhausted-candidate', 2, daysAgo(1)),
+      candidate('fresh-candidate', 0, daysAgo(2))
     ]
   };
   // The exhausted candidate is skipped even though it is the most recent, and
@@ -1772,7 +1775,7 @@ test('a memory candidate is retired after the ask budget is spent', () => {
   assert.equal(selectPendingConfirmation(profile).id, 'fresh-candidate');
   assert.equal(
     selectPendingConfirmation({
-      memory_candidates: [candidate('spent-candidate', 2, '2026-08-19T00:00:00.000Z')]
+      memory_candidates: [candidate('spent-candidate', 2, daysAgo(1))]
     }),
     null
   );
