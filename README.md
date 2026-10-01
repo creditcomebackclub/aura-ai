@@ -95,9 +95,22 @@ I try to be honest about what's tested and what isn't. [EVALS.md](EVALS.md) mark
 | Persona guard | `npm test` (`test/persona.test.js`) | That safety-critical instructions in `SOUL.md` haven't silently regressed |
 | Live behavioral | `npm run eval` | Real model-in-the-loop cases: does AURA pick the right tool for the job? |
 | Model comparison | `npm run eval:compare` | The same cases run across chat providers |
+| Retrieval benchmark | `npm run bench:retrieval` | Offline ranking quality of the production scorer vs. ablations, with bootstrap CIs |
 | Syntax gate | `npm run check` | Every loaded module parses |
 
-**In progress:** a fixed **retrieval benchmark**. It's a labeled set of queries paired with the correct memories, used to report precision@k and MRR and to run an **ablation study** of each scoring signal. The goal is to prove the hybrid scorer beats vector-only recall with numbers instead of intuition.
+### Retrieval benchmark: my hybrid scorer loses to vector-only
+
+`npm run bench:retrieval` runs an offline, deterministic benchmark: 180 fictional memories, 84 labeled queries (35 dev / 49 test), cached `text-embedding-3-small` vectors, and the **real production scoring functions**, with a parity test that fails if the benchmark ever drifts from production. On the held-out test split:
+
+| Config | MRR | Recall@1 | nDCG@4 |
+|---|---|---|---|
+| Full hybrid (production) | 0.736 [0.649, 0.827] | 0.512 | 0.801 |
+| Vector-only | 0.847 [0.762, 0.925] | 0.702 | 0.873 |
+| Paired difference (full − vector) | **−0.111 [−0.190, −0.040]** | | **−0.071 [−0.126, −0.021]** |
+
+Both paired 95% bootstrap intervals exclude zero: on this fixture, the extra signals make ranking measurably worse. The diagnosis is a scale mismatch. `entityMatchScore` saturates at 1.0 on a single shared name (0.85 after weighting), while relevant cosine similarities sit around 0.57 (max 0.77). So a memory that merely *mentions* the right person outranks the memory that *answers* the question. All 16 test queries where the two rankers disagreed on the top result were decided by the entity signal; vector-only was better on 10 of them, hybrid on 1.
+
+Caveats: the data is synthetic with machine-generated labels, and Recall@4 is saturated, so the benchmark discriminates on ordering rather than recall. Production scoring is unchanged; the next step is to test a fix (capping the entity contribution, or learning the combination weights) here first, then against owner-reviewed retrieval traces. Full write-up: [eval/retrieval/results/REPORT.md](eval/retrieval/results/REPORT.md) · labeling method: [eval/retrieval/LABELING.md](eval/retrieval/LABELING.md).
 
 ---
 

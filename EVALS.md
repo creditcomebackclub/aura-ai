@@ -90,6 +90,19 @@ run today doesn't guarantee a passing run tomorrow if the underlying model's too
 drifts. That's a feature, not a bug, for this file's purpose: it is meant to catch exactly that kind
 of silent drift, which a mocked unit test structurally cannot see.
 
+### 1e. `npm run bench:retrieval` — offline memory-ranking regression benchmark
+
+This deterministic layer is separate from the live behavioral eval. It ranks a
+committed 180-memory, 84-query fictional fixture with cached
+`text-embedding-3-small` vectors and imports the production lexical and
+retrieval-scoring functions directly. It reports ablations, bootstrap CIs,
+category slices, abstention and distractor metrics, and a dev-only threshold
+sweep. The committed cache lets `npm test` and `npm run bench:retrieval` run
+without a key or network; `npm run bench:retrieval:embed` is the explicit online
+maintenance step when fixture text changes. This is evidence about a synthetic
+fixture—not a claim that it represents owner data or an authorization to alter
+production scoring.
+
 ---
 
 ## 2. The gap: what a side-effecting assistant needs beyond this
